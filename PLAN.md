@@ -165,7 +165,7 @@ the surrounding formatting exactly.
 ### Phase 5 - Native TypeScript rewrite of the cleanup engine — IN PROGRESS
 
 Every item is validated by vitest tests ported from the corresponding C# test class. Current
-status: **128 tests passing**.
+status: **279 tests passing**.
 
 Done:
 
@@ -177,15 +177,14 @@ Done:
   transforms.
 - Syntax transformations (tree-sitter): var-when-apparent, null-check pattern matching,
   return/throw blank-line padding, namespace fixer, `nameof(...)` conversion, `out var` inlining,
-  sealed classes.
+  sealed classes, single-statement lambdas, CA1869 `JsonSerializerOptions`, `string.Format` to
+  interpolation, collection expressions, using sorting, moving usings out of namespaces,
+  file-scoped namespaces, readonly fields, single-line method spreading, explicit access
+  modifiers, blank-line padding.
 
 Remaining converters to port:
 
-- `MoveUsingsOutsideNamespaceConverter`, `UsingDirectiveOrganizer`, `FileScopedNamespaceConverter`
-- `SingleStatementLambdaConverter`, `JsonSerializerOptionsReuseConverter`,
-  `CollectionExpressionConverter`, `StringInterpolationConverter`
-- `UpdateSingleLineMethodsConverter`, `UpdateAccessorsToBothBeSingleLineOrMultiLineConverter`
-- `ReadonlyFieldConverter`, `BlankLinePaddingConverter`, `ExplicitAccessModifierConverter`
+- `UpdateAccessorsToBothBeSingleLineOrMultiLineConverter`
 - `XmlDocumentationGenerator` (member planning, prompts and comment rendering)
 
 Then: rewire `cleanupCore` / `formatOnSave` / `generateXmlDoc` to call the in-process pipeline
