@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { runCleanup } from '../cleanup/runCleanup';
+import { runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
 import { readCleanupSettings } from './settings';
 
 interface CollectedFile {
@@ -17,7 +17,7 @@ interface CleanupResult {
 }
 
 /**
- * Reads the given C# file URIs (preferring the live editor buffer when a file is already open, so
+ * Reads the given file URIs (preferring the live editor buffer when a file is already open, so
  * unsaved changes are cleaned too), runs the cleanup pipeline in-process, and applies each changed
  * result back - through a WorkspaceEdit for open documents, or a direct file write otherwise.
  */
@@ -25,19 +25,21 @@ export async function runCleanupOnUris(
   _context: vscode.ExtensionContext,
   uris: vscode.Uri[]
 ): Promise<{ changed: number; failed: number }> {
-  const csharpUris = uris.filter((u) => u.fsPath.toLowerCase().endsWith('.cs'));
-  if (csharpUris.length === 0) {
-    void vscode.window.showInformationMessage('CodeJanitor: no C# files to clean up.');
+  const targets = uris.filter(isSupportedFile);
+  if (targets.length === 0) {
+    void vscode.window.showInformationMessage('CodeJanitor: no files to clean up.');
 
     return { changed: 0, failed: 0 };
   }
 
-  const collected = await collectFiles(csharpUris);
+  const collected = await collectFiles(targets);
   const settings = readCleanupSettings();
 
   const results: CleanupResult[] = collected.map((file) => {
     try {
-      const output = runCleanup(file.content, file.uri.fsPath, settings);
+      const output = isCSharp(file.uri)
+        ? runCleanup(file.content, file.uri.fsPath, settings)
+        : runLayoutCleanup(file.content, file.uri.fsPath, settings);
 
       return { uri: file.uri, output, changed: output !== file.content, isOpen: file.isOpen };
     } catch (err) {
@@ -46,6 +48,19 @@ export async function runCleanupOnUris(
   });
 
   return applyResults(results);
+}
+
+export function isCSharp(uri: vscode.Uri): boolean {
+  return uri.fsPath.toLowerCase().endsWith('.cs');
+}
+
+/** Other languages are only cleaned when the user opts in, and then only with the layout rules. */
+export function isSupportedFile(uri: vscode.Uri): boolean {
+  if (isCSharp(uri)) {
+    return true;
+  }
+
+  return vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.includeOtherFileTypes', false);
 }
 
 async function collectFiles(uris: vscode.Uri[]): Promise<CollectedFile[]> {
@@ -105,11 +120,15 @@ async function applyResults(results: readonly CleanupResult[]): Promise<{ change
   return { changed, failed };
 }
 
-export async function expandToCSharpFiles(uri: vscode.Uri): Promise<vscode.Uri[]> {
+export async function expandToCleanableFiles(uri: vscode.Uri): Promise<vscode.Uri[]> {
   const stat = await vscode.workspace.fs.stat(uri);
-  if (stat.type === vscode.FileType.Directory) {
-    return vscode.workspace.findFiles(new vscode.RelativePattern(uri, '**/*.cs'), '**/{bin,obj}/**');
+  if (stat.type !== vscode.FileType.Directory) {
+    return [uri];
   }
 
-  return [uri];
+  const pattern = vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.includeOtherFileTypes', false)
+    ? '**/*'
+    : '**/*.cs';
+
+  return vscode.workspace.findFiles(new vscode.RelativePattern(uri, pattern), '**/{bin,obj,node_modules,.git}/**');
 }

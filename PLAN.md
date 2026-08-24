@@ -198,27 +198,46 @@ Three deliberate deviations from the original, all for cross-platform correctnes
 3. Interpolated strings are treated as opaque by the lexical scanner, so layout rules never
    rewrite anything inside a literal.
 
+### Phase 6 - Closing the feature gaps — DONE
+
+- Wired the previously dead `fixNamespace` converter to a `CodeJanitor: Fix Namespace` command that
+  suggests the namespace from the workspace folder structure.
+- Added the missing cleanup entry points: `Cleanup Open Files`, `Cleanup Changed Files (Git)` (via
+  the built-in Git extension API) and `Toggle Cleanup on Save`.
+- Added the standalone editor actions of the original: remove regions, format comments, remove XML
+  documentation, join lines, sort lines.
+- Added the remaining AI actions with the prompts ported verbatim: explain, code review,
+  clean/refactor (with an apply step) and unit test generation (`codeJanitor.ai.tests.*` settings).
+- Added the XML documentation diff preview (`codeJanitor.ai.xmlDoc.previewChanges`).
+- Added opt-in layout-only cleanup for files that are not C#
+  (`codeJanitor.cleanup.includeOtherFileTypes`), covering BOM, tabs, trailing whitespace, blank
+  lines and the final newline.
+- Added an editor context submenu grouping the documentation, code and AI actions, plus a
+  `CHANGELOG.md`.
+
+**340 tests passing.**
+
 ## Backlog / next steps
 
-1. **TS-side automated tests** - none yet. Would use `@vscode/test-electron` or
-   `@vscode/test-cli` to run real extension-host integration tests (requires downloading a VS
-   Code test instance). Bigger effort, not started.
-2. **Marketplace packaging polish** - `CHANGELOG.md`, `CONTRIBUTING.md`, an icon, and a real
-   `npx vsce package` dry run. Deferred until requested.
-3. **Settings UI** - currently plain `settings.json` entries only (no custom webview), which is
-   intentional (native VS Code settings, unlike the source extension's custom WPF Options pages).
-4. **XML doc preview / run-during-cleanup** - the source extension can preview the diff before
-   applying (`Cleaning_AiXmlDocumentationPreviewChanges`) and run documentation as part of a
-   cleanup pass (`Cleaning_AiXmlDocumentationRunDuringCleanup`). Neither is ported; the VS Code
-   command is explicit and single-file.
-5. Anything Digging/Spade/reorganizing-related remains explicitly out of scope.
+1. **Extension-host tests** - the suites cover the pipeline and every converter, but not the
+   command layer (`WorkspaceEdit` application, Git integration, activation). Would need
+   `@vscode/test-cli`, which downloads a VS Code instance.
+2. **Marketplace polish** - an icon is still missing; `CHANGELOG.md` is in place and `vsce package`
+   is verified.
+3. **Settings UI** - plain `settings.json` entries only, which is intentional (native VS Code
+   settings, unlike the source extension's custom WPF Options pages).
+4. **AI coverage targeting** (`AiTargetCoverageCommand`) is not ported: it drives Visual Studio's
+   coverage results and solution-wide test runs, which have no direct VS Code equivalent.
+5. **Running XML documentation as part of a cleanup pass** is not ported; the command stays
+   explicit and single-file so a cleanup never triggers unattended AI calls.
+6. Anything Digging/Spade/reorganizing-related remains explicitly out of scope.
 
 ## Verified build/test commands
 
 ```powershell
 npm ci
 npm run compile                  # tsc --noEmit
-npm test                         # vitest, 317/317 passing
+npm test                         # vitest, 340/340 passing
 node esbuild.js --production     # -> dist/extension.js + the two .wasm modules
 ```
 

@@ -20,9 +20,20 @@ This repository is the Visual Studio Code port of the [CodeJanitor](https://gith
   OpenAI/Claude-compatible HTTP endpoint.
 - `test/` - vitest suites covering every transformation, ported from the original test suite.
 
+## Commands
+
+**Cleanup** - active file, selected files (explorer), open files, files changed in Git, whole
+workspace, and a toggle for cleanup on save.
+
+**Editor actions** - fix namespace, remove regions, format comments, remove XML documentation,
+join lines, sort lines.
+
+**AI** - generate XML documentation, explain code, review code, clean and refactor, generate unit
+tests. All of them run through GitHub Copilot or a custom OpenAI/Claude-compatible endpoint.
+
 ## Status
 
-The cleanup engine, the VS Code integration and the AI XML documentation are implemented. See
+The cleanup engine, the VS Code integration and the AI features are implemented. See
 [PLAN.md](PLAN.md) for the detailed porting history and the remaining backlog.
 
 ## License

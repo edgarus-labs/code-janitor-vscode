@@ -67,6 +67,14 @@ async function generateXmlDocForDocument(context: vscode.ExtensionContext, edito
     return;
   }
 
+  const previewChanges = vscode.workspace
+    .getConfiguration('codeJanitor')
+    .get<boolean>('ai.xmlDoc.previewChanges', false);
+
+  if (previewChanges && !(await confirmWithPreview(document, output))) {
+    return;
+  }
+
   const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(content.length));
   const applied = await editor.edit((editBuilder) => editBuilder.replace(fullRange, output));
 
@@ -76,6 +84,26 @@ async function generateXmlDocForDocument(context: vscode.ExtensionContext, edito
       `CodeJanitor: documented ${targets.length} member(s) - ${aiTargets.length} via AI, ${deterministic} deterministic.`
     );
   }
+}
+
+/** Shows the proposed result next to the original and asks whether to apply it. */
+async function confirmWithPreview(document: vscode.TextDocument, output: string): Promise<boolean> {
+  const preview = await vscode.workspace.openTextDocument({ content: output, language: document.languageId });
+
+  await vscode.commands.executeCommand(
+    'vscode.diff',
+    document.uri,
+    preview.uri,
+    `CodeJanitor: XML documentation preview (${document.fileName.split(/[\\/]/).pop()})`
+  );
+
+  const choice = await vscode.window.showInformationMessage(
+    'CodeJanitor: apply the generated XML documentation?',
+    { modal: true },
+    'Apply'
+  );
+
+  return choice === 'Apply';
 }
 
 /**

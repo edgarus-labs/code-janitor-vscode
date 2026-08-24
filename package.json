@@ -39,8 +39,73 @@
         "category": "CodeJanitor"
       },
       {
+        "command": "codeJanitor.cleanupOpenFiles",
+        "title": "CodeJanitor: Cleanup Open Files",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.cleanupChangedFiles",
+        "title": "CodeJanitor: Cleanup Changed Files (Git)",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.toggleCleanupOnSave",
+        "title": "CodeJanitor: Toggle Cleanup on Save",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.fixNamespace",
+        "title": "CodeJanitor: Fix Namespace",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.removeRegions",
+        "title": "CodeJanitor: Remove Regions",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.formatComments",
+        "title": "CodeJanitor: Format Comments",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.removeXmlDoc",
+        "title": "CodeJanitor: Remove XML Documentation",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.joinLines",
+        "title": "CodeJanitor: Join Lines",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.sortLines",
+        "title": "CodeJanitor: Sort Lines",
+        "category": "CodeJanitor"
+      },
+      {
         "command": "codeJanitor.generateXmlDoc",
         "title": "CodeJanitor: Generate XML Documentation (AI)",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.aiExplain",
+        "title": "CodeJanitor: Explain Code (AI)",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.aiCodeReview",
+        "title": "CodeJanitor: Review Code (AI)",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.aiRefactor",
+        "title": "CodeJanitor: Clean and Refactor (AI)",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.aiGenerateUnitTests",
+        "title": "CodeJanitor: Generate Unit Tests (AI)",
         "category": "CodeJanitor"
       },
       {
@@ -67,9 +132,58 @@
           "command": "codeJanitor.cleanupActiveFile",
           "group": "1_modification",
           "when": "resourceLangId == csharp"
+        },
+        {
+          "submenu": "codeJanitor.editorSubmenu",
+          "group": "1_modification",
+          "when": "resourceLangId == csharp"
+        }
+      ],
+      "codeJanitor.editorSubmenu": [
+        {
+          "command": "codeJanitor.generateXmlDoc",
+          "group": "1_doc"
+        },
+        {
+          "command": "codeJanitor.removeXmlDoc",
+          "group": "1_doc"
+        },
+        {
+          "command": "codeJanitor.fixNamespace",
+          "group": "2_code"
+        },
+        {
+          "command": "codeJanitor.removeRegions",
+          "group": "2_code"
+        },
+        {
+          "command": "codeJanitor.formatComments",
+          "group": "2_code"
+        },
+        {
+          "command": "codeJanitor.aiExplain",
+          "group": "3_ai"
+        },
+        {
+          "command": "codeJanitor.aiCodeReview",
+          "group": "3_ai"
+        },
+        {
+          "command": "codeJanitor.aiRefactor",
+          "group": "3_ai"
+        },
+        {
+          "command": "codeJanitor.aiGenerateUnitTests",
+          "group": "3_ai"
         }
       ]
     },
+    "submenus": [
+      {
+        "id": "codeJanitor.editorSubmenu",
+        "label": "CodeJanitor"
+      }
+    ],
     "configuration": {
       "title": "CodeJanitor",
       "properties": {
@@ -77,6 +191,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically run CodeJanitor cleanup on C# files when they are saved."
+        },
+        "codeJanitor.cleanup.includeOtherFileTypes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also clean up files that are not C#. Only the layout rules run for them (BOM, tabs, trailing whitespace, blank lines, final newline)."
         },
         "codeJanitor.cleanup.moveUsingsOutsideNamespace": {
           "type": "boolean",
@@ -304,6 +423,11 @@
           "default": true,
           "description": "Fall back to a deterministic, name-derived summary when the AI request fails or returns nothing."
         },
+        "codeJanitor.ai.xmlDoc.previewChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a diff of the generated documentation and ask for confirmation before applying it."
+        },
         "codeJanitor.ai.xmlDoc.ignoreGeneratedCode": {
           "type": "boolean",
           "default": true,
@@ -323,6 +447,16 @@
           "type": "string",
           "default": "",
           "description": "Regular expression matched against 'Namespace.Type.Method'. Matching methods are skipped."
+        },
+        "codeJanitor.ai.tests.framework": {
+          "type": "string",
+          "default": "MSTest",
+          "description": "Test framework the AI should target when generating unit tests (e.g. MSTest, xUnit, NUnit)."
+        },
+        "codeJanitor.ai.tests.mockingLibrary": {
+          "type": "string",
+          "default": "Moq",
+          "description": "Mocking library the AI should use when generating unit tests (e.g. Moq, NSubstitute, FakeItEasy)."
         }
       }
     }

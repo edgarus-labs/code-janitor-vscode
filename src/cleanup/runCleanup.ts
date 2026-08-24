@@ -150,3 +150,40 @@ function anyExplicitAccessModifierEnabled(settings: CleanupSettings): boolean {
     settings.insertExplicitAccessModifiersOnStructs
   );
 }
+
+/**
+ * The subset of the pipeline that only touches layout and therefore needs no C# parser. Used for
+ * files in other languages, where the syntax-aware rules would not apply.
+ */
+export function runLayoutCleanup(source: string, filePath: string, settings: CleanupSettings): string {
+  if (!source) {
+    return source;
+  }
+
+  const editorConfig = loadCSharpOptions(filePath);
+
+  const transformations: (SourceTransformation | undefined)[] = [
+    settings.removeByteOrderMark ? byteOrderMarkConverter : undefined,
+    editorConfig.indentStyle?.toLowerCase() === 'space'
+      ? createTabToSpaceConverter(editorConfig.tabWidth ?? editorConfig.indentSize ?? 4)
+      : undefined,
+    settings.removeEndOfLineWhitespace || editorConfig.trimTrailingWhitespace === true
+      ? delegateTransformation('Remove trailing whitespace', removeTrailingWhitespaceFromAnyText)
+      : undefined,
+    settings.removeBlankLinesAtTop
+      ? delegateTransformation('Remove blank lines at top', removeBlankLinesAtTop)
+      : undefined,
+    settings.removeBlankLinesAtBottom
+      ? delegateTransformation('Remove blank lines at bottom', removeBlankLinesAtBottom)
+      : undefined,
+    settings.removeMultipleConsecutiveBlankLines ? normalizeBlankLinesConverter : undefined,
+    editorConfig.insertFinalNewline !== false ? ensureFinalNewlineConverter : undefined,
+  ];
+
+  return new SourceTransformationPipeline(transformations).run(source);
+}
+
+/** Outside C# there is no lexer to consult, so every end-of-line run of spaces/tabs is trimmed. */
+function removeTrailingWhitespaceFromAnyText(source: string): string {
+  return source.replace(/[ \t]+(?=\r?\n)/g, '').replace(/[ \t]+$/, '');
+}
