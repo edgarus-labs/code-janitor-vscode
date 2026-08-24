@@ -226,13 +226,19 @@
         },
         "codeJanitor.cleanup.fileHeaderPosition": {
           "type": "string",
-          "enum": ["documentStart", "afterUsings"],
+          "enum": [
+            "documentStart",
+            "afterUsings"
+          ],
           "default": "documentStart",
           "description": "Where the configured file header should be placed."
         },
         "codeJanitor.cleanup.fileHeaderUpdateMode": {
           "type": "string",
-          "enum": ["insert", "replace"],
+          "enum": [
+            "insert",
+            "replace"
+          ],
           "default": "insert",
           "description": "Whether the configured file header is inserted alongside existing content or replaces it."
         },
@@ -243,7 +249,10 @@
         },
         "codeJanitor.ai.provider": {
           "type": "string",
-          "enum": ["copilot", "custom"],
+          "enum": [
+            "copilot",
+            "custom"
+          ],
           "enumDescriptions": [
             "Use the GitHub Copilot Chat model selected via VS Code's Language Model API (requires the GitHub Copilot Chat extension, signed in).",
             "Use a custom OpenAI/Claude-compatible HTTP endpoint (e.g. Ollama, LM Studio, Azure OpenAI, Anthropic-compatible proxy)."
@@ -331,6 +340,11 @@
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "esbuild": "^0.23.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.25.10"
   }
 }
