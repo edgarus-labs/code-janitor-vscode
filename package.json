@@ -1,0 +1,301 @@
+{
+  "name": "codejanitor",
+  "displayName": "CodeJanitor",
+  "description": "CodeJanitor is an open source Visual Studio extension to cleanup and simplify our C#, C++, F#, VB, PHP, PowerShell, R, JSON, XAML, XML, ASP, HTML, CSS, LESS, SCSS, JavaScript and TypeScript coding.",
+  "version": "0.1.0",
+  "publisher": "codejanitor",
+  "license": "LGPL-3.0-only",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Formatters",
+    "Linters",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:csharp"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeJanitor.cleanupActiveFile",
+        "title": "CodeJanitor: Cleanup Active File",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.cleanupSelectedFiles",
+        "title": "CodeJanitor: Cleanup Selected Files",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.cleanupWorkspace",
+        "title": "CodeJanitor: Cleanup Workspace",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.generateXmlDoc",
+        "title": "CodeJanitor: Generate XML Documentation (AI)",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.testAiConnection",
+        "title": "CodeJanitor: Test AI Connection",
+        "category": "CodeJanitor"
+      },
+      {
+        "command": "codeJanitor.setAiApiKey",
+        "title": "CodeJanitor: Set Custom AI Endpoint API Key",
+        "category": "CodeJanitor"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "codeJanitor.cleanupSelectedFiles",
+          "group": "7_modification",
+          "when": "resourceLangId == csharp || explorerResourceIsFolder"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "codeJanitor.cleanupActiveFile",
+          "group": "1_modification",
+          "when": "resourceLangId == csharp"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CodeJanitor",
+      "properties": {
+        "codeJanitor.cleanup.onSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run CodeJanitor cleanup on C# files when they are saved."
+        },
+        "codeJanitor.cleanup.moveUsingsOutsideNamespace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Move using directives outside the namespace declaration."
+        },
+        "codeJanitor.cleanup.organizeUsings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Sort using directives (System first, then alphabetical), independent of .editorconfig."
+        },
+        "codeJanitor.cleanup.convertToFileScopedNamespace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Convert a single top-level block-scoped namespace to a file-scoped namespace."
+        },
+        "codeJanitor.cleanup.convertToVarWhenApparent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Convert local variable declarations to 'var' when the type is apparent from the right-hand side."
+        },
+        "codeJanitor.cleanup.makeFieldsReadonlyWhenSafe": {
+          "type": "boolean",
+          "default": false,
+          "description": "Add the 'readonly' modifier to fields that are provably never written outside their declaring constructor."
+        },
+        "codeJanitor.cleanup.sealClassesWhenSafe": {
+          "type": "boolean",
+          "default": false,
+          "description": "Add the 'sealed' modifier to classes that are not derived from within the same file."
+        },
+        "codeJanitor.cleanup.convertToCollectionExpressions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Convert List<T>/array initializations to C# 12 collection expressions ([] / [a, b, c])."
+        },
+        "codeJanitor.cleanup.reuseJsonSerializerOptionsForCA1869": {
+          "type": "boolean",
+          "default": false,
+          "description": "Replace direct 'new JsonSerializerOptions()' arguments in JsonSerializer calls with null to avoid per-call allocation (CA1869)."
+        },
+        "codeJanitor.cleanup.simplifySingleStatementLambdas": {
+          "type": "boolean",
+          "default": false,
+          "description": "Simplify single-statement lambda block bodies to expression bodies."
+        },
+        "codeJanitor.cleanup.insertBlankLineBeforeReturnAndThrow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Insert a blank line before 'return' and 'throw' statements."
+        },
+        "codeJanitor.cleanup.convertToPatternMatchingNullChecks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Convert null checks to pattern matching (e.g. 'x is null')."
+        },
+        "codeJanitor.cleanup.convertStringFormatToInterpolation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Convert string.Format calls to string interpolation."
+        },
+        "codeJanitor.cleanup.convertToStringNameOf": {
+          "type": "boolean",
+          "default": true,
+          "description": "Convert string literals of member names to the 'nameof' operator."
+        },
+        "codeJanitor.cleanup.inlineOutVariableDeclarations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inline 'out' variable declarations."
+        },
+        "codeJanitor.cleanup.insertExplicitAccessModifiers": {
+          "type": "boolean",
+          "default": true,
+          "description": "Insert the default access modifier on declarations that omit it (classes, methods, fields, properties, etc.)."
+        },
+        "codeJanitor.cleanup.insertBlankLinePadding": {
+          "type": "boolean",
+          "default": true,
+          "description": "Insert blank line padding before/after declarations, regions and using blocks."
+        },
+        "codeJanitor.cleanup.updateEndRegionDirectives": {
+          "type": "boolean",
+          "default": true,
+          "description": "Update #endregion directives to include the matching #region name."
+        },
+        "codeJanitor.cleanup.updateSingleLineMethods": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reformat single-line methods/properties consistently."
+        },
+        "codeJanitor.cleanup.updateAccessorsToBothBeSingleLineOrMultiLine": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ensure property accessors are consistently single-line or multi-line."
+        },
+        "codeJanitor.cleanup.formatComments": {
+          "type": "boolean",
+          "default": false,
+          "description": "Normalize comment spacing and alignment."
+        },
+        "codeJanitor.cleanup.removeByteOrderMark": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove a leading Unicode Byte Order Mark (BOM) from source files."
+        },
+        "codeJanitor.cleanup.removeEndOfLineWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove trailing whitespace at the end of each line."
+        },
+        "codeJanitor.cleanup.removeBlankLinesAtTop": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove blank lines at the top of the file."
+        },
+        "codeJanitor.cleanup.removeBlankLinesAtBottom": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove blank lines at the bottom of the file."
+        },
+        "codeJanitor.cleanup.removeBlankLinesAfterAttributes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove blank lines directly after attribute declarations."
+        },
+        "codeJanitor.cleanup.removeBlankLinesAfterOpeningBrace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove blank lines directly after an opening brace."
+        },
+        "codeJanitor.cleanup.removeBlankLinesBeforeClosingBrace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove blank lines directly before a closing brace."
+        },
+        "codeJanitor.cleanup.removeBlankLinesBetweenChainedStatements": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove blank lines before chained 'else'/'catch'/'finally' clauses."
+        },
+        "codeJanitor.cleanup.removeMultipleConsecutiveBlankLines": {
+          "type": "boolean",
+          "default": true,
+          "description": "Collapse two or more consecutive blank lines into one."
+        },
+        "codeJanitor.cleanup.fileHeaderCSharp": {
+          "type": "string",
+          "default": "",
+          "description": "Configured C# file header text. Leave empty to disable file header cleanup."
+        },
+        "codeJanitor.cleanup.fileHeaderPosition": {
+          "type": "string",
+          "enum": ["documentStart", "afterUsings"],
+          "default": "documentStart",
+          "description": "Where the configured file header should be placed."
+        },
+        "codeJanitor.cleanup.fileHeaderUpdateMode": {
+          "type": "string",
+          "enum": ["insert", "replace"],
+          "default": "insert",
+          "description": "Whether the configured file header is inserted alongside existing content or replaces it."
+        },
+        "codeJanitor.engine.dotnetPath": {
+          "type": "string",
+          "default": "dotnet",
+          "description": "Path to the 'dotnet' executable used to run the CodeJanitor cleanup engine."
+        },
+        "codeJanitor.ai.provider": {
+          "type": "string",
+          "enum": ["copilot", "custom"],
+          "enumDescriptions": [
+            "Use the GitHub Copilot Chat model selected via VS Code's Language Model API (requires the GitHub Copilot Chat extension, signed in).",
+            "Use a custom OpenAI/Claude-compatible HTTP endpoint (e.g. Ollama, LM Studio, Azure OpenAI, Anthropic-compatible proxy)."
+          ],
+          "default": "copilot",
+          "description": "AI provider used for AI-assisted features (e.g. XML documentation generation)."
+        },
+        "codeJanitor.ai.copilotModel": {
+          "type": "string",
+          "default": "",
+          "description": "Preferred Copilot model family/id (e.g. 'gpt-4o', 'claude-3.5-sonnet'). Leave empty to use the first available model."
+        },
+        "codeJanitor.ai.customEndpointUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Custom OpenAI/Claude-compatible chat completions endpoint URL, used when codeJanitor.ai.provider is 'custom'."
+        },
+        "codeJanitor.ai.customModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model name sent to the custom endpoint."
+        },
+        "codeJanitor.ai.customApiKeyHeader": {
+          "type": "string",
+          "default": "Authorization",
+          "description": "HTTP header name used to send the custom endpoint API key."
+        },
+        "codeJanitor.ai.customTimeoutSeconds": {
+          "type": "number",
+          "default": 30,
+          "description": "Timeout (seconds) for custom AI endpoint requests."
+        },
+        "codeJanitor.ai.customContextWindowTokens": {
+          "type": "number",
+          "default": 0,
+          "description": "Best-effort context window hint (sent as 'num_ctx') for local custom endpoints only (e.g. llama.cpp, LM Studio). 0 disables the hint."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "npm run build:engine && node esbuild.js --production",
+    "build:engine": "dotnet publish engine/CodeJanitor.Engine -c Release -o engine-dist --self-contained false",
+    "watch": "node esbuild.js --watch",
+    "compile": "tsc -p ./ --noEmit",
+    "package": "npm run build && npx vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0"
+  }
+}

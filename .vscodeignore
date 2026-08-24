@@ -1,0 +1,12 @@
+.vscode/**
+.vscode-test/**
+src/**
+out/**
+engine/**/bin/**
+engine/**/obj/**
+.gitignore
+.yarnrc
+esbuild.js
+tsconfig.json
+**/*.map
+**/.eslintrc.json

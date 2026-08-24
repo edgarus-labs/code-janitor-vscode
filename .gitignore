@@ -1,0 +1,9 @@
+out/
+dist/
+node_modules/
+*.vsix
+.vscode-test/
+
+engine/**/bin/
+engine/**/obj/
+engine-dist/
