@@ -94,7 +94,7 @@ the JSON response (per-file changed output) via `WorkspaceEdit` or direct file w
   `waitUntil`, gated by `codeJanitor.cleanup.onSave` (default `false`), never blocks save on
   engine failure.
 
-### Phase 3 - AI-assisted XML documentation — MVP DONE
+### Phase 3 - AI-assisted XML documentation — DONE
 
 - **Deliberate design deviation** from the source repo: `GitHubCopilotDetector.cs` scrapes
   Windows Credential Manager and VS-specific log files (Windows-only, VS-only). The VS Code port
@@ -109,8 +109,33 @@ the JSON response (per-file changed output) via `WorkspaceEdit` or direct file w
 - `src/ai/aiService.ts`: single entry point dispatching on `codeJanitor.ai.provider`
   (`"copilot"` default | `"custom"`). API key stored in VS Code `SecretStorage`, never in
   `settings.json`.
-- `src/commands/generateXmlDoc.ts`: **MVP heuristic** (line/brace-based signature detection), NOT
-  yet Roslyn-based like the source repo's `AiXmlDocumentationLogic.cs`. See backlog below.
+- **Roslyn-based member detection** (replaced the first iteration's line/brace heuristic):
+  `engine/CodeJanitor.Engine/Logic/Ai/XmlDocumentationGenerator.cs` ports the pure-Roslyn half of
+  `AiXmlDocumentationLogic.cs` - `CanDocumentMember`/`CanDocumentMethod` filters, the
+  MaxMethodsPerFile budget that only applies to AI candidates (methods/types) while deterministic
+  members (properties, fields, indexers, events) always pass, `BuildMethodPrompt`/`BuildTypePrompt`,
+  the system prompt, `DetectThrownExceptions`, `BuildXmlCommentBlock` +
+  `BuildParameterDescription`/`BuildReturnDescription`/`BuildPropertySummary`/`BuildFallbackSummary`,
+  and `SanitizeAiCompletion`/`NormalizeSentence`. Everything EnvDTE-, output-window- or
+  HTTP-client-related was left behind.
+- Engine CLI protocol extended with a `command` field (`"cleanup"` default): `"xmlDocPlan"`
+  returns the ordered documentation targets (index, kind, member name, line, `requiresAi`, prompt,
+  deterministic fallback summary) plus the shared system prompt; `"xmlDocApply"` takes summaries
+  keyed by target index and returns the fully rendered source. New
+  `Cleaning_AiXmlDocumentation*` fields on the `Settings` shim drive the filters.
+- `src/commands/generateXmlDoc.ts`: documents the whole active file (as the source extension
+  does). Plan -> one cancellable AI request per AI target (progress shows `kind memberName i/N`)
+  -> apply. Deterministic members never cost a request; failed/empty AI responses fall back to the
+  engine's deterministic summary when `codeJanitor.ai.xmlDoc.allowDeterministicFallback` is on;
+  the edit is abandoned if the document changed while the AI calls were in flight (target indices
+  refer to the planned parse).
+- New settings: `codeJanitor.ai.xmlDoc.maxMembersPerFile`, `.maxInputCharsPerMember`,
+  `.allowDeterministicFallback`, `.ignoreGeneratedCode`, `.ignoreObsolete`, `.ignoreTestMethods`,
+  `.ignorePattern`.
+- Tests: `engine/CodeJanitor.Engine.Tests/Ai/XmlDocumentationGeneratorTests.cs` ports the
+  Roslyn-facing tests from the source repo's `AiXmlDocumentationLogicTests` (the reflection
+  plumbing is dropped - the engine exposes the API directly) and adds coverage for the new
+  plan/apply round trip. **289/289 engine tests pass.**
 
 ### Phase 4 - Developer tooling & CI — DONE
 
@@ -125,13 +150,14 @@ the JSON response (per-file changed output) via `WorkspaceEdit` or direct file w
 1. **TS-side automated tests** - none yet. Would use `@vscode/test-electron` or
    `@vscode/test-cli` to run real extension-host integration tests (requires downloading a VS
    Code test instance). Bigger effort, not started.
-2. **`generateXmlDoc` upgrade** - replace the line/brace heuristic with a real round-trip to the
-   `.NET` engine for Roslyn-based member-boundary detection (matching
-   `AiXmlDocumentationLogic.cs`'s precision).
-3. **Marketplace packaging polish** - `CHANGELOG.md`, `CONTRIBUTING.md`, an icon, and a real
+2. **Marketplace packaging polish** - `CHANGELOG.md`, `CONTRIBUTING.md`, an icon, and a real
    `npx vsce package` dry run. Deferred until requested.
-4. **Settings UI** - currently plain `settings.json` entries only (no custom webview), which is
+3. **Settings UI** - currently plain `settings.json` entries only (no custom webview), which is
    intentional (native VS Code settings, unlike the source extension's custom WPF Options pages).
+4. **XML doc preview / run-during-cleanup** - the source extension can preview the diff before
+   applying (`Cleaning_AiXmlDocumentationPreviewChanges`) and run documentation as part of a
+   cleanup pass (`Cleaning_AiXmlDocumentationRunDuringCleanup`). Neither is ported; the VS Code
+   command is explicit and single-file.
 5. Anything Digging/Spade/reorganizing-related remains explicitly out of scope.
 
 ## Verified build/test commands
@@ -139,7 +165,7 @@ the JSON response (per-file changed output) via `WorkspaceEdit` or direct file w
 ```powershell
 # Engine
 cd engine\CodeJanitor.Engine.Tests
-dotnet test                      # 272/272 passing
+dotnet test                      # 289/289 passing
 
 # Engine packaging
 dotnet publish engine\CodeJanitor.Engine -c Release -o engine-dist --self-contained false

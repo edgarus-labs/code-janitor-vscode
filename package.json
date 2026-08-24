@@ -280,6 +280,41 @@
           "type": "number",
           "default": 0,
           "description": "Best-effort context window hint (sent as 'num_ctx') for local custom endpoints only (e.g. llama.cpp, LM Studio). 0 disables the hint."
+        },
+        "codeJanitor.ai.xmlDoc.maxMembersPerFile": {
+          "type": "number",
+          "default": 25,
+          "description": "Maximum number of members per file that may trigger an AI request when generating XML documentation. Properties, fields, indexers and events are documented deterministically and never count against this limit."
+        },
+        "codeJanitor.ai.xmlDoc.maxInputCharsPerMember": {
+          "type": "number",
+          "default": 2500,
+          "description": "Maximum number of characters of a member's body sent to the AI provider as prompt context."
+        },
+        "codeJanitor.ai.xmlDoc.allowDeterministicFallback": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fall back to a deterministic, name-derived summary when the AI request fails or returns nothing."
+        },
+        "codeJanitor.ai.xmlDoc.ignoreGeneratedCode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip members annotated with [GeneratedCode] or [CompilerGenerated]."
+        },
+        "codeJanitor.ai.xmlDoc.ignoreObsolete": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip members annotated with [Obsolete]."
+        },
+        "codeJanitor.ai.xmlDoc.ignoreTestMethods": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip test methods (test attributes) and types whose name ends with 'Test'/'Tests'."
+        },
+        "codeJanitor.ai.xmlDoc.ignorePattern": {
+          "type": "string",
+          "default": "",
+          "description": "Regular expression matched against 'Namespace.Type.Method'. Matching methods are skipped."
         }
       }
     }

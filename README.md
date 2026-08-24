@@ -8,12 +8,14 @@ This repository is the Visual Studio Code port of the [CodeJanitor](https://gith
 
 - `engine/CodeJanitor.Engine` - a small .NET 8 console app containing the ported, pure
   `ISourceTransformation` Roslyn converters (no EnvDTE, no Visual Studio dependency; the same
-  files as the VS extension's `CodeJanitorShared/Logic/Transformations`). It communicates with
-  the extension over a single JSON request/response on stdin/stdout.
+  files as the VS extension's `CodeJanitorShared/Logic/Transformations`) plus the ported Roslyn
+  XML documentation planner/renderer. It communicates with the extension over a single JSON
+  request/response on stdin/stdout.
 - `src/` - the VS Code extension (TypeScript). Talks to the engine as a child process, exposes
   commands (`CodeJanitor: Cleanup Active File`, `...Selected Files`, `...Workspace`), contributes
-  settings mirroring the original `Cleaning_*` options, and implements AI-assisted XML doc
-  generation.
+  settings mirroring the original `Cleaning_*` options, and drives AI-assisted XML doc
+  generation: the engine plans which members need documentation and builds each prompt, the
+  extension runs the AI request, and the engine renders and inserts the comment blocks.
 
 ## Status
 
@@ -24,7 +26,8 @@ Work in progress, implemented in phases:
    C# cleanup transform set.
 3. **Phase 2** - VS Code commands, settings, format-on-save integration.
 4. **Phase 3** - AI-assisted XML documentation (Copilot detection via the Language Model API,
-   plus a configurable custom OpenAI/Claude-compatible endpoint).
+   plus a configurable custom OpenAI/Claude-compatible endpoint), with Roslyn-based member
+   selection and comment rendering ported from the source extension.
 
 ## License
 

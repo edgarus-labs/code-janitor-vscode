@@ -93,3 +93,20 @@ export function buildEngineSettings(): Record<string, boolean | number | string 
 export function getDotnetPath(): string {
   return vscode.workspace.getConfiguration('codeJanitor').get<string>('engine.dotnetPath', 'dotnet');
 }
+
+/**
+ * Maps the `codeJanitor.ai.xmlDoc.*` settings onto the engine's `Cleaning_AiXmlDocumentation*`
+ * fields, which drive which members the Roslyn planner selects for documentation.
+ */
+export function buildXmlDocEngineSettings(): Record<string, boolean | number | string | null> {
+  const cfg = vscode.workspace.getConfiguration('codeJanitor');
+
+  return {
+    Cleaning_AiXmlDocumentationMaxMethodsPerFile: cfg.get<number>('ai.xmlDoc.maxMembersPerFile', 25),
+    Cleaning_AiXmlDocumentationMaxInputCharsPerMethod: cfg.get<number>('ai.xmlDoc.maxInputCharsPerMember', 2500),
+    Cleaning_AiXmlDocumentationIgnoreGeneratedCode: cfg.get<boolean>('ai.xmlDoc.ignoreGeneratedCode', true),
+    Cleaning_AiXmlDocumentationIgnoreObsolete: cfg.get<boolean>('ai.xmlDoc.ignoreObsolete', true),
+    Cleaning_AiXmlDocumentationIgnoreTestMethods: cfg.get<boolean>('ai.xmlDoc.ignoreTestMethods', true),
+    Cleaning_AiXmlDocumentationIgnorePattern: cfg.get<string>('ai.xmlDoc.ignorePattern', ''),
+  };
+}

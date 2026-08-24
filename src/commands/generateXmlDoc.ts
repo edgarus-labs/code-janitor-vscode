@@ -1,111 +1,159 @@
 import * as vscode from 'vscode';
 import { getAiChatCompletion } from '../ai/aiService';
-
-const MAX_SIGNATURE_LINES = 10;
-const MAX_BODY_PREVIEW_LINES = 60;
+import { EngineFileResult, XmlDocTarget, resolveEngineDll, runEngine } from '../engine/client';
+import { buildXmlDocEngineSettings, getDotnetPath } from '../engine/settings';
 
 /**
- * MVP AI XML-doc command: user places the cursor on a member's signature line (class/method/
- * property/etc.), the command gathers the signature (and a short body preview for context),
- * asks the configured AI provider for a `///` doc comment, and inserts it above the member.
- * Unlike the Visual Studio extension's Roslyn-based AiXmlDocumentationLogic, member boundaries
- * here are found heuristically (line/brace based) rather than via a full syntax tree - a
- * pragmatic MVP scope for the first VS Code port iteration.
+ * AI XML-doc command. The .NET engine performs the same Roslyn analysis as the Visual Studio
+ * extension's AiXmlDocumentationLogic: it decides which members lack documentation, builds the
+ * prompt for each one, and renders/inserts the resulting comment block (including the
+ * deterministic param/returns/exception tags). This command only sits in the middle - it runs the
+ * AI request per planned member and hands the summaries back to the engine by index.
  */
 export function registerGenerateXmlDocCommand(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codeJanitor.generateXmlDoc', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor || editor.document.languageId !== 'csharp') {
-        void vscode.window.showInformationMessage('CodeJanitor: place the cursor in a C# file on the member you want documented.');
+        void vscode.window.showInformationMessage('CodeJanitor: open a C# file to generate XML documentation.');
 
         return;
       }
 
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'CodeJanitor: generating XML documentation...' },
-        async () => {
-          try {
-            await generateXmlDocAtCursor(context, editor);
-          } catch (err) {
-            void vscode.window.showErrorMessage(`CodeJanitor: ${(err as Error).message}`);
-          }
-        }
-      );
+      try {
+        await generateXmlDocForDocument(context, editor);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`CodeJanitor: ${(err as Error).message}`);
+      }
     })
   );
 }
 
-async function generateXmlDocAtCursor(context: vscode.ExtensionContext, editor: vscode.TextEditor): Promise<void> {
+async function generateXmlDocForDocument(context: vscode.ExtensionContext, editor: vscode.TextEditor): Promise<void> {
   const document = editor.document;
-  const startLine = editor.selection.active.line;
+  const engineDll = resolveEngineDll(context.extensionUri);
+  const dotnetPath = getDotnetPath();
+  const settings = buildXmlDocEngineSettings();
+  const content = document.getText();
+  const versionBeforeRun = document.version;
 
-  const { signature, indentation } = collectSignature(document, startLine);
-  if (!signature.trim()) {
-    void vscode.window.showInformationMessage('CodeJanitor: could not find a member signature at the cursor.');
-
-    return;
-  }
-
-  const bodyPreview = collectBodyPreview(document, startLine);
-
-  const systemPrompt =
-    'You are a C# documentation assistant. Given a member signature (and optional body preview), ' +
-    'produce a triple-slash XML documentation comment for it. Output ONLY the comment lines, each ' +
-    'starting with "///", no markdown code fences, no explanations, no leading/trailing blank lines.';
-
-  const userPrompt = `Member signature:\n${signature}\n\nBody preview (may be truncated):\n${bodyPreview}`;
-
-  const raw = await getAiChatCompletion(context, systemPrompt, userPrompt);
-  const commentLines = formatAsXmlDocComment(raw, indentation);
-
-  if (commentLines.length === 0) {
-    void vscode.window.showWarningMessage('CodeJanitor: the AI response did not contain any documentation lines.');
-
-    return;
-  }
-
-  const insertPosition = new vscode.Position(startLine, 0);
-  await editor.edit((editBuilder) => {
-    editBuilder.insert(insertPosition, commentLines.join('\n') + '\n');
+  const plan = await runEngine(dotnetPath, engineDll, {
+    command: 'xmlDocPlan',
+    settings,
+    files: [{ path: document.uri.fsPath, content }],
   });
+
+  const planResult = plan.results[0];
+  throwOnResultError(planResult);
+
+  const targets = planResult.targets ?? [];
+  if (targets.length === 0) {
+    void vscode.window.showInformationMessage('CodeJanitor: no undocumented members found in this file.');
+
+    return;
+  }
+
+  const aiTargets = targets.filter((t) => t.requiresAi);
+  const summaries = await collectSummaries(context, aiTargets, plan.systemPrompt ?? '');
+  if (summaries === undefined) {
+    return;
+  }
+
+  if (document.version !== versionBeforeRun) {
+    void vscode.window.showWarningMessage('CodeJanitor: the file changed while documentation was being generated - nothing was inserted.');
+
+    return;
+  }
+
+  const apply = await runEngine(dotnetPath, engineDll, {
+    command: 'xmlDocApply',
+    settings,
+    files: [{ path: document.uri.fsPath, content, summaries }],
+  });
+
+  const applyResult = apply.results[0];
+  throwOnResultError(applyResult);
+
+  if (!applyResult.changed) {
+    void vscode.window.showInformationMessage('CodeJanitor: no documentation was generated.');
+
+    return;
+  }
+
+  const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(content.length));
+  const applied = await editor.edit((editBuilder) => editBuilder.replace(fullRange, applyResult.output));
+
+  if (applied) {
+    const deterministic = targets.length - aiTargets.length;
+    void vscode.window.showInformationMessage(
+      `CodeJanitor: documented ${targets.length} member(s) - ${aiTargets.length} via AI, ${deterministic} deterministic.`
+    );
+  }
 }
 
-function collectSignature(document: vscode.TextDocument, startLine: number): { signature: string; indentation: string } {
-  const firstLineText = document.lineAt(startLine).text;
-  const indentation = firstLineText.match(/^[ \t]*/)?.[0] ?? '';
+/**
+ * Runs one AI request per planned member. Returns `undefined` when the user cancelled, so the
+ * caller can abort without touching the document.
+ */
+async function collectSummaries(
+  context: vscode.ExtensionContext,
+  aiTargets: XmlDocTarget[],
+  systemPrompt: string
+): Promise<Record<number, string> | undefined> {
+  if (aiTargets.length === 0) {
+    return {};
+  }
 
-  const lines: string[] = [];
-  for (let i = startLine; i < Math.min(document.lineCount, startLine + MAX_SIGNATURE_LINES); i++) {
-    const text = document.lineAt(i).text;
-    lines.push(text);
+  const allowFallback = vscode.workspace
+    .getConfiguration('codeJanitor')
+    .get<boolean>('ai.xmlDoc.allowDeterministicFallback', true);
 
-    if (text.includes('{') || text.trimEnd().endsWith(';')) {
-      break;
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'CodeJanitor: generating XML documentation',
+      cancellable: true,
+    },
+    async (progress, token) => {
+      const summaries: Record<number, string> = {};
+
+      for (let i = 0; i < aiTargets.length; i++) {
+        if (token.isCancellationRequested) {
+          return undefined;
+        }
+
+        const target = aiTargets[i];
+        progress.report({
+          message: `${target.kind} ${target.memberName} (${i + 1}/${aiTargets.length})`,
+          increment: 100 / aiTargets.length,
+        });
+
+        try {
+          const completion = await getAiChatCompletion(context, systemPrompt, target.prompt ?? '');
+          if (completion.trim()) {
+            summaries[target.index] = completion;
+            continue;
+          }
+        } catch {
+          // Fall through to the deterministic summary below.
+        }
+
+        if (allowFallback) {
+          summaries[target.index] = target.fallbackSummary;
+        }
+      }
+
+      return summaries;
     }
-  }
-
-  return { signature: lines.join('\n'), indentation };
+  );
 }
 
-function collectBodyPreview(document: vscode.TextDocument, startLine: number): string {
-  const endLine = Math.min(document.lineCount, startLine + MAX_SIGNATURE_LINES + MAX_BODY_PREVIEW_LINES);
-  const lines: string[] = [];
-
-  for (let i = startLine; i < endLine; i++) {
-    lines.push(document.lineAt(i).text);
+function throwOnResultError(result: EngineFileResult | undefined): asserts result is EngineFileResult {
+  if (!result) {
+    throw new Error('the cleanup engine returned no result.');
   }
 
-  return lines.join('\n');
-}
-
-function formatAsXmlDocComment(raw: string, indentation: string): string[] {
-  const withoutFences = raw.replace(/```[a-zA-Z]*\n?/g, '').trim();
-
-  return withoutFences
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => (line.startsWith('///') ? line : `/// ${line}`))
-    .map((line) => `${indentation}${line}`);
+  if (result.error) {
+    throw new Error(result.error);
+  }
 }

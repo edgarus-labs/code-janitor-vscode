@@ -1,4 +1,5 @@
 using CodeJanitor.Helpers;
+using CodeJanitor.Logic.Ai;
 using CodeJanitor.Logic.Cleaning;
 using CodeJanitor.Logic.Transformations;
 using CodeJanitor.Properties;
@@ -46,9 +47,15 @@ internal static class Program
             ApplySettingsOverrides(request.Settings);
 
             var response = new EngineResponse { Results = new List<EngineFileResult>() };
+            if (string.Equals(request.Command, "xmlDocPlan", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(request.Command, "xmlDocApply", StringComparison.OrdinalIgnoreCase))
+            {
+                response.SystemPrompt = XmlDocumentationGenerator.SystemPrompt;
+            }
+
             foreach (var file in request.Files ?? new List<EngineFile>())
             {
-                response.Results.Add(RunOne(file));
+                response.Results.Add(RunOne(request.Command, file));
             }
 
             Console.Out.Write(JsonSerializer.Serialize(response, JsonOptions));
@@ -64,11 +71,26 @@ internal static class Program
         }
     }
 
-    private static EngineFileResult RunOne(EngineFile file)
+    private static EngineFileResult RunOne(string command, EngineFile file)
     {
         try
         {
-            var output = ApplyHeadlessCSharpTransformations(file.Content ?? string.Empty, file.Path ?? string.Empty);
+            var content = file.Content ?? string.Empty;
+
+            if (string.Equals(command, "xmlDocPlan", StringComparison.OrdinalIgnoreCase))
+            {
+                return new EngineFileResult
+                {
+                    Path = file.Path,
+                    Output = content,
+                    Changed = false,
+                    Targets = XmlDocumentationGenerator.PlanTargets(content, XmlDocRunOptions.FromSettings()),
+                };
+            }
+
+            var output = string.Equals(command, "xmlDocApply", StringComparison.OrdinalIgnoreCase)
+                ? XmlDocumentationGenerator.ApplySummaries(content, XmlDocRunOptions.FromSettings(), file.Summaries)
+                : ApplyHeadlessCSharpTransformations(content, file.Path ?? string.Empty);
 
             return new EngineFileResult
             {
@@ -355,6 +377,11 @@ internal static class Program
 
 internal sealed class EngineRequest
 {
+    /// <summary>
+    /// "cleanup" (default), "xmlDocPlan" or "xmlDocApply".
+    /// </summary>
+    public string Command { get; set; }
+
     public Dictionary<string, JsonElement> Settings { get; set; }
 
     public List<EngineFile> Files { get; set; }
@@ -365,11 +392,18 @@ internal sealed class EngineFile
     public string Path { get; set; }
 
     public string Content { get; set; }
+
+    /// <summary>
+    /// Summaries keyed by the target index returned from a preceding "xmlDocPlan" call.
+    /// </summary>
+    public Dictionary<int, string> Summaries { get; set; }
 }
 
 internal sealed class EngineResponse
 {
     public List<EngineFileResult> Results { get; set; }
+
+    public string SystemPrompt { get; set; }
 }
 
 internal sealed class EngineFileResult
@@ -381,4 +415,6 @@ internal sealed class EngineFileResult
     public bool Changed { get; set; }
 
     public string Error { get; set; }
+
+    public IReadOnlyList<XmlDocTarget> Targets { get; set; }
 }

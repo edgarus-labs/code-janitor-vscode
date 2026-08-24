@@ -31,7 +31,7 @@ export async function runCleanupOnUris(context: vscode.ExtensionContext, uris: v
 
   let results: EngineFileResult[];
   try {
-    results = await runEngine(dotnetPath, engineDll, { settings, files });
+    results = (await runEngine(dotnetPath, engineDll, { command: 'cleanup', settings, files })).results;
   } catch (err) {
     void vscode.window.showErrorMessage(`CodeJanitor: cleanup engine failed - ${(err as Error).message}`);
 

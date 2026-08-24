@@ -31,10 +31,13 @@ async function computeCleanupEdits(context: vscode.ExtensionContext, document: v
   const content = document.getText();
 
   try {
-    const [result] = await runEngine(dotnetPath, engineDll, {
+    const { results } = await runEngine(dotnetPath, engineDll, {
+      command: 'cleanup',
       settings,
       files: [{ path: document.uri.fsPath, content }],
     });
+
+    const [result] = results;
 
     if (!result || result.error || !result.changed) {
       return [];

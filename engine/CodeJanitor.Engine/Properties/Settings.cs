@@ -94,4 +94,13 @@ public sealed class Settings
     public string Cleaning_UpdateFileHeaderCSharp = string.Empty;
     public int Cleaning_UpdateFileHeader_HeaderPosition = 0;
     public int Cleaning_UpdateFileHeader_HeaderUpdateMode = 0;
+
+    // AI XML documentation - only the filtering/budgeting settings apply here; everything that
+    // configured the Visual Studio extension's own HTTP client lives on the VS Code side instead.
+    public int Cleaning_AiXmlDocumentationMaxMethodsPerFile = 25;
+    public int Cleaning_AiXmlDocumentationMaxInputCharsPerMethod = 2500;
+    public bool Cleaning_AiXmlDocumentationIgnoreGeneratedCode = true;
+    public bool Cleaning_AiXmlDocumentationIgnoreObsolete = true;
+    public bool Cleaning_AiXmlDocumentationIgnoreTestMethods = true;
+    public string Cleaning_AiXmlDocumentationIgnorePattern = string.Empty;
 }

@@ -3,9 +3,21 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
+export interface XmlDocTarget {
+  index: number;
+  kind: string;
+  memberName: string;
+  line: number;
+  requiresAi: boolean;
+  prompt?: string;
+  fallbackSummary: string;
+}
+
 export interface EngineFile {
   path: string;
   content: string;
+  /** Summaries keyed by the target index returned from a preceding 'xmlDocPlan' call. */
+  summaries?: Record<number, string>;
 }
 
 export interface EngineFileResult {
@@ -13,15 +25,21 @@ export interface EngineFileResult {
   output: string;
   changed: boolean;
   error?: string;
+  targets?: XmlDocTarget[];
 }
 
+export type EngineCommand = 'cleanup' | 'xmlDocPlan' | 'xmlDocApply';
+
 export interface EngineRequest {
+  command?: EngineCommand;
   settings: Record<string, boolean | number | string | null>;
   files: EngineFile[];
 }
 
-interface EngineResponse {
+export interface EngineResponse {
   results: EngineFileResult[];
+  /** Only present for the xmlDoc commands: the system prompt ported from the source extension. */
+  systemPrompt?: string;
 }
 
 /**
@@ -53,7 +71,7 @@ export function resolveEngineDll(extensionUri: vscode.Uri): string {
  * Runs the CodeJanitor.Engine CLI once for the given request and returns its parsed response.
  * The whole request/response is passed as a single JSON document over stdin/stdout.
  */
-export function runEngine(dotnetPath: string, engineDll: string, request: EngineRequest): Promise<EngineFileResult[]> {
+export function runEngine(dotnetPath: string, engineDll: string, request: EngineRequest): Promise<EngineResponse> {
   return new Promise((resolve, reject) => {
     const child = cp.spawn(dotnetPath, [engineDll], { windowsHide: true });
 
@@ -83,7 +101,7 @@ export function runEngine(dotnetPath: string, engineDll: string, request: Engine
 
       try {
         const parsed = JSON.parse(stdout) as EngineResponse;
-        resolve(parsed.results ?? []);
+        resolve({ results: parsed.results ?? [], systemPrompt: parsed.systemPrompt });
       } catch (err) {
         reject(new Error(`Failed to parse CodeJanitor engine response: ${(err as Error).message}\n${stdout}`));
       }
