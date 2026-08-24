@@ -1,41 +1,111 @@
-# CodeJanitor
+# CodeJanitor for Visual Studio Code
 
-CodeJanitor is an open source Visual Studio extension to cleanup and simplify our C#, C++, F#, VB, PHP, PowerShell, R, JSON, XAML, XML, ASP, HTML, CSS, LESS, SCSS, JavaScript and TypeScript coding.
+[![Build](https://github.com/edgarus-labs/code-janitor-vscode/actions/workflows/ci.yml/badge.svg?branch=develop&label=build)](https://github.com/edgarus-labs/code-janitor-vscode/actions/workflows/ci.yml)
+[![Tests](https://github.com/edgarus-labs/code-janitor-vscode/actions/workflows/ci.yml/badge.svg?branch=develop&label=tests)](https://github.com/edgarus-labs/code-janitor-vscode/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/edgarus-labs/code-janitor-vscode/branch/develop/graph/badge.svg)](https://codecov.io/gh/edgarus-labs/code-janitor-vscode)
+[![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE.txt)
 
-This repository is the Visual Studio Code port of the [CodeJanitor](https://github.com/) Visual Studio extension. Every cleanup rule of the original Roslyn engine was reimplemented natively in TypeScript, so the extension is pure JavaScript at runtime: no .NET, no C#, no native binaries, and the same artifact runs unchanged on Windows, Linux and macOS, on x86-64 and arm64. It also adds AI-assisted XML documentation with both GitHub Copilot (via the VS Code Language Model API) and custom OpenAI/Claude-compatible endpoints.
+CodeJanitor is a cross-platform Visual Studio Code extension for cleaning, modernizing and documenting C# code. Its cleanup engine is implemented natively in TypeScript and uses WebAssembly-based C# parsing, so the packaged extension requires no .NET runtime or native binaries.
 
-## Architecture
+This project is a Visual Studio Code port of the original CodeJanitor Visual Studio extension. Layout-only cleanup can also be enabled for other text-based file types.
 
-- `src/cleanup/` - the cleanup engine. `pipeline.ts` runs an ordered list of transformations, each
-  of which takes C# source and returns C# source. Layout rules (BOM, blank lines, trailing
-  whitespace, tabs, regions, file headers) work on text with the help of `csharpScanner.ts`, a C#
-  lexer that tells layout whitespace apart from whitespace inside a literal or a comment. Rules
-  that need syntax use `parser.ts`, which loads [tree-sitter](https://tree-sitter.github.io) and
-  the C# grammar as WebAssembly and expresses every change as a text edit over the original
-  source, so surrounding formatting is preserved exactly.
-- `src/commands/` - the VS Code integration: commands (`CodeJanitor: Cleanup Active File`,
-  `...Selected Files`, `...Workspace`), settings mapping, cleanup-on-save, and the AI XML
-  documentation command.
-- `src/ai/` - AI provider clients: GitHub Copilot through the Language Model API, or a custom
-  OpenAI/Claude-compatible HTTP endpoint.
-- `test/` - vitest suites covering every transformation, ported from the original test suite.
+## Highlights
+
+- 27 C# cleanup and modernization transformations.
+- Cleanup for the active file, selected files, open files, Git-changed files or an entire workspace.
+- Optional cleanup on save.
+- Standalone editor actions for namespaces, regions, comments, XML documentation and line sorting.
+- AI-assisted XML documentation, explanations, reviews, refactoring and unit-test generation.
+- GitHub Copilot support through the VS Code Language Model API.
+- Custom OpenAI- and Anthropic-compatible endpoints, including local services such as LM Studio and Ollama.
+- Native TypeScript runtime with WebAssembly parsing on Windows, Linux and macOS.
+- 340 Vitest tests and CI validation on all three supported operating systems.
+
+## Getting started
+
+The extension is not yet published to the Visual Studio Marketplace. To run it from source:
+
+1. Install Node.js 20 or newer and Visual Studio Code 1.90 or newer.
+2. Clone the repository and install dependencies:
+
+```bash
+git clone https://github.com/edgarus-labs/code-janitor-vscode.git
+cd code-janitor-vscode
+npm ci
+```
+
+3. Open the folder in Visual Studio Code and press `F5` to start an Extension Development Host.
+4. Open a C# file and run a `CodeJanitor:` command from the Command Palette.
+
+For a production bundle, run:
+
+```bash
+npm run build
+```
 
 ## Commands
 
-**Cleanup** - active file, selected files (explorer), open files, files changed in Git, whole
-workspace, and a toggle for cleanup on save.
+### Cleanup
 
-**Editor actions** - fix namespace, remove regions, format comments, remove XML documentation,
-join lines, sort lines.
+- `CodeJanitor: Cleanup Active File`
+- `CodeJanitor: Cleanup Selected Files`
+- `CodeJanitor: Cleanup Open Files`
+- `CodeJanitor: Cleanup Changed Files (Git)`
+- `CodeJanitor: Cleanup Workspace`
+- `CodeJanitor: Toggle Cleanup on Save`
 
-**AI** - generate XML documentation, explain code, review code, clean and refactor, generate unit
-tests. All of them run through GitHub Copilot or a custom OpenAI/Claude-compatible endpoint.
+### Editor actions
 
-## Status
+- Fix namespace
+- Remove regions
+- Format comments
+- Remove XML documentation
+- Join lines
+- Sort lines
 
-The cleanup engine, the VS Code integration and the AI features are implemented. See
-[PLAN.md](PLAN.md) for the detailed porting history and the remaining backlog.
+### AI actions
+
+- Generate XML documentation
+- Explain code
+- Review code
+- Clean and refactor
+- Generate unit tests
+- Test the configured AI connection
+
+AI features use GitHub Copilot by default. A custom endpoint and model can be selected under `codeJanitor.ai.*`. API keys are stored in VS Code SecretStorage rather than `settings.json`.
+
+## Configuration
+
+All settings are available under `CodeJanitor` in the standard Visual Studio Code Settings UI. Potentially opinionated transformations such as file-scoped namespaces, collection expressions, readonly fields and sealed classes are individually configurable. Cleanup on save and cleanup of non-C# files are disabled by default.
+
+Review changes before accepting them, especially when enabling multiple modernization rules on an existing codebase. AI refactoring uses a preview/apply flow; other AI commands do not silently modify files.
+
+## Architecture
+
+- `src/cleanup/` — cleanup pipeline, C# scanner, WebAssembly parser, transformations and XML documentation planning.
+- `src/commands/` — Visual Studio Code commands, settings mapping, Git integration and cleanup-on-save.
+- `src/ai/` — GitHub Copilot and custom endpoint clients.
+- `test/` — Vitest suites covering the cleanup engine and transformations.
+- `esbuild.js` — production bundle and WebAssembly asset packaging.
+
+The parser is initialized once when the extension activates. Transformations are applied as text edits over the original source so surrounding formatting can be preserved.
+
+See [PLAN.md](PLAN.md) for the porting history, design decisions and remaining backlog.
+
+## Development
+
+```bash
+npm ci
+npm run compile
+npm test
+npm run test:coverage
+npm run build
+npm run verify:bundle
+```
+
+Pull requests target the `develop` branch. CI runs type checking, tests, bundling and bundle verification on Ubuntu, Windows and macOS. Coverage is collected on Ubuntu and uploaded to Codecov.
 
 ## License
 
-LGPL-3.0, same as the source Visual Studio extension - see [LICENSE.txt](LICENSE.txt).
+Licensed under LGPL-3.0-only. See [LICENSE.txt](LICENSE.txt).
+

@@ -467,12 +467,14 @@
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "verify:bundle": "node scripts/verify-bundle.js",
     "package": "npm run build && npx vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "esbuild": "^0.23.0",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.5.0",
