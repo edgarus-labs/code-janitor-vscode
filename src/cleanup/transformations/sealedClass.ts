@@ -69,7 +69,8 @@ function isTopLevel(declaration: Node): boolean {
     return false;
   }
 
-  if (parent.type === 'compilation_unit') {
+  // A file-scoped namespace holds its members directly; a block-scoped one wraps them in a body.
+  if (parent.type === 'compilation_unit' || NAMESPACE_TYPES.has(parent.type)) {
     return true;
   }
 

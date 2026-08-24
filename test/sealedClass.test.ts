@@ -85,6 +85,10 @@ describe('sealedClassConverter', () => {
     );
   });
 
+  it('seals a class declared inside a file-scoped namespace', () => {
+    expect(apply('namespace N;\n\ninternal class Foo { }\n')).toBe('namespace N;\n\ninternal sealed class Foo { }\n');
+  });
+
   it('handles an empty source', () => {
     expect(apply('')).toBe('');
   });
