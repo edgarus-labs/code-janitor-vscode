@@ -21,24 +21,41 @@ Name and description are kept identical to the source extension, per explicit us
 
 ## Architecture
 
+**Hard requirement (user decision):** the shipped extension must be pure TypeScript/JavaScript.
+No .NET, no C#, no native binaries - it has to run unchanged on Windows, Linux and macOS, on
+both x86-64 and arm64. The first iteration shelled out to a .NET 8 engine; that engine is being
+replaced by a native TypeScript implementation and will be deleted once the port is complete.
+
 ```
 codejanitor-vscode/
-  engine/
-    CodeJanitor.Engine/         .NET 8 console app - the cleanup engine
-    CodeJanitor.Engine.Tests/   MSTest project, ported 1:1 from the source repo's test suite
   src/
+    cleanup/
+      types.ts                  Transformation contract + cleanup settings
+      pipeline.ts               Ordered transformation runner
+      csharpScanner.ts          C# lexer: code vs. comment vs. literal spans
+      editorconfig.ts           Native .editorconfig reader
+      parser.ts                 web-tree-sitter runtime + C# grammar (WASM), edit helpers
+      transformations/          The ported converters
     ai/                         AI provider clients (Copilot LM API + custom OpenAI/Claude endpoint)
     commands/                   VS Code commands (cleanup, AI, format-on-save)
-    engine/                     Talks to the .NET engine as a child process (JSON over stdio)
     extension.ts                Activation entry point
-  engine-dist/                  Published engine output (generated, ships inside the .vsix)
-  .github/workflows/ci.yml      CI: engine tests + extension typecheck/bundle
-  .vscode/                      F5 debug config + build/test tasks
+  test/                         vitest suites, ported from the C# test suite
+  engine/                       .NET reference implementation - TEMPORARY, to be deleted
 ```
 
-The VS Code extension never re-implements Roslyn logic in TypeScript. It spawns the `.NET`
-engine as a subprocess, sends a single JSON request (settings + files) over stdin, and applies
-the JSON response (per-file changed output) via `WorkspaceEdit` or direct file writes.
+### Why tree-sitter
+
+Roslyn has no JavaScript equivalent, and no maintained pure-JS C# parser exists
+(`@fluffy-spoon/csharp-parser` was abandoned in 2020). `web-tree-sitter` plus the prebuilt
+`tree-sitter-c_sharp.wasm` grammar is WebAssembly, so a single artifact is byte-identical on
+every OS/CPU combination - no per-platform builds, no compilation on install. Transformations
+that only touch layout (whitespace, blank lines, tabs, BOM, regions) do not need the parser at
+all; they use the lexical scanner, which distinguishes layout whitespace from whitespace that
+belongs to a literal or a comment (the role `SyntaxKind.WhitespaceTrivia` played in Roslyn).
+
+Transformations are expressed as text edits over the original source rather than as tree
+rewrites, because tree-sitter has no trivia model and no code printer - editing spans preserves
+the surrounding formatting exactly.
 
 ## Phases
 
@@ -144,6 +161,36 @@ the JSON response (per-file changed output) via `WorkspaceEdit` or direct file w
 - `esbuild.js`: added a watch-log plugin so the `$esbuild-watch` problem matcher works.
 - `.github/workflows/ci.yml`: two jobs on push/PR to `develop`/`main` - `engine` (`dotnet
   restore/build/test`) and `extension` (`npm ci`, typecheck, bundle).
+
+### Phase 5 - Native TypeScript rewrite of the cleanup engine — IN PROGRESS
+
+Every item is validated by vitest tests ported from the corresponding C# test class. Current
+status: **128 tests passing**.
+
+Done:
+
+- Infrastructure: `SourceTransformation` contract, pipeline, cleanup settings + defaults,
+  `.editorconfig` reader, C# lexical scanner, tree-sitter runtime loader and text-edit helpers.
+- Layout transformations (no parser): BOM removal, final newline, blank-line normalization,
+  region removal, `#endregion` naming, trailing whitespace, tabs to spaces, comment formatting,
+  file header (insert/replace, document start/after usings), and the five blank-line regex
+  transforms.
+- Syntax transformations (tree-sitter): var-when-apparent, null-check pattern matching,
+  return/throw blank-line padding, namespace fixer, `nameof(...)` conversion, `out var` inlining,
+  sealed classes.
+
+Remaining converters to port:
+
+- `MoveUsingsOutsideNamespaceConverter`, `UsingDirectiveOrganizer`, `FileScopedNamespaceConverter`
+- `SingleStatementLambdaConverter`, `JsonSerializerOptionsReuseConverter`,
+  `CollectionExpressionConverter`, `StringInterpolationConverter`
+- `UpdateSingleLineMethodsConverter`, `UpdateAccessorsToBothBeSingleLineOrMultiLineConverter`
+- `ReadonlyFieldConverter`, `BlankLinePaddingConverter`, `ExplicitAccessModifierConverter`
+- `XmlDocumentationGenerator` (member planning, prompts and comment rendering)
+
+Then: rewire `cleanupCore` / `formatOnSave` / `generateXmlDoc` to call the in-process pipeline
+instead of spawning a child process, copy the two `.wasm` files into `dist/` at build time,
+delete `engine/`, `engine-dist/` and the `build:engine` script, and drop the .NET job from CI.
 
 ## Backlog / next steps
 
