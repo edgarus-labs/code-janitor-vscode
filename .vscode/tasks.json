@@ -23,21 +23,10 @@
       }
     },
     {
-      "type": "shell",
-      "label": "build:engine",
-      "command": "dotnet",
-      "args": ["publish", "engine/CodeJanitor.Engine", "-c", "Release", "-o", "engine-dist", "--self-contained", "false"],
-      "problemMatcher": "$msCompile",
-      "presentation": {
-        "reveal": "silent"
-      }
-    },
-    {
-      "type": "shell",
-      "label": "test:engine",
-      "command": "dotnet",
-      "args": ["test", "engine/CodeJanitor.Engine.Tests"],
-      "problemMatcher": "$msCompile",
+      "type": "npm",
+      "script": "test",
+      "label": "npm: test",
+      "problemMatcher": [],
       "presentation": {
         "reveal": "always"
       }

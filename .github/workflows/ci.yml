@@ -7,24 +7,12 @@ on:
     branches: [develop, main]
 
 jobs:
-  engine:
-    name: Engine (.NET)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - name: Restore
-        run: dotnet restore engine/CodeJanitor.Engine.Tests
-      - name: Build
-        run: dotnet build engine/CodeJanitor.Engine.Tests --no-restore
-      - name: Test
-        run: dotnet test engine/CodeJanitor.Engine.Tests --no-build
-
   extension:
     name: Extension (TypeScript)
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,5 +22,9 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run compile
+      - name: Test
+        run: npm test
       - name: Bundle
         run: node esbuild.js --production
+      - name: Verify bundle
+        run: npm run verify:bundle

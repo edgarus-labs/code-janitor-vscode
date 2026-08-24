@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { EngineFile, EngineFileResult, resolveEngineDll, runEngine } from '../engine/client';
-import { buildEngineSettings, getDotnetPath } from '../engine/settings';
+import { runCleanup } from '../cleanup/runCleanup';
+import { readCleanupSettings } from './settings';
 
 interface CollectedFile {
   uri: vscode.Uri;
@@ -8,13 +8,23 @@ interface CollectedFile {
   isOpen: boolean;
 }
 
+interface CleanupResult {
+  uri: vscode.Uri;
+  output: string;
+  changed: boolean;
+  isOpen: boolean;
+  error?: string;
+}
+
 /**
- * Reads the given C# file URIs (preferring the live editor buffer when a file is already open,
- * so unsaved changes are cleaned too), runs the engine once for the whole batch, and applies
- * each changed result back - through a WorkspaceEdit for open documents, or a direct file write
- * for files that are not currently open in an editor.
+ * Reads the given C# file URIs (preferring the live editor buffer when a file is already open, so
+ * unsaved changes are cleaned too), runs the cleanup pipeline in-process, and applies each changed
+ * result back - through a WorkspaceEdit for open documents, or a direct file write otherwise.
  */
-export async function runCleanupOnUris(context: vscode.ExtensionContext, uris: vscode.Uri[]): Promise<{ changed: number; failed: number }> {
+export async function runCleanupOnUris(
+  _context: vscode.ExtensionContext,
+  uris: vscode.Uri[]
+): Promise<{ changed: number; failed: number }> {
   const csharpUris = uris.filter((u) => u.fsPath.toLowerCase().endsWith('.cs'));
   if (csharpUris.length === 0) {
     void vscode.window.showInformationMessage('CodeJanitor: no C# files to clean up.');
@@ -23,22 +33,19 @@ export async function runCleanupOnUris(context: vscode.ExtensionContext, uris: v
   }
 
   const collected = await collectFiles(csharpUris);
-  const engineDll = resolveEngineDll(context.extensionUri);
-  const dotnetPath = getDotnetPath();
-  const settings = buildEngineSettings();
+  const settings = readCleanupSettings();
 
-  const files: EngineFile[] = collected.map((f) => ({ path: f.uri.fsPath, content: f.content }));
+  const results: CleanupResult[] = collected.map((file) => {
+    try {
+      const output = runCleanup(file.content, file.uri.fsPath, settings);
 
-  let results: EngineFileResult[];
-  try {
-    results = (await runEngine(dotnetPath, engineDll, { command: 'cleanup', settings, files })).results;
-  } catch (err) {
-    void vscode.window.showErrorMessage(`CodeJanitor: cleanup engine failed - ${(err as Error).message}`);
+      return { uri: file.uri, output, changed: output !== file.content, isOpen: file.isOpen };
+    } catch (err) {
+      return { uri: file.uri, output: file.content, changed: false, isOpen: file.isOpen, error: (err as Error).message };
+    }
+  });
 
-    return { changed: 0, failed: collected.length };
-  }
-
-  return applyResults(collected, results);
+  return applyResults(results);
 }
 
 async function collectFiles(uris: vscode.Uri[]): Promise<CollectedFile[]> {
@@ -62,22 +69,15 @@ async function collectFiles(uris: vscode.Uri[]): Promise<CollectedFile[]> {
   return collected;
 }
 
-async function applyResults(collected: CollectedFile[], results: EngineFileResult[]): Promise<{ changed: number; failed: number }> {
-  const resultsByPath = new Map(results.map((r) => [r.path, r]));
+async function applyResults(results: readonly CleanupResult[]): Promise<{ changed: number; failed: number }> {
+  const edit = new vscode.WorkspaceEdit();
   let changed = 0;
   let failed = 0;
 
-  const edit = new vscode.WorkspaceEdit();
-
-  for (const file of collected) {
-    const result = resultsByPath.get(file.uri.fsPath);
-    if (!result) {
-      continue;
-    }
-
+  for (const result of results) {
     if (result.error) {
       failed++;
-      void vscode.window.showWarningMessage(`CodeJanitor: ${file.uri.fsPath} - ${result.error}`);
+      void vscode.window.showWarningMessage(`CodeJanitor: ${result.uri.fsPath} - ${result.error}`);
       continue;
     }
 
@@ -87,14 +87,14 @@ async function applyResults(collected: CollectedFile[], results: EngineFileResul
 
     changed++;
 
-    if (file.isOpen) {
-      const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === file.uri.toString());
+    if (result.isOpen) {
+      const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === result.uri.toString());
       if (doc) {
         const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-        edit.replace(file.uri, fullRange, result.output);
+        edit.replace(result.uri, fullRange, result.output);
       }
     } else {
-      await vscode.workspace.fs.writeFile(file.uri, Buffer.from(result.output, 'utf8'));
+      await vscode.workspace.fs.writeFile(result.uri, Buffer.from(result.output, 'utf8'));
     }
   }
 

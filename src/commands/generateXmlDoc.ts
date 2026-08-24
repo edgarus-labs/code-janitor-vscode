@@ -1,14 +1,18 @@
 import * as vscode from 'vscode';
 import { getAiChatCompletion } from '../ai/aiService';
-import { EngineFileResult, XmlDocTarget, resolveEngineDll, runEngine } from '../engine/client';
-import { buildXmlDocEngineSettings, getDotnetPath } from '../engine/settings';
+import {
+  XML_DOC_SYSTEM_PROMPT,
+  XmlDocTarget,
+  applySummaries,
+  planTargets,
+} from '../cleanup/xmlDocumentation';
+import { readXmlDocOptions } from './settings';
 
 /**
- * AI XML-doc command. The .NET engine performs the same Roslyn analysis as the Visual Studio
- * extension's AiXmlDocumentationLogic: it decides which members lack documentation, builds the
- * prompt for each one, and renders/inserts the resulting comment block (including the
- * deterministic param/returns/exception tags). This command only sits in the middle - it runs the
- * AI request per planned member and hands the summaries back to the engine by index.
+ * AI XML-doc command. The Roslyn-equivalent analysis runs in-process: the planner decides which
+ * members lack documentation and builds the prompt for each one, this command performs the AI
+ * request per member, and the renderer inserts the comment blocks - including the deterministic
+ * param/returns/exception tags.
  */
 export function registerGenerateXmlDocCommand(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
@@ -31,57 +35,40 @@ export function registerGenerateXmlDocCommand(context: vscode.ExtensionContext):
 
 async function generateXmlDocForDocument(context: vscode.ExtensionContext, editor: vscode.TextEditor): Promise<void> {
   const document = editor.document;
-  const engineDll = resolveEngineDll(context.extensionUri);
-  const dotnetPath = getDotnetPath();
-  const settings = buildXmlDocEngineSettings();
+  const options = readXmlDocOptions();
   const content = document.getText();
   const versionBeforeRun = document.version;
 
-  const plan = await runEngine(dotnetPath, engineDll, {
-    command: 'xmlDocPlan',
-    settings,
-    files: [{ path: document.uri.fsPath, content }],
-  });
-
-  const planResult = plan.results[0];
-  throwOnResultError(planResult);
-
-  const targets = planResult.targets ?? [];
+  const targets = planTargets(content, options);
   if (targets.length === 0) {
     void vscode.window.showInformationMessage('CodeJanitor: no undocumented members found in this file.');
 
     return;
   }
 
-  const aiTargets = targets.filter((t) => t.requiresAi);
-  const summaries = await collectSummaries(context, aiTargets, plan.systemPrompt ?? '');
+  const aiTargets = targets.filter((target) => target.requiresAi);
+  const summaries = await collectSummaries(context, aiTargets);
   if (summaries === undefined) {
     return;
   }
 
   if (document.version !== versionBeforeRun) {
-    void vscode.window.showWarningMessage('CodeJanitor: the file changed while documentation was being generated - nothing was inserted.');
+    void vscode.window.showWarningMessage(
+      'CodeJanitor: the file changed while documentation was being generated - nothing was inserted.'
+    );
 
     return;
   }
 
-  const apply = await runEngine(dotnetPath, engineDll, {
-    command: 'xmlDocApply',
-    settings,
-    files: [{ path: document.uri.fsPath, content, summaries }],
-  });
-
-  const applyResult = apply.results[0];
-  throwOnResultError(applyResult);
-
-  if (!applyResult.changed) {
+  const output = applySummaries(content, options, summaries);
+  if (output === content) {
     void vscode.window.showInformationMessage('CodeJanitor: no documentation was generated.');
 
     return;
   }
 
   const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(content.length));
-  const applied = await editor.edit((editBuilder) => editBuilder.replace(fullRange, applyResult.output));
+  const applied = await editor.edit((editBuilder) => editBuilder.replace(fullRange, output));
 
   if (applied) {
     const deterministic = targets.length - aiTargets.length;
@@ -97,8 +84,7 @@ async function generateXmlDocForDocument(context: vscode.ExtensionContext, edito
  */
 async function collectSummaries(
   context: vscode.ExtensionContext,
-  aiTargets: XmlDocTarget[],
-  systemPrompt: string
+  aiTargets: readonly XmlDocTarget[]
 ): Promise<Record<number, string> | undefined> {
   if (aiTargets.length === 0) {
     return {};
@@ -129,7 +115,7 @@ async function collectSummaries(
         });
 
         try {
-          const completion = await getAiChatCompletion(context, systemPrompt, target.prompt ?? '');
+          const completion = await getAiChatCompletion(context, XML_DOC_SYSTEM_PROMPT, target.prompt ?? '');
           if (completion.trim()) {
             summaries[target.index] = completion;
             continue;
@@ -146,14 +132,4 @@ async function collectSummaries(
       return summaries;
     }
   );
-}
-
-function throwOnResultError(result: EngineFileResult | undefined): asserts result is EngineFileResult {
-  if (!result) {
-    throw new Error('the cleanup engine returned no result.');
-  }
-
-  if (result.error) {
-    throw new Error(result.error);
-  }
 }

@@ -162,12 +162,10 @@ the surrounding formatting exactly.
 - `.github/workflows/ci.yml`: two jobs on push/PR to `develop`/`main` - `engine` (`dotnet
   restore/build/test`) and `extension` (`npm ci`, typecheck, bundle).
 
-### Phase 5 - Native TypeScript rewrite of the cleanup engine — IN PROGRESS
+### Phase 5 - Native TypeScript rewrite of the cleanup engine — DONE
 
-Every item is validated by vitest tests ported from the corresponding C# test class. Current
-status: **279 tests passing**.
-
-Done:
+The .NET engine has been deleted. Every converter now lives in `src/cleanup/`, and each one is
+covered by vitest tests ported from the corresponding C# test class: **317 tests passing**.
 
 - Infrastructure: `SourceTransformation` contract, pipeline, cleanup settings + defaults,
   `.editorconfig` reader, C# lexical scanner, tree-sitter runtime loader and text-edit helpers.
@@ -180,16 +178,25 @@ Done:
   sealed classes, single-statement lambdas, CA1869 `JsonSerializerOptions`, `string.Format` to
   interpolation, collection expressions, using sorting, moving usings out of namespaces,
   file-scoped namespaces, readonly fields, single-line method spreading, explicit access
-  modifiers, blank-line padding.
+  modifiers, blank-line padding, accessor formatting.
+- XML documentation: member planning, prompt building, deterministic summaries and comment
+  rendering, all in `src/cleanup/xmlDocumentation.ts`.
+- `src/cleanup/runCleanup.ts` rebuilds the exact converter order and conditional gating of the
+  source extension's headless cleanup path; `src/commands/settings.ts` maps the VS Code settings
+  onto it.
+- The commands, cleanup-on-save and the XML doc command call the pipeline in-process - no child
+  process, no IPC. The parser is initialized once on activation.
+- `esbuild.js` copies `tree-sitter.wasm` and `tree-sitter-c_sharp.wasm` into `dist/`; CI runs the
+  suite on Ubuntu, Windows and macOS.
 
-Remaining converters to port:
+Three deliberate deviations from the original, all for cross-platform correctness:
 
-- `UpdateAccessorsToBothBeSingleLineOrMultiLineConverter`
-- `XmlDocumentationGenerator` (member planning, prompts and comment rendering)
-
-Then: rewire `cleanupCore` / `formatOnSave` / `generateXmlDoc` to call the in-process pipeline
-instead of spawning a child process, copy the two `.wasm` files into `dist/` at build time,
-delete `engine/`, `engine-dist/` and the `build:engine` script, and drop the .NET job from CI.
+1. Line endings always come from the file being cleaned; the original hard-coded CRLF in the
+   `#endregion`, file-header and method/accessor spreading paths.
+2. `readonly` / `sealed` / access modifiers are inserted directly in front of the token they
+   qualify instead of reproducing Roslyn's trivia juggling for declarations without modifiers.
+3. Interpolated strings are treated as opaque by the lexical scanner, so layout rules never
+   rewrite anything inside a literal.
 
 ## Backlog / next steps
 
@@ -209,17 +216,10 @@ delete `engine/`, `engine-dist/` and the `build:engine` script, and drop the .NE
 ## Verified build/test commands
 
 ```powershell
-# Engine
-cd engine\CodeJanitor.Engine.Tests
-dotnet test                      # 289/289 passing
-
-# Engine packaging
-dotnet publish engine\CodeJanitor.Engine -c Release -o engine-dist --self-contained false
-
-# Extension
 npm ci
 npm run compile                  # tsc --noEmit
-node esbuild.js --production     # -> dist/extension.js
+npm test                         # vitest, 317/317 passing
+node esbuild.js --production     # -> dist/extension.js + the two .wasm modules
 ```
 
 ## Git

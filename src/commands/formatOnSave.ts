@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import { resolveEngineDll, runEngine } from '../engine/client';
-import { buildEngineSettings, getDotnetPath } from '../engine/settings';
+import { isParserReady } from '../cleanup/parser';
+import { runCleanup } from '../cleanup/runCleanup';
+import { readCleanupSettings } from './settings';
 
 /**
- * Registers the optional "cleanup on save" behavior (codeJanitor.cleanup.onSave), mirroring the
- * Visual Studio extension's auto-cleanup-on-save feature. Runs the engine against the in-memory
- * buffer and supplies the resulting edit via `waitUntil` so it lands in the same save operation.
+ * Optional cleanup on save. It never blocks or fails a save: any problem simply leaves the
+ * document untouched.
  */
 export function registerFormatOnSave(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
@@ -14,40 +14,32 @@ export function registerFormatOnSave(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const enabled = vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.onSave', false);
-      if (!enabled) {
+      if (!vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.onSave', false)) {
         return;
       }
 
-      event.waitUntil(computeCleanupEdits(context, event.document));
+      event.waitUntil(computeCleanupEdits(event.document));
     })
   );
 }
 
-async function computeCleanupEdits(context: vscode.ExtensionContext, document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
-  const engineDll = resolveEngineDll(context.extensionUri);
-  const dotnetPath = getDotnetPath();
-  const settings = buildEngineSettings();
+function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
+  if (!isParserReady()) {
+    return Promise.resolve([]);
+  }
+
   const content = document.getText();
 
   try {
-    const { results } = await runEngine(dotnetPath, engineDll, {
-      command: 'cleanup',
-      settings,
-      files: [{ path: document.uri.fsPath, content }],
-    });
-
-    const [result] = results;
-
-    if (!result || result.error || !result.changed) {
-      return [];
+    const output = runCleanup(content, document.uri.fsPath, readCleanupSettings());
+    if (output === content) {
+      return Promise.resolve([]);
     }
 
     const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(content.length));
 
-    return [vscode.TextEdit.replace(fullRange, result.output)];
+    return Promise.resolve([vscode.TextEdit.replace(fullRange, output)]);
   } catch {
-    // Never block a save because the engine could not be reached.
-    return [];
+    return Promise.resolve([]);
   }
 }

@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "codejanitor",
   "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/edgarus-labs/code-janitor-vscode.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -242,11 +246,6 @@
           "default": "insert",
           "description": "Whether the configured file header is inserted alongside existing content or replaces it."
         },
-        "codeJanitor.engine.dotnetPath": {
-          "type": "string",
-          "default": "dotnet",
-          "description": "Path to the 'dotnet' executable used to run the CodeJanitor cleanup engine."
-        },
         "codeJanitor.ai.provider": {
           "type": "string",
           "enum": [
@@ -330,21 +329,20 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "npm run build:engine && node esbuild.js --production",
-    "build:engine": "dotnet publish engine/CodeJanitor.Engine -c Release -o engine-dist --self-contained false",
+    "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
+    "test": "vitest run",
+    "verify:bundle": "node scripts/verify-bundle.js",
     "package": "npm run build && npx vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "esbuild": "^0.23.0",
-    "typescript": "^5.5.0",
-    "vitest": "^3.2.7"
-  },
-  "dependencies": {
     "tree-sitter-wasms": "^0.1.13",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.7",
     "web-tree-sitter": "^0.25.10"
   }
 }
