@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  engine:
+    name: Engine (.NET)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore engine/CodeJanitor.Engine.Tests
+      - name: Build
+        run: dotnet build engine/CodeJanitor.Engine.Tests --no-restore
+      - name: Test
+        run: dotnet test engine/CodeJanitor.Engine.Tests --no-build
+
+  extension:
+    name: Extension (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run compile
+      - name: Bundle
+        run: node esbuild.js --production

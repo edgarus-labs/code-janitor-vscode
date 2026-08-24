@@ -1,0 +1,46 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "watch",
+      "label": "npm: watch",
+      "isBackground": true,
+      "problemMatcher": {
+        "base": "$esbuild-watch",
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "\\[watch\\] build started",
+          "endsPattern": "\\[watch\\] build finished"
+        }
+      },
+      "presentation": {
+        "reveal": "never"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "type": "shell",
+      "label": "build:engine",
+      "command": "dotnet",
+      "args": ["publish", "engine/CodeJanitor.Engine", "-c", "Release", "-o", "engine-dist", "--self-contained", "false"],
+      "problemMatcher": "$msCompile",
+      "presentation": {
+        "reveal": "silent"
+      }
+    },
+    {
+      "type": "shell",
+      "label": "test:engine",
+      "command": "dotnet",
+      "args": ["test", "engine/CodeJanitor.Engine.Tests"],
+      "problemMatcher": "$msCompile",
+      "presentation": {
+        "reveal": "always"
+      }
+    }
+  ]
+}
