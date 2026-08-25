@@ -17,6 +17,15 @@ rarely happens consistently across a team. Code Janitor fixes all of it in one p
 offline (no .NET, no network, no external services required for cleanup), and never touches
 anything you haven't asked it to.
 
+## Installation
+
+Grab the latest `.vsix` from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases),
+then either:
+
+- double-click the downloaded file with VS Code installed, or
+- run `code --install-extension code-janitor-<version>.vsix`, or
+- in VS Code, open the Extensions view, click the `...` menu, and choose **Install from VSIX...**.
+
 ## How to use it
 
 - Right-click a C# file (or select several, or a whole folder) and choose **Code Janitor:

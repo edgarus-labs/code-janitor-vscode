@@ -506,3 +506,13 @@ npm run test:e2e                 # real VS Code host, 42/42 passing (downloads V
 - Main branch: `develop` (protected - PRs expected; direct pushes are currently bypassed by the
   repo owner, don't rely on this long-term)
 - Local git identity for this repo: `Edgarus79` / `p.gawdzik@gmail.com`
+
+## Releases
+
+No Marketplace publisher is set up yet (would need an Azure DevOps org, a PAT, and a registered
+publisher matching `package.json`'s `"publisher"` field). Instead, `.github/workflows/release.yml`
+builds, tests, packages (`npm run package`) and attaches the resulting `.vsix` to a GitHub Release
+whenever a tag matching `v*` is pushed (or via manual `workflow_dispatch`). To cut a release: bump
+`version` in `package.json`, commit, `git tag vX.Y.Z`, `git push origin vX.Y.Z`. Users install the
+downloaded `.vsix` via `code --install-extension` or the Extensions view's **Install from VSIX...**
+- see the `Installation` section of `README.md`.
