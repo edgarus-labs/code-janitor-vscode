@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { isParserReady } from '../cleanup/parser';
 import { runCleanup } from '../cleanup/runCleanup';
+import { isPathCleanable } from './cleanupCore';
 import { readCleanupSettings } from './settings';
 
 /**
@@ -18,16 +18,16 @@ export function registerFormatOnSave(context: vscode.ExtensionContext): void {
         return;
       }
 
+      if (!isPathCleanable(event.document.uri)) {
+        return;
+      }
+
       event.waitUntil(computeCleanupEdits(event.document));
     })
   );
 }
 
 function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
-  if (!isParserReady()) {
-    return Promise.resolve([]);
-  }
-
   const content = document.getText();
 
   try {

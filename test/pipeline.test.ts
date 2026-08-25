@@ -1,11 +1,6 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { buildPipeline } from '../src/cleanup/runCleanup';
 import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 function run(source: string, overrides: Partial<CleanupSettings> = {}): string {
   const settings = { ...createDefaultSettings(), ...overrides };
@@ -14,6 +9,21 @@ function run(source: string, overrides: Partial<CleanupSettings> = {}): string {
 }
 
 describe('cleanup pipeline', () => {
+  it('removes region directives by default', () => {
+    const result = run('#region Fields\ninternal class C\n{\n}\n#endregion\n');
+
+    expect(result).not.toContain('#region');
+    expect(result).not.toContain('#endregion');
+    expect(result).toContain('internal class C');
+  });
+
+  it('keeps region directives when the setting is off', () => {
+    const result = run('#region Fields\ninternal class C\n{\n}\n#endregion\n', { removeRegions: false });
+
+    expect(result).toContain('#region Fields');
+    expect(result).toContain('#endregion');
+  });
+
   it('applies the default converter set in one pass', () => {
     const source =
       'using System;\r\n' +

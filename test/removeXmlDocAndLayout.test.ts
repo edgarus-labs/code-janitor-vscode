@@ -1,15 +1,10 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { runLayoutCleanup } from '../src/cleanup/runCleanup';
 import {
   hasXmlDocumentation,
   removeXmlDocumentationConverter,
 } from '../src/cleanup/transformations/removeXmlDocumentation';
 import { createDefaultSettings } from '../src/cleanup/types';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('removeXmlDocumentationConverter', () => {
   const apply = (source: string) => removeXmlDocumentationConverter.apply(source);

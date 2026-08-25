@@ -99,6 +99,7 @@ export interface CleanupSettings {
 
   formatComments: boolean;
 
+  removeRegions: boolean;
   removeByteOrderMark: boolean;
   removeEndOfLineWhitespace: boolean;
   removeBlankLinesAtTop: boolean;
@@ -182,6 +183,7 @@ export function createDefaultSettings(): CleanupSettings {
 
     formatComments: false,
 
+    removeRegions: true,
     removeByteOrderMark: true,
     removeEndOfLineWhitespace: true,
     removeBlankLinesAtTop: true,

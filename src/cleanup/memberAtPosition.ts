@@ -1,5 +1,4 @@
-import { Node } from 'web-tree-sitter';
-import { findAll, parseCSharp } from './parser';
+import { Node, findAll, parseCSharp } from './parser';
 
 const MEMBER_TYPES = [
   'method_declaration',

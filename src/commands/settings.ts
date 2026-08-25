@@ -72,6 +72,7 @@ export function readCleanupSettings(): CleanupSettings {
     updateAccessorsToBothBeSingleLineOrMultiLine: cfg.get('cleanup.updateAccessorsToBothBeSingleLineOrMultiLine', false),
     formatComments: cfg.get('cleanup.formatComments', false),
 
+    removeRegions: cfg.get('cleanup.removeRegions', true),
     removeByteOrderMark: cfg.get('cleanup.removeByteOrderMark', true),
     removeEndOfLineWhitespace: cfg.get('cleanup.removeEndOfLineWhitespace', true),
     removeBlankLinesAtTop: cfg.get('cleanup.removeBlankLinesAtTop', true),

@@ -1,13 +1,8 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import {
   jsonSerializerOptionsReuseConverter,
   singleStatementLambdaConverter,
 } from '../src/cleanup/transformations/lambdaAndJson';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('jsonSerializerOptionsReuseConverter', () => {
   const apply = (source: string) => jsonSerializerOptionsReuseConverter.apply(source);

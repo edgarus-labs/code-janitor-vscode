@@ -28,13 +28,13 @@ export function registerEditorCommands(context: vscode.ExtensionContext): void {
 async function fixNamespaceCommand(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'csharp') {
-    void vscode.window.showInformationMessage('CodeJanitor: open a C# file to fix its namespace.');
+    void vscode.window.showInformationMessage('Code Janitor: open a C# file to fix its namespace.');
 
     return;
   }
 
   const expected = await vscode.window.showInputBox({
-    title: 'CodeJanitor: Fix Namespace',
+    title: 'Code Janitor: Fix Namespace',
     prompt: 'Namespace the file should declare',
     value: suggestNamespace(editor.document.uri),
     ignoreFocusOut: true,
@@ -126,7 +126,7 @@ function selectionOrNextLine(editor: vscode.TextEditor): vscode.Range {
 async function transformActiveDocument(languageId: string, transform: (source: string) => string): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== languageId) {
-    void vscode.window.showInformationMessage(`CodeJanitor: open a ${languageId} file first.`);
+    void vscode.window.showInformationMessage(`Code Janitor: open a ${languageId} file first.`);
 
     return;
   }
@@ -141,13 +141,13 @@ async function replaceDocument(editor: vscode.TextEditor, transform: (source: st
   try {
     output = transform(content);
   } catch (err) {
-    void vscode.window.showErrorMessage(`CodeJanitor: ${(err as Error).message}`);
+    void vscode.window.showErrorMessage(`Code Janitor: ${(err as Error).message}`);
 
     return;
   }
 
   if (output === content) {
-    void vscode.window.showInformationMessage('CodeJanitor: nothing to change.');
+    void vscode.window.showInformationMessage('Code Janitor: nothing to change.');
 
     return;
   }

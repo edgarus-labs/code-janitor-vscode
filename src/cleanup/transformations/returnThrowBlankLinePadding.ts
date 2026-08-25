@@ -1,5 +1,4 @@
-import { Node } from 'web-tree-sitter';
-import { findAll, parseCSharp } from '../parser';
+import { Node, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
 
 const NON_STATEMENT_TYPES = new Set(['comment']);

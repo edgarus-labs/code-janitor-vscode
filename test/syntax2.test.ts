@@ -1,11 +1,6 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { fixNamespace, nameOfOperatorConverter } from '../src/cleanup/transformations/namespaceAndNameOf';
 import { outVarInliningConverter } from '../src/cleanup/transformations/outVarInlining';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('fixNamespace', () => {
   it('rewrites a block-scoped namespace', () => {

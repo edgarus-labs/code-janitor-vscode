@@ -1,6 +1,5 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { Node } from 'web-tree-sitter';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
+import { Node } from '../src/cleanup/parser';
 import {
   applySummaries,
   createDefaultXmlDocOptions,
@@ -8,10 +7,6 @@ import {
   normalizeSentence,
   planTargets,
 } from '../src/cleanup/xmlDocumentation';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 const options = (overrides: Partial<ReturnType<typeof createDefaultXmlDocOptions>> = {}) => ({
   ...createDefaultXmlDocOptions(),

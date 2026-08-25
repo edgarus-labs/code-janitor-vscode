@@ -1,13 +1,8 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import {
   readonlyFieldConverter,
   updateSingleLineMethodsConverter,
 } from '../src/cleanup/transformations/readonlyFieldAndSingleLineMethods';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('readonlyFieldConverter', () => {
   const apply = (source: string) => readonlyFieldConverter.apply(source);

@@ -1,10 +1,5 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { updateAccessorsToBothBeSingleLineOrMultiLineConverter } from '../src/cleanup/transformations/accessorFormat';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 const apply = (source: string) => updateAccessorsToBothBeSingleLineOrMultiLineConverter.apply(source);
 

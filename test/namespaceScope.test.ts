@@ -1,5 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { SourceTransformationPipeline } from '../src/cleanup/pipeline';
 import {
   convertToFileScoped,
@@ -8,10 +7,6 @@ import {
   moveUsingsOutside,
   moveUsingsOutsideNamespaceConverter,
 } from '../src/cleanup/transformations/namespaceScope';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('moveUsingsOutside', () => {
   it('moves usings from a block namespace to the top', () => {

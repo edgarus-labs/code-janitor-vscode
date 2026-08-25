@@ -1,12 +1,21 @@
 import * as vscode from 'vscode';
-import { expandToCleanableFiles, isSupportedFile, runCleanupOnUris } from './cleanupCore';
+import {
+  expandToCSharpFiles,
+  expandToCleanableFiles,
+  isSupportedFile,
+  runCleanupOnUris,
+  runFixNamespaceOnUris,
+  runFormatCommentsOnUris,
+  runRemoveRegionsOnUris,
+  runRemoveXmlDocOnUris,
+} from './cleanupCore';
 
 export function registerCleanupCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codeJanitor.cleanupActiveFile', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
-        void vscode.window.showInformationMessage('CodeJanitor: no active editor.');
+        void vscode.window.showInformationMessage('Code Janitor: no active editor.');
 
         return;
       }
@@ -17,7 +26,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
     vscode.commands.registerCommand('codeJanitor.cleanupSelectedFiles', async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
       const targets = selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
       if (targets.length === 0) {
-        void vscode.window.showInformationMessage('CodeJanitor: no files selected.');
+        void vscode.window.showInformationMessage('Code Janitor: no files selected.');
 
         return;
       }
@@ -27,13 +36,93 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
       await runWithProgress('Cleaning up selected files...', () => runCleanupOnUris(context, expanded));
     }),
 
+    vscode.commands.registerCommand(
+      'codeJanitor.removeXmlDocSelectedFiles',
+      async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
+        const targets = selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
+        if (targets.length === 0) {
+          void vscode.window.showInformationMessage('Code Janitor: no files selected.');
+
+          return;
+        }
+
+        const expanded = (await Promise.all(targets.map((u) => expandToCSharpFiles(u)))).flat();
+
+        await runWithProgress(
+          'Removing XML documentation from selected files...',
+          () => runRemoveXmlDocOnUris(expanded),
+          'XML documentation removed'
+        );
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      'codeJanitor.fixNamespaceSelectedFiles',
+      async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
+        const targets = selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
+        if (targets.length === 0) {
+          void vscode.window.showInformationMessage('Code Janitor: no files selected.');
+
+          return;
+        }
+
+        const expanded = (await Promise.all(targets.map((u) => expandToCSharpFiles(u)))).flat();
+
+        await runWithProgress(
+          'Fixing namespaces in selected files...',
+          () => runFixNamespaceOnUris(expanded),
+          'namespaces fixed'
+        );
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      'codeJanitor.removeRegionsSelectedFiles',
+      async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
+        const targets = selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
+        if (targets.length === 0) {
+          void vscode.window.showInformationMessage('Code Janitor: no files selected.');
+
+          return;
+        }
+
+        const expanded = (await Promise.all(targets.map((u) => expandToCSharpFiles(u)))).flat();
+
+        await runWithProgress(
+          'Removing regions from selected files...',
+          () => runRemoveRegionsOnUris(expanded),
+          'regions removed'
+        );
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      'codeJanitor.formatCommentsSelectedFiles',
+      async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
+        const targets = selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
+        if (targets.length === 0) {
+          void vscode.window.showInformationMessage('Code Janitor: no files selected.');
+
+          return;
+        }
+
+        const expanded = (await Promise.all(targets.map((u) => expandToCSharpFiles(u)))).flat();
+
+        await runWithProgress(
+          'Formatting comments in selected files...',
+          () => runFormatCommentsOnUris(expanded),
+          'comments formatted'
+        );
+      }
+    ),
+
     vscode.commands.registerCommand('codeJanitor.cleanupOpenFiles', async () => {
       const open = vscode.workspace.textDocuments
         .filter((doc) => !doc.isClosed && doc.uri.scheme === 'file' && isSupportedFile(doc.uri))
         .map((doc) => doc.uri);
 
       if (open.length === 0) {
-        void vscode.window.showInformationMessage('CodeJanitor: no open files to clean up.');
+        void vscode.window.showInformationMessage('Code Janitor: no open files to clean up.');
 
         return;
       }
@@ -44,13 +133,13 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
     vscode.commands.registerCommand('codeJanitor.cleanupChangedFiles', async () => {
       const changed = await collectSourceControlChanges();
       if (changed === undefined) {
-        void vscode.window.showWarningMessage('CodeJanitor: the built-in Git extension is not available.');
+        void vscode.window.showWarningMessage('Code Janitor: the built-in Git extension is not available.');
 
         return;
       }
 
       if (changed.length === 0) {
-        void vscode.window.showInformationMessage('CodeJanitor: no changed files to clean up.');
+        void vscode.window.showInformationMessage('Code Janitor: no changed files to clean up.');
 
         return;
       }
@@ -71,7 +160,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
       );
 
       if (files.length === 0) {
-        void vscode.window.showInformationMessage('CodeJanitor: no files found in the workspace.');
+        void vscode.window.showInformationMessage('Code Janitor: no files found in the workspace.');
 
         return;
       }
@@ -79,12 +168,28 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
       await runWithProgress(`Cleaning up ${files.length} file(s)...`, () => runCleanupOnUris(context, files));
     }),
 
+    vscode.commands.registerCommand('codeJanitor.removeXmlDocWorkspace', async () => {
+      const files = await vscode.workspace.findFiles('**/*.cs', '**/{bin,obj,node_modules,.git}/**');
+
+      if (files.length === 0) {
+        void vscode.window.showInformationMessage('Code Janitor: no C# files found in the workspace.');
+
+        return;
+      }
+
+      await runWithProgress(
+        `Removing XML documentation from ${files.length} file(s)...`,
+        () => runRemoveXmlDocOnUris(files),
+        'XML documentation removed'
+      );
+    }),
+
     vscode.commands.registerCommand('codeJanitor.toggleCleanupOnSave', async () => {
       const config = vscode.workspace.getConfiguration('codeJanitor');
       const enabled = !config.get<boolean>('cleanup.onSave', false);
       await config.update('cleanup.onSave', enabled, vscode.ConfigurationTarget.Workspace);
 
-      void vscode.window.showInformationMessage(`CodeJanitor: cleanup on save ${enabled ? 'enabled' : 'disabled'}.`);
+      void vscode.window.showInformationMessage(`Code Janitor: cleanup on save ${enabled ? 'enabled' : 'disabled'}.`);
     })
   );
 }
@@ -121,7 +226,11 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
   return [...seen.values()];
 }
 
-async function runWithProgress(title: string, action: () => Promise<{ changed: number; failed: number }>): Promise<void> {
+async function runWithProgress(
+  title: string,
+  action: () => Promise<{ changed: number; failed: number }>,
+  doneLabel = 'cleanup complete'
+): Promise<void> {
   const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, action);
 
   const parts = [`${result.changed} file(s) changed`];
@@ -129,5 +238,5 @@ async function runWithProgress(title: string, action: () => Promise<{ changed: n
     parts.push(`${result.failed} failed`);
   }
 
-  void vscode.window.showInformationMessage(`CodeJanitor: cleanup complete - ${parts.join(', ')}.`);
+  void vscode.window.showInformationMessage(`Code Janitor: ${doneLabel} - ${parts.join(', ')}.`);
 }

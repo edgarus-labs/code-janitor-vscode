@@ -1,6 +1,5 @@
-import { Node } from 'web-tree-sitter';
 import { COMMENT, classifyCSharp } from '../csharpScanner';
-import { TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
+import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
 
 const USING_PATTERN = /^\s*(global\s+)?using\s+(static\s+)?(?:([A-Za-z_@][\w]*)\s*=\s*)?([\s\S]*?);\s*$/;

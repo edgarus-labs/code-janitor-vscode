@@ -1,40 +1,53 @@
 import * as vscode from 'vscode';
 
 /**
- * "Local Copilot" detection for VS Code: unlike the Visual Studio extension (which scrapes
- * Windows Credential Manager / log files - Windows-only and VS-specific), the correct
- * cross-platform equivalent here is the built-in Language Model API. It reports a usable model
- * only when the GitHub Copilot Chat extension is installed and the user is signed in/entitled.
+ * GitHub Copilot access for VS Code. The Visual Studio extension detects Copilot by scraping
+ * Windows Credential Manager and VS log files for a token; that is Windows-only, VS-specific and
+ * would mean handling someone else's credentials. The sanctioned cross-platform equivalent here is
+ * the built-in Language Model API, which reports usable models only when the GitHub Copilot Chat
+ * extension is installed and the user is signed in and entitled - and never exposes the token.
  */
-export async function detectCopilotModels(preferredFamily?: string): Promise<vscode.LanguageModelChat[]> {
-  try {
-    const selector: vscode.LanguageModelChatSelector = preferredFamily
-      ? { vendor: 'copilot', family: preferredFamily }
-      : { vendor: 'copilot' };
 
-    return await vscode.lm.selectChatModels(selector);
+export interface CopilotModelInfo {
+  id: string;
+  family: string;
+  vendor: string;
+  name: string;
+  maxInputTokens: number;
+}
+
+export async function listCopilotModels(): Promise<vscode.LanguageModelChat[]> {
+  try {
+    return await vscode.lm.selectChatModels({ vendor: 'copilot' });
   } catch {
     return [];
   }
 }
 
-export async function isCopilotAvailable(): Promise<boolean> {
-  const models = await detectCopilotModels();
+/** The models the user's own Copilot subscription currently exposes. */
+export async function describeCopilotModels(): Promise<CopilotModelInfo[]> {
+  const models = await listCopilotModels();
 
-  return models.length > 0;
+  return models.map((model) => ({
+    id: model.id,
+    family: model.family,
+    vendor: model.vendor,
+    name: model.name,
+    maxInputTokens: model.maxInputTokens,
+  }));
 }
 
-export async function getCopilotChatCompletion(systemPrompt: string, userPrompt: string, preferredFamily?: string): Promise<string> {
-  const models = await detectCopilotModels(preferredFamily);
-  if (models.length === 0) {
-    throw new Error(
-      'No GitHub Copilot Chat model is available. Install/sign in to GitHub Copilot Chat, or switch codeJanitor.ai.provider to "custom".'
-    );
-  }
+export async function isCopilotAvailable(): Promise<boolean> {
+  return (await listCopilotModels()).length > 0;
+}
 
-  const model = models[0];
+export async function getCopilotChatCompletion(
+  systemPrompt: string,
+  userPrompt: string,
+  preferredModel?: string
+): Promise<string> {
+  const model = await resolveCopilotModel(preferredModel);
   const messages = [vscode.LanguageModelChatMessage.User(`${systemPrompt}\n\n${userPrompt}`)];
-
   const request = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
 
   let content = '';
@@ -43,4 +56,36 @@ export async function getCopilotChatCompletion(systemPrompt: string, userPrompt:
   }
 
   return content.trim();
+}
+
+/**
+ * Matching happens here rather than through a `family` selector so that an unknown preference is
+ * reported as such instead of looking like "Copilot is unavailable".
+ */
+async function resolveCopilotModel(preferredModel?: string): Promise<vscode.LanguageModelChat> {
+  const models = await listCopilotModels();
+
+  if (models.length === 0) {
+    throw new Error(
+      'No GitHub Copilot Chat model is available. Install and sign in to GitHub Copilot Chat, or set codeJanitor.ai.provider to "custom".'
+    );
+  }
+
+  if (!preferredModel) {
+    return models[0];
+  }
+
+  const wanted = preferredModel.trim().toLowerCase();
+  const match = models.find((model) => model.family.toLowerCase() === wanted || model.id.toLowerCase() === wanted);
+
+  if (match) {
+    return match;
+  }
+
+  const available = [...new Set(models.map((model) => model.family))].join(', ');
+
+  throw new Error(
+    `GitHub Copilot offers no model matching "${preferredModel}". Available: ${available}. ` +
+      'Run "Code Janitor: Use GitHub Copilot Model..." to pick one.'
+  );
 }

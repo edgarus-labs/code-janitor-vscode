@@ -328,4 +328,24 @@ describe('commentFormatConverter', () => {
 
     expect(result).toContain('     *  second');
   });
+
+  it('does not split XML documentation comments into "// /"', () => {
+    expect(apply('/// <summary>Doc.</summary>\nclass C { }')).toContain('/// <summary>Doc.</summary>');
+  });
+
+  it('adds a missing space after the slashes of an XML documentation comment', () => {
+    expect(apply('///<summary>Doc.</summary>')).toBe('/// <summary>Doc.</summary>');
+  });
+
+  it('normalizes extra spacing after XML documentation comment slashes', () => {
+    expect(apply('///   <summary>Doc.</summary>')).toBe('/// <summary>Doc.</summary>');
+  });
+
+  it('preserves indentation of an XML documentation comment', () => {
+    expect(apply('    /// <summary>Doc.</summary>')).toBe('    /// <summary>Doc.</summary>');
+  });
+
+  it('leaves a commented-out-code marker (four slashes) intact', () => {
+    expect(apply('////oldCode();')).toBe('//// oldCode();');
+  });
 });

@@ -20,7 +20,7 @@ async function getCustomConfig(context: vscode.ExtensionContext): Promise<Custom
     apiKeyHeader: cfg.get<string>('ai.customApiKeyHeader', 'Authorization'),
     model: cfg.get<string>('ai.customModel', ''),
     timeoutSeconds: cfg.get<number>('ai.customTimeoutSeconds', 30),
-    contextWindowTokens: cfg.get<number>('ai.customContextWindowTokens', 0),
+    contextWindowTokens: cfg.get<number>('ai.customContextWindowTokens', 131072),
   };
 }
 
@@ -34,20 +34,26 @@ export async function storeCustomApiKey(context: vscode.ExtensionContext, apiKey
 
 /**
  * Requests a chat completion from whichever provider is configured: GitHub Copilot Chat (via the
- * Language Model API, default) or a custom OpenAI/Claude-compatible endpoint.
+ * Language Model API, default) or a custom OpenAI/Claude-compatible endpoint. `maxTokens` bounds
+ * the custom endpoint's answer; Copilot manages its own budget.
  */
-export async function getAiChatCompletion(context: vscode.ExtensionContext, systemPrompt: string, userPrompt: string): Promise<string> {
+export async function getAiChatCompletion(
+  context: vscode.ExtensionContext,
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens = 2048
+): Promise<string> {
   const provider = getProvider();
 
   if (provider === 'custom') {
     const config = await getCustomConfig(context);
 
-    return getCustomChatCompletion(systemPrompt, userPrompt, 1024, config);
+    return getCustomChatCompletion(systemPrompt, userPrompt, maxTokens, config);
   }
 
-  const preferredFamily = vscode.workspace.getConfiguration('codeJanitor').get<string>('ai.copilotModel', '');
+  const preferredModel = vscode.workspace.getConfiguration('codeJanitor').get<string>('ai.copilotModel', '');
 
-  return getCopilotChatCompletion(systemPrompt, userPrompt, preferredFamily || undefined);
+  return getCopilotChatCompletion(systemPrompt, userPrompt, preferredModel || undefined);
 }
 
 export async function testAiConnection(context: vscode.ExtensionContext): Promise<{ succeeded: boolean; message: string }> {

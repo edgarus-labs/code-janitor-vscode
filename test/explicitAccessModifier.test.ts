@@ -1,10 +1,5 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { createExplicitAccessModifierConverter } from '../src/cleanup/transformations/explicitAccessModifier';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 const allEnabled = {
   insertExplicitAccessModifiersOnClasses: true,

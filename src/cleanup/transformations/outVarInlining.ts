@@ -1,5 +1,4 @@
-import { Node } from 'web-tree-sitter';
-import { TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
+import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
 import { SourceTransformation } from '../types';
 
 const NON_STATEMENT_PREFIXES = ['comment', 'preproc'];

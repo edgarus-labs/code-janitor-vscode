@@ -1,5 +1,4 @@
-import { Node } from 'web-tree-sitter';
-import { findAll, parseCSharp, walk } from './parser';
+import { Node, findAll, parseCSharp, walk } from './parser';
 
 /**
  * Roslyn-free XML documentation generation. The engine decides *which* members need documentation,

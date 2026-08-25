@@ -1,10 +1,11 @@
 {
-  "name": "codejanitor",
-  "displayName": "CodeJanitor",
-  "description": "CodeJanitor is an open source Visual Studio extension to cleanup and simplify our C#, C++, F#, VB, PHP, PowerShell, R, JSON, XAML, XML, ASP, HTML, CSS, LESS, SCSS, JavaScript and TypeScript coding.",
+  "name": "code-janitor",
+  "displayName": "Code Janitor",
+  "description": "Code Janitor cleans up and simplifies C# code: whitespace, blank lines, usings, namespaces, access modifiers, regions and modern C# syntax, with optional AI-assisted XML documentation.",
   "version": "0.1.0",
   "publisher": "codejanitor",
   "license": "LGPL-3.0-only",
+  "icon": "assets/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/edgarus-labs/code-janitor-vscode.git"
@@ -22,107 +23,171 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "icons": {
+      "code-janitor": {
+        "description": "Code Janitor cleanup",
+        "default": {
+          "fontPath": "./assets/code-janitor-icons.woff",
+          "fontCharacter": "\\E001"
+        }
+      }
+    },
     "commands": [
       {
         "command": "codeJanitor.cleanupActiveFile",
-        "title": "CodeJanitor: Cleanup Active File",
-        "category": "CodeJanitor"
+        "title": "Cleanup Active File",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.cleanupSelectedFiles",
-        "title": "CodeJanitor: Cleanup Selected Files",
-        "category": "CodeJanitor"
+        "title": "Cleanup Selected Files",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.cleanupWorkspace",
-        "title": "CodeJanitor: Cleanup Workspace",
-        "category": "CodeJanitor"
+        "title": "Cleanup Workspace",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.cleanupOpenFiles",
-        "title": "CodeJanitor: Cleanup Open Files",
-        "category": "CodeJanitor"
+        "title": "Cleanup Open Files",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.cleanupChangedFiles",
-        "title": "CodeJanitor: Cleanup Changed Files (Git)",
-        "category": "CodeJanitor"
+        "title": "Cleanup Changed Files (Git)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.toggleCleanupOnSave",
-        "title": "CodeJanitor: Toggle Cleanup on Save",
-        "category": "CodeJanitor"
+        "title": "Toggle Cleanup on Save",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.fixNamespace",
-        "title": "CodeJanitor: Fix Namespace",
-        "category": "CodeJanitor"
+        "title": "Fix Namespace",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.fixNamespaceSelectedFiles",
+        "title": "Fix Namespace (Selected Files)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.removeRegions",
-        "title": "CodeJanitor: Remove Regions",
-        "category": "CodeJanitor"
+        "title": "Remove Regions",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.removeRegionsSelectedFiles",
+        "title": "Remove Regions (Selected Files)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.formatComments",
-        "title": "CodeJanitor: Format Comments",
-        "category": "CodeJanitor"
+        "title": "Format Comments",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.formatCommentsSelectedFiles",
+        "title": "Format Comments (Selected Files)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.removeXmlDoc",
-        "title": "CodeJanitor: Remove XML Documentation",
-        "category": "CodeJanitor"
+        "title": "Remove XML Documentation",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.removeXmlDocSelectedFiles",
+        "title": "Remove XML Documentation (Selected Files)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.removeXmlDocWorkspace",
+        "title": "Remove XML Documentation (Workspace)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.joinLines",
-        "title": "CodeJanitor: Join Lines",
-        "category": "CodeJanitor"
+        "title": "Join Lines",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.sortLines",
-        "title": "CodeJanitor: Sort Lines",
-        "category": "CodeJanitor"
+        "title": "Sort Lines",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.generateXmlDoc",
-        "title": "CodeJanitor: Generate XML Documentation (AI)",
-        "category": "CodeJanitor"
+        "title": "Generate XML Documentation (AI)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.generateXmlDocSelectedFiles",
+        "title": "Generate XML Documentation (AI, Selected Files)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.generateXmlDocWorkspace",
+        "title": "Generate XML Documentation (AI, Workspace)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.aiExplain",
-        "title": "CodeJanitor: Explain Code (AI)",
-        "category": "CodeJanitor"
+        "title": "Explain Code (AI)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.aiCodeReview",
-        "title": "CodeJanitor: Review Code (AI)",
-        "category": "CodeJanitor"
+        "title": "Review Code (AI)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.aiRefactor",
-        "title": "CodeJanitor: Clean and Refactor (AI)",
-        "category": "CodeJanitor"
+        "title": "Clean and Refactor (AI)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.cleanAndRefactor",
+        "title": "Clean and Refactor (Cleanup + AI)",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.aiGenerateUnitTests",
-        "title": "CodeJanitor: Generate Unit Tests (AI)",
-        "category": "CodeJanitor"
+        "title": "Generate Unit Tests (AI)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.openSettings",
+        "title": "Open Settings",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.selectCopilotModel",
+        "title": "Use GitHub Copilot Model...",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.testAiConnection",
-        "title": "CodeJanitor: Test AI Connection",
-        "category": "CodeJanitor"
+        "title": "Test AI Connection",
+        "category": "Code Janitor"
       },
       {
         "command": "codeJanitor.setAiApiKey",
-        "title": "CodeJanitor: Set Custom AI Endpoint API Key",
-        "category": "CodeJanitor"
+        "title": "Set Custom AI Endpoint API Key",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.showOutputChannel",
+        "title": "Show Output Channel",
+        "category": "Code Janitor"
       }
     ],
     "menus": {
       "explorer/context": [
         {
-          "command": "codeJanitor.cleanupSelectedFiles",
+          "submenu": "codeJanitor.explorerSubmenu",
           "group": "7_modification",
           "when": "resourceLangId == csharp || explorerResourceIsFolder"
         }
@@ -173,293 +238,447 @@
           "group": "3_ai"
         },
         {
+          "command": "codeJanitor.cleanAndRefactor",
+          "group": "3_ai"
+        },
+        {
           "command": "codeJanitor.aiGenerateUnitTests",
           "group": "3_ai"
+        }
+      ],
+      "codeJanitor.explorerSubmenu": [
+        {
+          "command": "codeJanitor.cleanupSelectedFiles",
+          "group": "0_cleanup"
+        },
+        {
+          "command": "codeJanitor.generateXmlDocSelectedFiles",
+          "group": "1_doc"
+        },
+        {
+          "command": "codeJanitor.removeXmlDocSelectedFiles",
+          "group": "1_doc"
+        },
+        {
+          "command": "codeJanitor.fixNamespaceSelectedFiles",
+          "group": "2_code"
+        },
+        {
+          "command": "codeJanitor.removeRegionsSelectedFiles",
+          "group": "2_code"
+        },
+        {
+          "command": "codeJanitor.formatCommentsSelectedFiles",
+          "group": "2_code"
         }
       ]
     },
     "submenus": [
       {
         "id": "codeJanitor.editorSubmenu",
-        "label": "CodeJanitor"
+        "label": "Code Janitor"
+      },
+      {
+        "id": "codeJanitor.explorerSubmenu",
+        "label": "Code Janitor"
       }
     ],
-    "configuration": {
-      "title": "CodeJanitor",
-      "properties": {
-        "codeJanitor.cleanup.onSave": {
-          "type": "boolean",
-          "default": false,
-          "description": "Automatically run CodeJanitor cleanup on C# files when they are saved."
-        },
-        "codeJanitor.cleanup.includeOtherFileTypes": {
-          "type": "boolean",
-          "default": false,
-          "description": "Also clean up files that are not C#. Only the layout rules run for them (BOM, tabs, trailing whitespace, blank lines, final newline)."
-        },
-        "codeJanitor.cleanup.moveUsingsOutsideNamespace": {
-          "type": "boolean",
-          "default": true,
-          "description": "Move using directives outside the namespace declaration."
-        },
-        "codeJanitor.cleanup.organizeUsings": {
-          "type": "boolean",
-          "default": false,
-          "description": "Sort using directives (System first, then alphabetical), independent of .editorconfig."
-        },
-        "codeJanitor.cleanup.convertToFileScopedNamespace": {
-          "type": "boolean",
-          "default": false,
-          "description": "Convert a single top-level block-scoped namespace to a file-scoped namespace."
-        },
-        "codeJanitor.cleanup.convertToVarWhenApparent": {
-          "type": "boolean",
-          "default": false,
-          "description": "Convert local variable declarations to 'var' when the type is apparent from the right-hand side."
-        },
-        "codeJanitor.cleanup.makeFieldsReadonlyWhenSafe": {
-          "type": "boolean",
-          "default": false,
-          "description": "Add the 'readonly' modifier to fields that are provably never written outside their declaring constructor."
-        },
-        "codeJanitor.cleanup.sealClassesWhenSafe": {
-          "type": "boolean",
-          "default": false,
-          "description": "Add the 'sealed' modifier to classes that are not derived from within the same file."
-        },
-        "codeJanitor.cleanup.convertToCollectionExpressions": {
-          "type": "boolean",
-          "default": false,
-          "description": "Convert List<T>/array initializations to C# 12 collection expressions ([] / [a, b, c])."
-        },
-        "codeJanitor.cleanup.reuseJsonSerializerOptionsForCA1869": {
-          "type": "boolean",
-          "default": false,
-          "description": "Replace direct 'new JsonSerializerOptions()' arguments in JsonSerializer calls with null to avoid per-call allocation (CA1869)."
-        },
-        "codeJanitor.cleanup.simplifySingleStatementLambdas": {
-          "type": "boolean",
-          "default": false,
-          "description": "Simplify single-statement lambda block bodies to expression bodies."
-        },
-        "codeJanitor.cleanup.insertBlankLineBeforeReturnAndThrow": {
-          "type": "boolean",
-          "default": false,
-          "description": "Insert a blank line before 'return' and 'throw' statements."
-        },
-        "codeJanitor.cleanup.convertToPatternMatchingNullChecks": {
-          "type": "boolean",
-          "default": true,
-          "description": "Convert null checks to pattern matching (e.g. 'x is null')."
-        },
-        "codeJanitor.cleanup.convertStringFormatToInterpolation": {
-          "type": "boolean",
-          "default": true,
-          "description": "Convert string.Format calls to string interpolation."
-        },
-        "codeJanitor.cleanup.convertToStringNameOf": {
-          "type": "boolean",
-          "default": true,
-          "description": "Convert string literals of member names to the 'nameof' operator."
-        },
-        "codeJanitor.cleanup.inlineOutVariableDeclarations": {
-          "type": "boolean",
-          "default": true,
-          "description": "Inline 'out' variable declarations."
-        },
-        "codeJanitor.cleanup.insertExplicitAccessModifiers": {
-          "type": "boolean",
-          "default": true,
-          "description": "Insert the default access modifier on declarations that omit it (classes, methods, fields, properties, etc.)."
-        },
-        "codeJanitor.cleanup.insertBlankLinePadding": {
-          "type": "boolean",
-          "default": true,
-          "description": "Insert blank line padding before/after declarations, regions and using blocks."
-        },
-        "codeJanitor.cleanup.updateEndRegionDirectives": {
-          "type": "boolean",
-          "default": true,
-          "description": "Update #endregion directives to include the matching #region name."
-        },
-        "codeJanitor.cleanup.updateSingleLineMethods": {
-          "type": "boolean",
-          "default": true,
-          "description": "Reformat single-line methods/properties consistently."
-        },
-        "codeJanitor.cleanup.updateAccessorsToBothBeSingleLineOrMultiLine": {
-          "type": "boolean",
-          "default": false,
-          "description": "Ensure property accessors are consistently single-line or multi-line."
-        },
-        "codeJanitor.cleanup.formatComments": {
-          "type": "boolean",
-          "default": false,
-          "description": "Normalize comment spacing and alignment."
-        },
-        "codeJanitor.cleanup.removeByteOrderMark": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove a leading Unicode Byte Order Mark (BOM) from source files."
-        },
-        "codeJanitor.cleanup.removeEndOfLineWhitespace": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove trailing whitespace at the end of each line."
-        },
-        "codeJanitor.cleanup.removeBlankLinesAtTop": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove blank lines at the top of the file."
-        },
-        "codeJanitor.cleanup.removeBlankLinesAtBottom": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove blank lines at the bottom of the file."
-        },
-        "codeJanitor.cleanup.removeBlankLinesAfterAttributes": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove blank lines directly after attribute declarations."
-        },
-        "codeJanitor.cleanup.removeBlankLinesAfterOpeningBrace": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove blank lines directly after an opening brace."
-        },
-        "codeJanitor.cleanup.removeBlankLinesBeforeClosingBrace": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove blank lines directly before a closing brace."
-        },
-        "codeJanitor.cleanup.removeBlankLinesBetweenChainedStatements": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove blank lines before chained 'else'/'catch'/'finally' clauses."
-        },
-        "codeJanitor.cleanup.removeMultipleConsecutiveBlankLines": {
-          "type": "boolean",
-          "default": true,
-          "description": "Collapse two or more consecutive blank lines into one."
-        },
-        "codeJanitor.cleanup.fileHeaderCSharp": {
-          "type": "string",
-          "default": "",
-          "description": "Configured C# file header text. Leave empty to disable file header cleanup."
-        },
-        "codeJanitor.cleanup.fileHeaderPosition": {
-          "type": "string",
-          "enum": [
-            "documentStart",
-            "afterUsings"
-          ],
-          "default": "documentStart",
-          "description": "Where the configured file header should be placed."
-        },
-        "codeJanitor.cleanup.fileHeaderUpdateMode": {
-          "type": "string",
-          "enum": [
-            "insert",
-            "replace"
-          ],
-          "default": "insert",
-          "description": "Whether the configured file header is inserted alongside existing content or replaces it."
-        },
-        "codeJanitor.ai.provider": {
-          "type": "string",
-          "enum": [
-            "copilot",
-            "custom"
-          ],
-          "enumDescriptions": [
-            "Use the GitHub Copilot Chat model selected via VS Code's Language Model API (requires the GitHub Copilot Chat extension, signed in).",
-            "Use a custom OpenAI/Claude-compatible HTTP endpoint (e.g. Ollama, LM Studio, Azure OpenAI, Anthropic-compatible proxy)."
-          ],
-          "default": "copilot",
-          "description": "AI provider used for AI-assisted features (e.g. XML documentation generation)."
-        },
-        "codeJanitor.ai.copilotModel": {
-          "type": "string",
-          "default": "",
-          "description": "Preferred Copilot model family/id (e.g. 'gpt-4o', 'claude-3.5-sonnet'). Leave empty to use the first available model."
-        },
-        "codeJanitor.ai.customEndpointUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Custom OpenAI/Claude-compatible chat completions endpoint URL, used when codeJanitor.ai.provider is 'custom'."
-        },
-        "codeJanitor.ai.customModel": {
-          "type": "string",
-          "default": "",
-          "description": "Model name sent to the custom endpoint."
-        },
-        "codeJanitor.ai.customApiKeyHeader": {
-          "type": "string",
-          "default": "Authorization",
-          "description": "HTTP header name used to send the custom endpoint API key."
-        },
-        "codeJanitor.ai.customTimeoutSeconds": {
-          "type": "number",
-          "default": 30,
-          "description": "Timeout (seconds) for custom AI endpoint requests."
-        },
-        "codeJanitor.ai.customContextWindowTokens": {
-          "type": "number",
-          "default": 0,
-          "description": "Best-effort context window hint (sent as 'num_ctx') for local custom endpoints only (e.g. llama.cpp, LM Studio). 0 disables the hint."
-        },
-        "codeJanitor.ai.xmlDoc.maxMembersPerFile": {
-          "type": "number",
-          "default": 25,
-          "description": "Maximum number of members per file that may trigger an AI request when generating XML documentation. Properties, fields, indexers and events are documented deterministically and never count against this limit."
-        },
-        "codeJanitor.ai.xmlDoc.maxInputCharsPerMember": {
-          "type": "number",
-          "default": 2500,
-          "description": "Maximum number of characters of a member's body sent to the AI provider as prompt context."
-        },
-        "codeJanitor.ai.xmlDoc.allowDeterministicFallback": {
-          "type": "boolean",
-          "default": true,
-          "description": "Fall back to a deterministic, name-derived summary when the AI request fails or returns nothing."
-        },
-        "codeJanitor.ai.xmlDoc.previewChanges": {
-          "type": "boolean",
-          "default": false,
-          "description": "Show a diff of the generated documentation and ask for confirmation before applying it."
-        },
-        "codeJanitor.ai.xmlDoc.ignoreGeneratedCode": {
-          "type": "boolean",
-          "default": true,
-          "description": "Skip members annotated with [GeneratedCode] or [CompilerGenerated]."
-        },
-        "codeJanitor.ai.xmlDoc.ignoreObsolete": {
-          "type": "boolean",
-          "default": true,
-          "description": "Skip members annotated with [Obsolete]."
-        },
-        "codeJanitor.ai.xmlDoc.ignoreTestMethods": {
-          "type": "boolean",
-          "default": true,
-          "description": "Skip test methods (test attributes) and types whose name ends with 'Test'/'Tests'."
-        },
-        "codeJanitor.ai.xmlDoc.ignorePattern": {
-          "type": "string",
-          "default": "",
-          "description": "Regular expression matched against 'Namespace.Type.Method'. Matching methods are skipped."
-        },
-        "codeJanitor.ai.tests.framework": {
-          "type": "string",
-          "default": "MSTest",
-          "description": "Test framework the AI should target when generating unit tests (e.g. MSTest, xUnit, NUnit)."
-        },
-        "codeJanitor.ai.tests.mockingLibrary": {
-          "type": "string",
-          "default": "Moq",
-          "description": "Mocking library the AI should use when generating unit tests (e.g. Moq, NSubstitute, FakeItEasy)."
+    "configuration": [
+      {
+        "title": "General",
+        "order": 1,
+        "properties": {
+          "codeJanitor.cleanup.onSave": {
+            "type": "boolean",
+            "default": false,
+            "description": "Automatically run Code Janitor cleanup on C# files when they are saved."
+          },
+          "codeJanitor.cleanup.exclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "markdownDescription": "Regular expressions matched case-insensitively against the full file path. A file matching any of them is never cleaned, for example `\\.designer\\.cs$` or `[\\\\/]obj[\\\\/]`."
+          },
+          "codeJanitor.cleanup.include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "markdownDescription": "Regular expressions matched case-insensitively against the full file path. When this list is not empty, only files matching at least one expression are cleaned. `#codeJanitor.cleanup.exclude#` still wins."
+          }
+        }
+      },
+      {
+        "title": "Cleaning: File Types",
+        "order": 2,
+        "properties": {
+          "codeJanitor.cleanup.includeOtherFileTypes": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also clean up files that are not C#. Only the layout rules run for them (BOM, tabs, trailing whitespace, blank lines, final newline)."
+          }
+        }
+      },
+      {
+        "title": "Cleaning: Usings and Namespaces",
+        "order": 3,
+        "properties": {
+          "codeJanitor.cleanup.moveUsingsOutsideNamespace": {
+            "type": "boolean",
+            "default": true,
+            "description": "Move using directives outside the namespace declaration."
+          },
+          "codeJanitor.cleanup.organizeUsings": {
+            "type": "boolean",
+            "default": false,
+            "description": "Sort using directives (System first, then alphabetical), independent of .editorconfig."
+          },
+          "codeJanitor.cleanup.convertToFileScopedNamespace": {
+            "type": "boolean",
+            "default": false,
+            "description": "Convert a single top-level block-scoped namespace to a file-scoped namespace."
+          }
+        }
+      },
+      {
+        "title": "Cleaning: Insert",
+        "order": 4,
+        "properties": {
+          "codeJanitor.cleanup.insertExplicitAccessModifiers": {
+            "type": "boolean",
+            "default": true,
+            "description": "Insert the default access modifier on declarations that omit it (classes, methods, fields, properties, etc.)."
+          },
+          "codeJanitor.cleanup.insertBlankLinePadding": {
+            "type": "boolean",
+            "default": true,
+            "description": "Insert blank line padding before/after declarations, regions and using blocks."
+          },
+          "codeJanitor.cleanup.insertBlankLineBeforeReturnAndThrow": {
+            "type": "boolean",
+            "default": false,
+            "description": "Insert a blank line before 'return' and 'throw' statements."
+          }
+        }
+      },
+      {
+        "title": "Cleaning: Remove",
+        "order": 5,
+        "properties": {
+          "codeJanitor.cleanup.removeRegions": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Remove `#region` and `#endregion` directives. The region names are discarded, so turn this off if you organize code with regions."
+          },
+          "codeJanitor.cleanup.removeByteOrderMark": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove a leading Unicode Byte Order Mark (BOM) from source files."
+          },
+          "codeJanitor.cleanup.removeEndOfLineWhitespace": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove trailing whitespace at the end of each line."
+          },
+          "codeJanitor.cleanup.removeBlankLinesAtTop": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove blank lines at the top of the file."
+          },
+          "codeJanitor.cleanup.removeBlankLinesAtBottom": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove blank lines at the bottom of the file."
+          },
+          "codeJanitor.cleanup.removeBlankLinesAfterAttributes": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove blank lines directly after attribute declarations."
+          },
+          "codeJanitor.cleanup.removeBlankLinesAfterOpeningBrace": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove blank lines directly after an opening brace."
+          },
+          "codeJanitor.cleanup.removeBlankLinesBeforeClosingBrace": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove blank lines directly before a closing brace."
+          },
+          "codeJanitor.cleanup.removeBlankLinesBetweenChainedStatements": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove blank lines before chained 'else'/'catch'/'finally' clauses."
+          },
+          "codeJanitor.cleanup.removeMultipleConsecutiveBlankLines": {
+            "type": "boolean",
+            "default": true,
+            "description": "Collapse two or more consecutive blank lines into one."
+          }
+        }
+      },
+      {
+        "title": "Cleaning: Update",
+        "order": 6,
+        "properties": {
+          "codeJanitor.cleanup.updateEndRegionDirectives": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Update `#endregion` directives to include the matching `#region` name. Only has an effect when `#codeJanitor.cleanup.removeRegions#` is off."
+          },
+          "codeJanitor.cleanup.updateSingleLineMethods": {
+            "type": "boolean",
+            "default": true,
+            "description": "Reformat single-line methods/properties consistently."
+          },
+          "codeJanitor.cleanup.updateAccessorsToBothBeSingleLineOrMultiLine": {
+            "type": "boolean",
+            "default": false,
+            "description": "Ensure property accessors are consistently single-line or multi-line."
+          }
+        }
+      },
+      {
+        "title": "Cleaning: Modern C#",
+        "order": 7,
+        "properties": {
+          "codeJanitor.cleanup.convertToVarWhenApparent": {
+            "type": "boolean",
+            "default": false,
+            "description": "Convert local variable declarations to 'var' when the type is apparent from the right-hand side."
+          },
+          "codeJanitor.cleanup.makeFieldsReadonlyWhenSafe": {
+            "type": "boolean",
+            "default": false,
+            "description": "Add the 'readonly' modifier to fields that are provably never written outside their declaring constructor."
+          },
+          "codeJanitor.cleanup.sealClassesWhenSafe": {
+            "type": "boolean",
+            "default": false,
+            "description": "Add the 'sealed' modifier to classes that are not derived from within the same file."
+          },
+          "codeJanitor.cleanup.convertToCollectionExpressions": {
+            "type": "boolean",
+            "default": false,
+            "description": "Convert List<T>/array initializations to C# 12 collection expressions ([] / [a, b, c])."
+          },
+          "codeJanitor.cleanup.reuseJsonSerializerOptionsForCA1869": {
+            "type": "boolean",
+            "default": false,
+            "description": "Replace direct 'new JsonSerializerOptions()' arguments in JsonSerializer calls with null to avoid per-call allocation (CA1869)."
+          },
+          "codeJanitor.cleanup.simplifySingleStatementLambdas": {
+            "type": "boolean",
+            "default": false,
+            "description": "Simplify single-statement lambda block bodies to expression bodies."
+          },
+          "codeJanitor.cleanup.convertToPatternMatchingNullChecks": {
+            "type": "boolean",
+            "default": true,
+            "description": "Convert null checks to pattern matching (e.g. 'x is null')."
+          },
+          "codeJanitor.cleanup.convertStringFormatToInterpolation": {
+            "type": "boolean",
+            "default": true,
+            "description": "Convert string.Format calls to string interpolation."
+          },
+          "codeJanitor.cleanup.convertToStringNameOf": {
+            "type": "boolean",
+            "default": true,
+            "description": "Convert string literals of member names to the 'nameof' operator."
+          },
+          "codeJanitor.cleanup.inlineOutVariableDeclarations": {
+            "type": "boolean",
+            "default": true,
+            "description": "Inline 'out' variable declarations."
+          }
+        }
+      },
+      {
+        "title": "Cleaning: File Header",
+        "order": 8,
+        "properties": {
+          "codeJanitor.cleanup.fileHeaderCSharp": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "description": "Configured C# file header text. Leave empty to disable file header cleanup."
+          },
+          "codeJanitor.cleanup.fileHeaderPosition": {
+            "type": "string",
+            "enum": [
+              "documentStart",
+              "afterUsings"
+            ],
+            "default": "documentStart",
+            "order": 2,
+            "description": "Where the configured file header should be placed."
+          },
+          "codeJanitor.cleanup.fileHeaderUpdateMode": {
+            "type": "string",
+            "enum": [
+              "insert",
+              "replace"
+            ],
+            "default": "insert",
+            "order": 3,
+            "description": "Whether the configured file header is inserted alongside existing content or replaces it."
+          }
+        }
+      },
+      {
+        "title": "Formatting",
+        "order": 9,
+        "properties": {
+          "codeJanitor.cleanup.formatComments": {
+            "type": "boolean",
+            "default": false,
+            "description": "Normalize comment spacing and alignment."
+          }
+        }
+      },
+      {
+        "title": "AI: Provider",
+        "order": 10,
+        "properties": {
+          "codeJanitor.ai.provider": {
+            "type": "string",
+            "enum": [
+              "copilot",
+              "custom"
+            ],
+            "enumDescriptions": [
+              "Use the GitHub Copilot Chat model selected via VS Code's Language Model API (requires the GitHub Copilot Chat extension, signed in).",
+              "Use a custom OpenAI/Claude-compatible HTTP endpoint (e.g. Ollama, LM Studio, Azure OpenAI, Anthropic-compatible proxy)."
+            ],
+            "default": "copilot",
+            "order": 1,
+            "description": "AI provider used for AI-assisted features (e.g. XML documentation generation)."
+          },
+          "codeJanitor.ai.copilotModel": {
+            "type": "string",
+            "default": "",
+            "order": 2,
+            "markdownDescription": "Copilot model to use, matched against the models your own GitHub Copilot subscription currently exposes (no fixed list is built in). Leave empty to use whichever model Copilot offers first. Run **Code Janitor: Use GitHub Copilot Model...** to pick one from your actual, live model list instead of typing a name here."
+          },
+          "codeJanitor.ai.customEndpointUrl": {
+            "type": "string",
+            "default": "",
+            "order": 3,
+            "markdownDescription": "Custom OpenAI/Claude-compatible chat completions endpoint URL, used when `#codeJanitor.ai.provider#` is `custom`."
+          },
+          "codeJanitor.ai.customModel": {
+            "type": "string",
+            "default": "",
+            "order": 4,
+            "description": "Model name sent to the custom endpoint."
+          },
+          "codeJanitor.ai.customApiKeyHeader": {
+            "type": "string",
+            "default": "Authorization",
+            "order": 5,
+            "markdownDescription": "HTTP header name used to send the custom endpoint API key. The key itself is stored in secret storage by the command **Code Janitor: Set Custom AI Endpoint API Key**, never in settings."
+          },
+          "codeJanitor.ai.customTimeoutSeconds": {
+            "type": "number",
+            "default": 30,
+            "order": 6,
+            "description": "Timeout (seconds) for a single custom AI endpoint request."
+          },
+          "codeJanitor.ai.customContextWindowTokens": {
+            "type": "number",
+            "default": 131072,
+            "order": 7,
+            "markdownDescription": "Context window hint (sent as `num_ctx`) for local custom endpoints only, such as llama.cpp or LM Studio. Hosted APIs ignore it. Set to 0 to stop sending the hint."
+          },
+          "codeJanitor.ai.maxTokensPerRequest": {
+            "type": "number",
+            "default": 2048,
+            "order": 8,
+            "description": "Maximum number of tokens a single custom endpoint response may contain, for the explain, review, refactor and unit test actions. GitHub Copilot manages this itself and ignores the setting."
+          }
+        }
+      },
+      {
+        "title": "AI: XML Documentation",
+        "order": 11,
+        "properties": {
+          "codeJanitor.ai.xmlDoc.maxMembersPerFile": {
+            "type": "number",
+            "default": 25,
+            "order": 1,
+            "description": "Maximum number of members per file that may trigger an AI request when generating XML documentation. Properties, fields, indexers and events are documented deterministically and never count against this limit."
+          },
+          "codeJanitor.ai.xmlDoc.maxInputCharsPerMember": {
+            "type": "number",
+            "default": 2500,
+            "order": 2,
+            "description": "Maximum number of characters of a member's body sent to the AI provider as prompt context."
+          },
+          "codeJanitor.ai.xmlDoc.maxTokensPerRequest": {
+            "type": "number",
+            "default": 256,
+            "order": 3,
+            "description": "Maximum number of tokens a single documentation response may contain. A summary is one sentence, so the default is deliberately small. Applies to custom endpoints only."
+          },
+          "codeJanitor.ai.xmlDoc.allowDeterministicFallback": {
+            "type": "boolean",
+            "default": true,
+            "order": 4,
+            "description": "Fall back to a deterministic, name-derived summary when the AI request fails or returns nothing."
+          },
+          "codeJanitor.ai.xmlDoc.previewChanges": {
+            "type": "boolean",
+            "default": false,
+            "order": 5,
+            "description": "Show a diff of the generated documentation and ask for confirmation before applying it."
+          },
+          "codeJanitor.ai.xmlDoc.ignoreGeneratedCode": {
+            "type": "boolean",
+            "default": true,
+            "order": 6,
+            "markdownDescription": "Skip members annotated with `[GeneratedCode]` or `[CompilerGenerated]`."
+          },
+          "codeJanitor.ai.xmlDoc.ignoreObsolete": {
+            "type": "boolean",
+            "default": true,
+            "order": 7,
+            "markdownDescription": "Skip members annotated with `[Obsolete]`."
+          },
+          "codeJanitor.ai.xmlDoc.ignoreTestMethods": {
+            "type": "boolean",
+            "default": true,
+            "order": 8,
+            "description": "Skip test methods (test attributes) and types whose name ends with 'Test'/'Tests'."
+          },
+          "codeJanitor.ai.xmlDoc.ignorePattern": {
+            "type": "string",
+            "default": "",
+            "order": 9,
+            "description": "Regular expression matched against 'Namespace.Type.Method'. Matching methods are skipped."
+          }
+        }
+      },
+      {
+        "title": "AI: Unit Tests",
+        "order": 12,
+        "properties": {
+          "codeJanitor.ai.tests.framework": {
+            "type": "string",
+            "default": "xUnit",
+            "description": "Test framework the AI should target when generating unit tests (e.g. xUnit, NUnit, MSTest)."
+          },
+          "codeJanitor.ai.tests.mockingLibrary": {
+            "type": "string",
+            "default": "Moq",
+            "description": "Mocking library the AI should use when generating unit tests (e.g. Moq, NSubstitute, FakeItEasy)."
+          }
         }
       }
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
@@ -467,16 +686,19 @@
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
     "test": "vitest run",
+    "pretest:e2e": "npm run build && tsc -p tsconfig.e2e.json",
+    "test:e2e": "vscode-test",
+    "smoke-test": "node scripts/smoke-test.js",
     "verify:bundle": "node scripts/verify-bundle.js",
     "package": "npm run build && npx vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
     "esbuild": "^0.23.0",
-    "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.5.0",
-    "vitest": "^3.2.7",
-    "web-tree-sitter": "^0.25.10"
+    "vitest": "^3.2.7"
   }
 }

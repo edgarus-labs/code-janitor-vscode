@@ -1,13 +1,8 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import {
   collectionExpressionConverter,
   stringInterpolationConverter,
 } from '../src/cleanup/transformations/formatAndCollections';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('stringInterpolationConverter', () => {
   const apply = (source: string) => stringInterpolationConverter.apply(source);

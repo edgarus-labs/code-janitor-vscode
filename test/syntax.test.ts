@@ -1,12 +1,7 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { nullCheckPatternMatchingConverter } from '../src/cleanup/transformations/nullCheckPatternMatching';
 import { returnThrowBlankLinePaddingConverter } from '../src/cleanup/transformations/returnThrowBlankLinePadding';
 import { varWhenApparentConverter } from '../src/cleanup/transformations/varWhenApparent';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('varWhenApparentConverter', () => {
   const apply = (source: string) => varWhenApparentConverter.apply(source);
@@ -127,6 +122,51 @@ describe('nullCheckPatternMatchingConverter', () => {
 
   it('is named', () => {
     expect(nullCheckPatternMatchingConverter.name).toBe('Convert to Pattern Matching Null Checks');
+  });
+
+  it('skips a null check inside a lambda passed to Where (possible IQueryable expression tree)', () => {
+    const input = 'class C { void M() { var r = source.Where(x => x.Name != null); } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('skips a null check inside a lambda passed to Select/OrderBy/Any and friends', () => {
+    const input =
+      'class C { void M() { a.Select(x => x != null); b.OrderBy(x => x != null); c.Any(x => x == null); } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('skips a null check inside a lambda assigned to an Expression<...> variable', () => {
+    const input = 'class C { void M() { Expression<Func<Foo, bool>> predicate = x => x.Bar != null; } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('skips a null check inside a lambda cast to Expression<...>', () => {
+    const input = 'class C { void M() { var p = (Expression<Func<Foo, bool>>)(x => x.Bar != null); } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('still converts a null check inside a plain List<T>.Where lambda argument', () => {
+    // Cannot tell IEnumerable from IQueryable without a type checker, so this stays conservative
+    // (skipped) too - see the dedicated skip test above. This test locks in that current behavior.
+    const input = 'class C { void M() { list.Where(x => x != null); } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('still converts a null check outside of any lambda', () => {
+    expect(apply('class C { void M(object x) { source.Where(y => y.Ok); if (x != null) { } } }')).toBe(
+      'class C { void M(object x) { source.Where(y => y.Ok); if (x is not null) { } } }'
+    );
+  });
+
+  it('still converts a null check inside a lambda body that is not passed to a query method', () => {
+    expect(apply('class C { void M() { Action<object> a = x => { var ok = x != null; }; } }')).toBe(
+      'class C { void M() { Action<object> a = x => { var ok = x is not null; }; } }'
+    );
   });
 });
 

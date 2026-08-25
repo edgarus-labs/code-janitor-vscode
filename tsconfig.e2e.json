@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "outDir": "out/e2e",
+    "rootDir": "test/e2e",
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node", "mocha", "vscode"]
+  },
+  "include": ["test/e2e/**/*.ts"]
+}

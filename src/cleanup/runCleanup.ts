@@ -69,8 +69,7 @@ export function buildPipeline(
   editorConfig: EditorConfigCSharpOptions
 ): SourceTransformationPipeline {
   const transformations: (SourceTransformation | undefined)[] = [
-    // Region directives are policy-only structure and are always removed.
-    regionDirectiveRemover,
+    settings.removeRegions ? regionDirectiveRemover : undefined,
     settings.removeByteOrderMark ? byteOrderMarkConverter : undefined,
     settings.moveUsingsOutsideNamespace ? moveUsingsOutsideNamespaceConverter : undefined,
     settings.convertToFileScopedNamespace && !hasMultipleNamespaces(source) ? fileScopedNamespaceConverter : undefined,

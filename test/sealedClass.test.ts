@@ -1,10 +1,5 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { sealedClassConverter } from '../src/cleanup/transformations/sealedClass';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('sealedClassConverter', () => {
   const apply = (source: string) => sealedClassConverter.apply(source);

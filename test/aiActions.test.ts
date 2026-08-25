@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   buildExplainPrompt,
   buildRefactorPrompt,
@@ -8,11 +8,6 @@ import {
   testsSystemPrompt,
 } from '../src/ai/aiActions';
 import { findEnclosingMember } from '../src/cleanup/memberAtPosition';
-import { initCSharpParser } from '../src/cleanup/parser';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('AI action prompts', () => {
   it('embeds the member name and code in the explain prompt', () => {

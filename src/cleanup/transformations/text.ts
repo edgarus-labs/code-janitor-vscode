@@ -197,7 +197,7 @@ function getIndentation(line: string): string {
   return line.slice(0, count);
 }
 
-const SINGLE_LINE_COMMENT = /^(\s*)\/\/\s*(.*)$/;
+const SINGLE_LINE_COMMENT = /^(\s*)(\/\/+)\s*(.*)$/;
 const MULTI_LINE_COMMENT_START = /^(\s*)\/\*/;
 
 /**
@@ -239,8 +239,9 @@ export const commentFormatConverter: SourceTransformation = {
       const singleLineMatch = SINGLE_LINE_COMMENT.exec(line);
       if (singleLineMatch) {
         const indentation = singleLineMatch[1];
-        const commentText = singleLineMatch[2];
-        result.push(commentText.trim() ? `${indentation}// ${commentText.replace(/^\s+/, '')}` : `${indentation}//`);
+        const slashes = singleLineMatch[2];
+        const commentText = singleLineMatch[3];
+        result.push(commentText.trim() ? `${indentation}${slashes} ${commentText.replace(/^\s+/, '')}` : `${indentation}${slashes}`);
         continue;
       }
 

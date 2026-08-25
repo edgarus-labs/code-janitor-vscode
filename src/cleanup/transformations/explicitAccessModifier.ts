@@ -1,5 +1,4 @@
-import { Node } from 'web-tree-sitter';
-import { TextEdit, applyEdits, parseCSharp, walk } from '../parser';
+import { Node, TextEdit, applyEdits, parseCSharp, walk } from '../parser';
 import { CleanupSettings, SourceTransformation } from '../types';
 
 const TYPE_DECLARATIONS = new Set([

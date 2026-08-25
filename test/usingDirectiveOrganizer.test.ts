@@ -1,10 +1,5 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { initCSharpParser } from '../src/cleanup/parser';
+import { describe, expect, it } from 'vitest';
 import { usingDirectiveOrganizer } from '../src/cleanup/transformations/usingDirectiveOrganizer';
-
-beforeAll(async () => {
-  await initCSharpParser();
-});
 
 describe('usingDirectiveOrganizer', () => {
   const apply = (source: string) => usingDirectiveOrganizer.apply(source);

@@ -1,6 +1,5 @@
-import { Node } from 'web-tree-sitter';
 import { CODE, classifyCSharp } from '../csharpScanner';
-import { findAll, parseCSharp } from '../parser';
+import { Node, findAll, parseCSharp } from '../parser';
 import { CleanupSettings, SourceTransformation } from '../types';
 
 const CASE_STATEMENT = /(^[ \t]*)(break;|return(?:[ \t][^;\r\n]*)?;)\r?\n([ \t]*)(case\b|default\s*:)/gm;

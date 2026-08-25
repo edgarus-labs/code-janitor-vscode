@@ -12,6 +12,7 @@ import {
 } from '../ai/aiActions';
 import { getAiChatCompletion } from '../ai/aiService';
 import { findEnclosingMember } from '../cleanup/memberAtPosition';
+import { logError } from '../logging';
 
 interface Target {
   name: string;
@@ -29,6 +30,12 @@ export function registerAiActionCommands(context: vscode.ExtensionContext): void
       runMarkdownAction(context, 'Reviewing code...', REVIEW_SYSTEM_PROMPT, buildReviewPrompt)
     ),
     vscode.commands.registerCommand('codeJanitor.aiRefactor', () => runRefactor(context)),
+    vscode.commands.registerCommand('codeJanitor.cleanAndRefactor', async () => {
+      // Deterministic cleanup never needs confirmation; the AI refactor step still shows its own
+      // diff preview and asks before touching anything, exactly like running it on its own.
+      await vscode.commands.executeCommand('codeJanitor.cleanupActiveFile');
+      await runRefactor(context);
+    }),
     vscode.commands.registerCommand('codeJanitor.aiGenerateUnitTests', () => runGenerateTests(context))
   );
 }
@@ -73,7 +80,7 @@ async function runRefactor(context: vscode.ExtensionContext): Promise<void> {
 
   const refactored = extractCodeSnippet(response);
   if (!refactored) {
-    void vscode.window.showWarningMessage('CodeJanitor: the AI response contained no code to apply.');
+    void vscode.window.showWarningMessage('Code Janitor: the AI response contained no code to apply.');
 
     return;
   }
@@ -82,7 +89,7 @@ async function runRefactor(context: vscode.ExtensionContext): Promise<void> {
   await vscode.window.showTextDocument(summary, { preview: true, viewColumn: vscode.ViewColumn.Beside });
 
   const choice = await vscode.window.showInformationMessage(
-    `CodeJanitor: replace '${target.name}' with the refactored version?`,
+    `Code Janitor: replace '${target.name}' with the refactored version?`,
     { modal: true },
     'Apply'
   );
@@ -99,7 +106,7 @@ async function runGenerateTests(context: vscode.ExtensionContext): Promise<void>
   }
 
   const cfg = vscode.workspace.getConfiguration('codeJanitor');
-  const framework = cfg.get<string>('ai.tests.framework', 'MSTest');
+  const framework = cfg.get<string>('ai.tests.framework', 'xUnit');
   const mocking = cfg.get<string>('ai.tests.mockingLibrary', 'Moq');
 
   const response = await requestCompletion(
@@ -122,7 +129,7 @@ async function runGenerateTests(context: vscode.ExtensionContext): Promise<void>
 function resolveTarget(): Target | undefined {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'csharp') {
-    void vscode.window.showInformationMessage('CodeJanitor: open a C# file first.');
+    void vscode.window.showInformationMessage('Code Janitor: open a C# file first.');
 
     return undefined;
   }
@@ -164,14 +171,16 @@ async function requestCompletion(
   userPrompt: string
 ): Promise<string | undefined> {
   try {
+    const maxTokens = vscode.workspace.getConfiguration('codeJanitor').get<number>('ai.maxTokensPerRequest', 2048);
+
     const response = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `CodeJanitor: ${title}`, cancellable: false },
-      () => getAiChatCompletion(context, systemPrompt, userPrompt)
+      { location: vscode.ProgressLocation.Notification, title: `Code Janitor: ${title}`, cancellable: false },
+      () => getAiChatCompletion(context, systemPrompt, userPrompt, maxTokens)
     );
 
     if (!response.trim()) {
       void vscode.window.showWarningMessage(
-        'CodeJanitor: the AI model returned an empty response. Please check your model settings.'
+        'Code Janitor: the AI model returned an empty response. Please check your model settings.'
       );
 
       return undefined;
@@ -179,7 +188,8 @@ async function requestCompletion(
 
     return response.trim();
   } catch (err) {
-    void vscode.window.showErrorMessage(`CodeJanitor: ${(err as Error).message}`);
+    logError(title, err);
+    void vscode.window.showErrorMessage(`Code Janitor: ${(err as Error).message}`);
 
     return undefined;
   }
