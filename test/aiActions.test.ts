@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildExplainPrompt,
+  buildCoverageReportPrompt,
+  buildCoverageGapTestsPrompt,
   buildRefactorPrompt,
   buildReviewPrompt,
   buildTestsPrompt,
@@ -32,6 +34,24 @@ describe('AI action prompts', () => {
   it('passes the framework and mocking library through the test prompts', () => {
     expect(buildTestsPrompt('Add', 'code', 'xUnit', 'NSubstitute')).toContain('using xUnit and NSubstitute');
     expect(testsSystemPrompt('xUnit', 'NSubstitute')).toContain('using xUnit and NSubstitute');
+  });
+
+  it('asks for prioritized coverage gaps and tests', () => {
+    const prompt = buildCoverageReportPrompt('coverage.cobertura.xml', '<coverage line-rate="0.42" />');
+
+    expect(prompt).toContain("from 'coverage.cobertura.xml'");
+    expect(prompt).toContain('Highest-risk Coverage Gaps');
+    expect(prompt).toContain('Tests To Add First');
+    expect(prompt).toContain('<coverage line-rate="0.42" />');
+  });
+
+  it('builds a coverage-gap test generation prompt with source and report context', () => {
+    const prompt = buildCoverageGapTestsPrompt('Sample.cs', 'class Sample { }', 'lcov.info', 'SF:Sample.cs', 'xUnit', 'Moq');
+
+    expect(prompt).toContain("Generate unit tests for 'Sample.cs' using xUnit and Moq");
+    expect(prompt).toContain('class Sample { }');
+    expect(prompt).toContain('SF:Sample.cs');
+    expect(prompt).toContain('uncovered branches');
   });
 });
 

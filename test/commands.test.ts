@@ -728,6 +728,8 @@ describe('activation', () => {
       'codeJanitor.aiRefactor',
       'codeJanitor.cleanAndRefactor',
       'codeJanitor.aiGenerateUnitTests',
+      'codeJanitor.aiCoverageReport',
+      'codeJanitor.aiGenerateTestsFromCoverageGaps',
     ]);
 
     const aiGroups = new Set(submenu.filter((entry) => aiCommands.has(entry.command)).map((entry) => entry.group));
@@ -756,6 +758,17 @@ describe('activation', () => {
 
     expect(submenuEntry).toBeDefined();
     expect(label?.trim()).toBeTruthy();
+  });
+
+  it('exposes coverage AI actions in the explorer submenu', () => {
+    const submenu = manifest.contributes.menus['codeJanitor.explorerSubmenu'] as { command: string; group: string }[];
+
+    expect(submenu).toEqual(
+      expect.arrayContaining([
+        { command: 'codeJanitor.aiCoverageReport', group: '3_ai' },
+        { command: 'codeJanitor.aiGenerateTestsFromCoverageGaps', group: '3_ai' },
+      ])
+    );
   });
 
   it('gives the explorer submenu the batch XML documentation removal command', () => {

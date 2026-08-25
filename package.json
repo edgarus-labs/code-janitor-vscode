@@ -159,6 +159,16 @@
         "category": "Code Janitor"
       },
       {
+        "command": "codeJanitor.aiCoverageReport",
+        "title": "Analyze Coverage Report (AI)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.aiGenerateTestsFromCoverageGaps",
+        "title": "Generate Tests From Coverage Gaps (AI)",
+        "category": "Code Janitor"
+      },
+      {
         "command": "codeJanitor.openSettings",
         "title": "Open Settings",
         "category": "Code Janitor"
@@ -244,6 +254,14 @@
         {
           "command": "codeJanitor.aiGenerateUnitTests",
           "group": "3_ai"
+        },
+        {
+          "command": "codeJanitor.aiCoverageReport",
+          "group": "3_ai"
+        },
+        {
+          "command": "codeJanitor.aiGenerateTestsFromCoverageGaps",
+          "group": "3_ai"
         }
       ],
       "codeJanitor.explorerSubmenu": [
@@ -270,6 +288,14 @@
         {
           "command": "codeJanitor.formatCommentsSelectedFiles",
           "group": "2_code"
+        },
+        {
+          "command": "codeJanitor.aiCoverageReport",
+          "group": "3_ai"
+        },
+        {
+          "command": "codeJanitor.aiGenerateTestsFromCoverageGaps",
+          "group": "3_ai"
         }
       ]
     },

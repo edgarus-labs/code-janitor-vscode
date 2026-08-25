@@ -36,10 +36,10 @@ then either:
   and **Cleanup Changed Files (Git)** clean a smaller, more targeted set.
 - Turn on **Code Janitor: Toggle Cleanup on Save** to clean every file automatically as you save it.
 - Right-click a file, folder or multi-selection in the Explorer for a **Code Janitor** submenu with
-  batch actions, such as removing XML documentation from every file at once.
+  batch actions, coverage report analysis, and coverage-gap test generation.
 - Right-click inside a C# file for a submenu with the rest of the commands: generating or removing
   XML documentation, fixing a namespace, removing regions, formatting comments, and the AI-powered
-  actions (explain, review, refactor, generate tests).
+  actions (explain, review, refactor, generate tests, analyze coverage reports, generate tests from coverage gaps).
 
 Everything is configurable: open **Code Janitor: Open Settings** for a single page with every
 option, or use the regular VS Code Settings editor - Code Janitor's settings are grouped there the
@@ -47,8 +47,8 @@ same way the original Visual Studio extension organized them.
 
 ## AI features (optional)
 
-Generating XML documentation, explaining code, reviewing it, refactoring it, and generating unit
-tests all use AI, through GitHub Copilot (if you have the Copilot Chat extension) or a custom
+Generating XML documentation, explaining code, reviewing it, refactoring it, generating unit
+tests, analyzing coverage reports, and generating tests from coverage gaps all use AI, through GitHub Copilot (if you have the Copilot Chat extension) or a custom
 OpenAI/Claude-compatible endpoint you configure yourself. Every plain cleanup command works with no
 AI, no account and no network access at all.
 
@@ -58,6 +58,13 @@ free, so if any AI request would actually be sent you get a single confirmation 
 many, across how many files, before anything happens. **Clean and Refactor (Cleanup + AI)** cleans
 the active file and then offers the AI refactor for it - the refactor step still shows its usual
 diff preview and asks before applying anything.
+
+**Analyze Coverage Report (AI)** looks for common .NET coverage outputs (`coverage.cobertura.xml`,
+`coverage.opencover.xml`, `lcov.info`, `*.coveragexml`, `*.coverage.xml`) and opens a focused
+markdown report with the highest-risk gaps and the tests to add first.
+
+**Generate Tests From Coverage Gaps (AI)** uses the same coverage reports, lets you pick a source
+file referenced by the report, and opens a generated C# test class focused on the uncovered code.
 
 ## License
 

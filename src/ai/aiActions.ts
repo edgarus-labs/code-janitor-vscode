@@ -12,6 +12,9 @@ export const REVIEW_SYSTEM_PROMPT =
 export const REFACTOR_SYSTEM_PROMPT =
   'You are a master C# refactoring expert adhering to Clean Code, SOLID principles, and modern C# idioms. Your goal is to simplify nested logic using Guard Clauses, simplify LINQ, improve readability, and preserve exact semantics. Provide your response with a concise bullet list of improvements, followed by the complete refactored C# code inside a ```csharp ``` block.';
 
+export const COVERAGE_REPORT_SYSTEM_PROMPT =
+  'You are a senior .NET test engineer. Analyze code coverage reports pragmatically, identify the highest-risk gaps, and recommend focused tests that would improve confidence without chasing meaningless percentage gains.';
+
 export function testsSystemPrompt(testFramework: string, mockingLibrary: string): string {
   return (
     `You are an expert C# unit testing specialist using ${testFramework} and ${mockingLibrary}. ` +
@@ -106,6 +109,62 @@ Requirements:
    - Asynchronous execution / exception throwing paths if applicable
 4. Use clean Arrange-Act-Assert structure and readable method names following: \`MethodName_Condition_ExpectedResult\`.
 5. Return the complete test class file with necessary using statements.`;
+}
+
+export function buildCoverageReportPrompt(fileName: string, coverageReport: string): string {
+  return `Analyze this .NET code coverage report from '${fileName}':
+
+\`\`\`
+${coverageReport}
+\`\`\`
+
+Please produce a concise markdown report with these sections:
+
+### Summary
+- Overall coverage health and the most important risk in 2-3 bullets.
+
+### Highest-risk Coverage Gaps
+- Prioritize uncovered or weakly covered production code that is likely to hide bugs.
+- Mention classes, methods, files, or line ranges when the report includes them.
+
+### Tests To Add First
+- Recommend concrete unit or integration test cases in priority order.
+- Include edge cases, failure paths, async behavior, and boundary conditions when visible from the report.
+
+### Cleanup Opportunities
+- Note test suites that look noisy, low-value, or overly focused on trivial code.
+
+Avoid generic advice. If the report format lacks detail, say exactly what is missing and what coverage format would make the analysis stronger.`;
+}
+
+export function buildCoverageGapTestsPrompt(
+  sourceName: string,
+  codeSnippet: string,
+  coverageFileName: string,
+  coverageReport: string,
+  testFramework: string,
+  mockingLibrary: string
+): string {
+  return `Generate unit tests for '${sourceName}' using ${testFramework} and ${mockingLibrary}, focusing specifically on the gaps shown in '${coverageFileName}'.
+
+Source code:
+
+\`\`\`csharp
+${codeSnippet}
+\`\`\`
+
+Coverage report excerpt:
+
+\`\`\`
+${coverageReport}
+\`\`\`
+
+Requirements:
+1. Prioritize uncovered branches, exception paths, guard clauses, edge cases, and async failure paths visible from the coverage data.
+2. Do not generate tests for trivial getters/setters unless they are part of meaningful behavior.
+3. Use clean Arrange-Act-Assert structure and readable method names following: \`MethodName_Condition_ExpectedResult\`.
+4. Include necessary using statements and mocks for collaborators when appropriate.
+5. Return ONLY the complete test class file inside a markdown csharp code block.`;
 }
 
 /** Pulls the code out of a fenced block, falling back to the whole response. */

@@ -341,6 +341,77 @@ describe('AI editor actions', () => {
     expect(state.openedDocuments[0].language).toBe('csharp');
     expect(state.openedDocuments[0].content).toContain('SampleTests');
   });
+
+  it('reports when no workspace is open for coverage analysis', async () => {
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiCoverageReport');
+
+    expect(state.informationMessages).toContain('Code Janitor: open a workspace with a coverage report first.');
+    expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
+
+  it('reports when no coverage report is found', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiCoverageReport');
+
+    expect(state.informationMessages.join(' ')).toContain('no coverage report found');
+    expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
+
+  it('opens an AI coverage report in a markdown document', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/TestResults/coverage.cobertura.xml'), Uri.file('/w/coverage.opencover.xml')];
+    state.files.set('/w/coverage.opencover.xml', '<CoverageSession><Summary sequenceCoverage="42" /></CoverageSession>');
+    state.quickPickChoice = 'coverage.opencover.xml';
+    getAiChatCompletion.mockResolvedValue('### Summary\nCoverage needs attention.');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiCoverageReport');
+
+    expect(getAiChatCompletion).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('.NET test engineer'),
+      expect.stringContaining('coverage.opencover.xml'),
+      2048
+    );
+    expect(state.openedDocuments).toEqual([
+      { content: '### Summary\nCoverage needs attention.', language: 'markdown' },
+    ]);
+  });
+
+  it('opens generated tests for a source file referenced by coverage', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
+    state.files.set('/w/coverage.cobertura.xml', '<class filename="src/Sample.cs" line-rate="0.25" />');
+    state.files.set('/w/src/Sample.cs', SOURCE);
+    getAiChatCompletion.mockResolvedValue('```csharp\npublic class SampleCoverageTests { }\n```');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    expect(getAiChatCompletion).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('unit testing specialist'),
+      expect.stringContaining('coverage.cobertura.xml'),
+      2048
+    );
+    expect(state.openedDocuments).toEqual([{ content: 'public class SampleCoverageTests { }', language: 'csharp' }]);
+  });
+
+  it('reports when coverage has no source file paths for gap test generation', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
+    state.files.set('/w/coverage.cobertura.xml', '<coverage line-rate="0.25" />');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    expect(state.informationMessages.join(' ')).toContain('no source files were found');
+    expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
 });
 
 describe('AI utility commands', () => {
