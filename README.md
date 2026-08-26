@@ -45,6 +45,29 @@ Everything is configurable: open **Code Janitor: Open Settings** for a single pa
 option, or use the regular VS Code Settings editor - Code Janitor's settings are grouped there the
 same way the original Visual Studio extension organized them.
 
+For a team-wide cleanup policy, add a `.codejanitor` JSON file to the repository root. Its
+`cleanup` properties use the same names as the Code Janitor settings, for example:
+
+```json
+{
+  "cleanup": {
+    "removeRegions": false,
+    "organizeUsings": true,
+    "convertToFileScopedNamespace": true,
+    "insertBlankLinePadding": true
+  }
+}
+```
+
+The repository file is loaded automatically. Explicit VS Code settings take precedence over it,
+so each developer can still adjust the policy locally. Invalid JSON, unknown properties and values
+with the wrong type are ignored.
+
+You can create or synchronize this file without editing JSON by opening **Code Janitor: Open
+Settings** and using **Export .codejanitor** or **Import .codejanitor**. Export writes the current
+cleanup configuration to the repository root; import copies the repository values into VS Code's
+workspace settings so they can be reviewed or adjusted in the settings panel.
+
 ## AI features (optional)
 
 Generating XML documentation, explaining code, reviewing it, refactoring it, generating unit

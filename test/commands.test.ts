@@ -19,6 +19,7 @@ import { expandToCleanableFiles, isSupportedFile, runCleanupOnUris } from '../sr
 import { registerEditorCommands, suggestNamespace } from '../src/commands/editorCommands';
 import { registerFormatOnSave } from '../src/commands/formatOnSave';
 import { readCleanupSettings, readXmlDocOptions } from '../src/commands/settings';
+import { exportRepositorySettings, importRepositorySettings, registerRepositorySettingsCommands } from '../src/commands/repositorySettings';
 import { HeaderPosition, HeaderUpdateMode } from '../src/cleanup/types';
 
 /** Trailing whitespace is the smallest change every default cleanup configuration performs. */
@@ -92,6 +93,65 @@ describe('readCleanupSettings', () => {
     state.configuration.set('codeJanitor.ai.xmlDoc.ignorePattern', 'Foo');
 
     expect(readXmlDocOptions()).toMatchObject({ maxMembersPerFile: 5, ignorePattern: 'Foo', ignoreObsolete: true });
+  });
+
+  it('loads cleanup policy from a .codejanitor file in the repository root', () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { removeRegions: false, organizeUsings: true, insertBlankLinePadding: false } })
+    );
+
+    const settings = readCleanupSettings(root);
+
+    expect(settings.removeRegions).toBe(false);
+    expect(settings.organizeUsings).toBe(true);
+    expect(settings.insertBlankLinePaddingBeforeClasses).toBe(false);
+    expect(settings.insertBlankLinePaddingAfterMethods).toBe(false);
+  });
+
+  it('lets explicit VS Code cleanup settings override the repository policy', () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+    state.configuration.set('codeJanitor.cleanup.removeRegions', true);
+
+    expect(readCleanupSettings(root).removeRegions).toBe(true);
+  });
+});
+
+describe('repository settings commands', () => {
+  it('exports cleanup settings as a .codejanitor file', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+    state.configuration.set('codeJanitor.cleanup.organizeUsings', true);
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as {
+      cleanup: Record<string, unknown>;
+    };
+    expect(exported.cleanup.removeRegions).toBe(false);
+    expect(exported.cleanup.organizeUsings).toBe(true);
+    expect(exported.cleanup.insertBlankLinePaddingBeforeClasses).toBeUndefined();
+  });
+
+  it('imports repository settings into workspace settings', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false, organizeUsings: true } }));
+
+    await importRepositorySettings(root);
+
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
+    expect(state.configuration.get('codeJanitor.cleanup.organizeUsings')).toBe(true);
+  });
+
+  it('registers export and import commands', () => {
+    const context = createContext();
+    registerRepositorySettingsCommands(context);
+
+    expect([...state.commands.keys()]).toEqual(
+      expect.arrayContaining(['codeJanitor.exportRepositorySettings', 'codeJanitor.importRepositorySettings'])
+    );
   });
 });
 

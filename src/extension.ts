@@ -6,6 +6,7 @@ import { registerFormatOnSave } from './commands/formatOnSave';
 import { registerGenerateXmlDocCommand } from './commands/generateXmlDoc';
 import { registerAiUtilityCommands } from './commands/aiUtilityCommands';
 import { registerSettingsUiCommand } from './commands/settingsUi';
+import { registerRepositorySettingsCommands } from './commands/repositorySettings';
 import { createOutputChannel, logInfo, showOutputChannel } from './logging';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -22,6 +23,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerAiActionCommands(context);
   registerAiUtilityCommands(context);
   registerSettingsUiCommand(context);
+  registerRepositorySettingsCommands(context);
 
   logInfo(`Code Janitor activated (version ${(context.extension.packageJSON as { version: string }).version}).`);
 }

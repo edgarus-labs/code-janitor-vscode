@@ -1,18 +1,24 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { XmlDocRunOptions } from '../cleanup/xmlDocumentation';
 import { CleanupSettings, HeaderPosition, HeaderUpdateMode, createDefaultSettings } from '../cleanup/types';
 
+const REPOSITORY_CONFIG_NAMES = ['.codejanitor', '.code-janitor.json'];
+
 /** Maps the `codeJanitor.cleanup.*` VS Code settings onto the cleanup pipeline's settings shape. */
-export function readCleanupSettings(): CleanupSettings {
+export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
   const cfg = vscode.workspace.getConfiguration('codeJanitor');
   const defaults = createDefaultSettings();
+  const repo = readRepoCleanupOverrides(workspaceRoot ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
+  const base = { ...defaults, ...repo };
 
   // Two VS Code toggles deliberately fan out to all per-kind flags of the original extension.
-  const insertExplicit = cfg.get<boolean>('cleanup.insertExplicitAccessModifiers', true);
-  const insertPadding = cfg.get<boolean>('cleanup.insertBlankLinePadding', true);
+  const insertExplicit = cfg.get<boolean>('cleanup.insertExplicitAccessModifiers', base.insertExplicitAccessModifiersOnClasses);
+  const insertPadding = cfg.get<boolean>('cleanup.insertBlankLinePadding', base.insertBlankLinePaddingBeforeClasses);
 
   return {
-    ...defaults,
+    ...base,
 
     insertBlankLinePaddingBeforeClasses: insertPadding,
     insertBlankLinePaddingAfterClasses: insertPadding,
@@ -52,47 +58,149 @@ export function readCleanupSettings(): CleanupSettings {
     insertExplicitAccessModifiersOnProperties: insertExplicit,
     insertExplicitAccessModifiersOnStructs: insertExplicit,
 
-    moveUsingsOutsideNamespace: cfg.get('cleanup.moveUsingsOutsideNamespace', true),
-    organizeUsings: cfg.get('cleanup.organizeUsings', false),
-    convertToFileScopedNamespace: cfg.get('cleanup.convertToFileScopedNamespace', false),
-    convertToVarWhenApparent: cfg.get('cleanup.convertToVarWhenApparent', false),
-    makeFieldsReadonlyWhenSafe: cfg.get('cleanup.makeFieldsReadonlyWhenSafe', false),
-    sealClassesWhenSafe: cfg.get('cleanup.sealClassesWhenSafe', false),
-    convertToCollectionExpressions: cfg.get('cleanup.convertToCollectionExpressions', false),
-    reuseJsonSerializerOptionsForCA1869: cfg.get('cleanup.reuseJsonSerializerOptionsForCA1869', false),
-    simplifySingleStatementLambdas: cfg.get('cleanup.simplifySingleStatementLambdas', false),
-    insertBlankLineBeforeReturnAndThrowStatements: cfg.get('cleanup.insertBlankLineBeforeReturnAndThrow', false),
-    convertToPatternMatchingNullChecks: cfg.get('cleanup.convertToPatternMatchingNullChecks', true),
-    convertStringFormatToInterpolation: cfg.get('cleanup.convertStringFormatToInterpolation', true),
-    convertToStringNameOf: cfg.get('cleanup.convertToStringNameOf', true),
-    inlineOutVariableDeclarations: cfg.get('cleanup.inlineOutVariableDeclarations', true),
+    moveUsingsOutsideNamespace: cfg.get('cleanup.moveUsingsOutsideNamespace', base.moveUsingsOutsideNamespace),
+    organizeUsings: cfg.get('cleanup.organizeUsings', base.organizeUsings),
+    convertToFileScopedNamespace: cfg.get('cleanup.convertToFileScopedNamespace', base.convertToFileScopedNamespace),
+    convertToVarWhenApparent: cfg.get('cleanup.convertToVarWhenApparent', base.convertToVarWhenApparent),
+    makeFieldsReadonlyWhenSafe: cfg.get('cleanup.makeFieldsReadonlyWhenSafe', base.makeFieldsReadonlyWhenSafe),
+    sealClassesWhenSafe: cfg.get('cleanup.sealClassesWhenSafe', base.sealClassesWhenSafe),
+    convertToCollectionExpressions: cfg.get('cleanup.convertToCollectionExpressions', base.convertToCollectionExpressions),
+    reuseJsonSerializerOptionsForCA1869: cfg.get('cleanup.reuseJsonSerializerOptionsForCA1869', base.reuseJsonSerializerOptionsForCA1869),
+    simplifySingleStatementLambdas: cfg.get('cleanup.simplifySingleStatementLambdas', base.simplifySingleStatementLambdas),
+    insertBlankLineBeforeReturnAndThrowStatements: cfg.get('cleanup.insertBlankLineBeforeReturnAndThrow', base.insertBlankLineBeforeReturnAndThrowStatements),
+    convertToPatternMatchingNullChecks: cfg.get('cleanup.convertToPatternMatchingNullChecks', base.convertToPatternMatchingNullChecks),
+    convertStringFormatToInterpolation: cfg.get('cleanup.convertStringFormatToInterpolation', base.convertStringFormatToInterpolation),
+    convertToStringNameOf: cfg.get('cleanup.convertToStringNameOf', base.convertToStringNameOf),
+    inlineOutVariableDeclarations: cfg.get('cleanup.inlineOutVariableDeclarations', base.inlineOutVariableDeclarations),
 
-    updateEndRegionDirectives: cfg.get('cleanup.updateEndRegionDirectives', true),
-    updateSingleLineMethods: cfg.get('cleanup.updateSingleLineMethods', true),
-    updateAccessorsToBothBeSingleLineOrMultiLine: cfg.get('cleanup.updateAccessorsToBothBeSingleLineOrMultiLine', false),
-    formatComments: cfg.get('cleanup.formatComments', false),
+    updateEndRegionDirectives: cfg.get('cleanup.updateEndRegionDirectives', base.updateEndRegionDirectives),
+    updateSingleLineMethods: cfg.get('cleanup.updateSingleLineMethods', base.updateSingleLineMethods),
+    updateAccessorsToBothBeSingleLineOrMultiLine: cfg.get('cleanup.updateAccessorsToBothBeSingleLineOrMultiLine', base.updateAccessorsToBothBeSingleLineOrMultiLine),
+    formatComments: cfg.get('cleanup.formatComments', base.formatComments),
 
-    removeRegions: cfg.get('cleanup.removeRegions', true),
-    removeByteOrderMark: cfg.get('cleanup.removeByteOrderMark', true),
-    removeEndOfLineWhitespace: cfg.get('cleanup.removeEndOfLineWhitespace', true),
-    removeBlankLinesAtTop: cfg.get('cleanup.removeBlankLinesAtTop', true),
-    removeBlankLinesAtBottom: cfg.get('cleanup.removeBlankLinesAtBottom', true),
-    removeBlankLinesAfterAttributes: cfg.get('cleanup.removeBlankLinesAfterAttributes', true),
-    removeBlankLinesAfterOpeningBrace: cfg.get('cleanup.removeBlankLinesAfterOpeningBrace', true),
-    removeBlankLinesBeforeClosingBrace: cfg.get('cleanup.removeBlankLinesBeforeClosingBrace', true),
-    removeBlankLinesBetweenChainedStatements: cfg.get('cleanup.removeBlankLinesBetweenChainedStatements', true),
-    removeMultipleConsecutiveBlankLines: cfg.get('cleanup.removeMultipleConsecutiveBlankLines', true),
+    removeRegions: cfg.get('cleanup.removeRegions', base.removeRegions),
+    removeByteOrderMark: cfg.get('cleanup.removeByteOrderMark', base.removeByteOrderMark),
+    removeEndOfLineWhitespace: cfg.get('cleanup.removeEndOfLineWhitespace', base.removeEndOfLineWhitespace),
+    removeBlankLinesAtTop: cfg.get('cleanup.removeBlankLinesAtTop', base.removeBlankLinesAtTop),
+    removeBlankLinesAtBottom: cfg.get('cleanup.removeBlankLinesAtBottom', base.removeBlankLinesAtBottom),
+    removeBlankLinesAfterAttributes: cfg.get('cleanup.removeBlankLinesAfterAttributes', base.removeBlankLinesAfterAttributes),
+    removeBlankLinesAfterOpeningBrace: cfg.get('cleanup.removeBlankLinesAfterOpeningBrace', base.removeBlankLinesAfterOpeningBrace),
+    removeBlankLinesBeforeClosingBrace: cfg.get('cleanup.removeBlankLinesBeforeClosingBrace', base.removeBlankLinesBeforeClosingBrace),
+    removeBlankLinesBetweenChainedStatements: cfg.get('cleanup.removeBlankLinesBetweenChainedStatements', base.removeBlankLinesBetweenChainedStatements),
+    removeMultipleConsecutiveBlankLines: cfg.get('cleanup.removeMultipleConsecutiveBlankLines', base.removeMultipleConsecutiveBlankLines),
 
-    fileHeaderCSharp: cfg.get('cleanup.fileHeaderCSharp', ''),
+    fileHeaderCSharp: cfg.get('cleanup.fileHeaderCSharp', base.fileHeaderCSharp),
     fileHeaderPosition:
-      cfg.get<string>('cleanup.fileHeaderPosition', 'documentStart') === 'afterUsings'
+      cfg.get<string>('cleanup.fileHeaderPosition', base.fileHeaderPosition === HeaderPosition.AfterUsings ? 'afterUsings' : 'documentStart') === 'afterUsings'
         ? HeaderPosition.AfterUsings
         : HeaderPosition.DocumentStart,
     fileHeaderUpdateMode:
-      cfg.get<string>('cleanup.fileHeaderUpdateMode', 'insert') === 'replace'
+      cfg.get<string>('cleanup.fileHeaderUpdateMode', base.fileHeaderUpdateMode === HeaderUpdateMode.Replace ? 'replace' : 'insert') === 'replace'
         ? HeaderUpdateMode.Replace
         : HeaderUpdateMode.Insert,
   };
+}
+
+/** Reads the optional repository policy file. Invalid JSON, unknown keys and wrong value types are ignored. */
+export function readRepoCleanupOverrides(workspaceRoot?: string): Partial<CleanupSettings> {
+  if (!workspaceRoot) {
+    return {};
+  }
+
+  try {
+    const configPath = REPOSITORY_CONFIG_NAMES.map((name) => path.join(workspaceRoot, name)).find((file) => fs.existsSync(file));
+    if (!configPath) {
+      return {};
+    }
+
+    const file = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { cleanup?: Record<string, unknown> };
+    const defaults = createDefaultSettings();
+    const cleanup = file?.cleanup;
+    if (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup)) {
+      return {};
+    }
+
+    const overrides: Partial<CleanupSettings> = {};
+    applyBooleanAlias(cleanup, overrides, 'insertBlankLinePadding', [
+      'insertBlankLinePaddingBeforeClasses',
+      'insertBlankLinePaddingAfterClasses',
+      'insertBlankLinePaddingBeforeDelegates',
+      'insertBlankLinePaddingAfterDelegates',
+      'insertBlankLinePaddingBeforeEnumerations',
+      'insertBlankLinePaddingAfterEnumerations',
+      'insertBlankLinePaddingBeforeEvents',
+      'insertBlankLinePaddingAfterEvents',
+      'insertBlankLinePaddingBeforeFieldsMultiLine',
+      'insertBlankLinePaddingAfterFieldsMultiLine',
+      'insertBlankLinePaddingBeforeInterfaces',
+      'insertBlankLinePaddingAfterInterfaces',
+      'insertBlankLinePaddingBeforeMethods',
+      'insertBlankLinePaddingAfterMethods',
+      'insertBlankLinePaddingBeforeNamespaces',
+      'insertBlankLinePaddingAfterNamespaces',
+      'insertBlankLinePaddingBeforePropertiesMultiLine',
+      'insertBlankLinePaddingAfterPropertiesMultiLine',
+      'insertBlankLinePaddingBeforeStructs',
+      'insertBlankLinePaddingAfterStructs',
+      'insertBlankLinePaddingBeforeRegionTags',
+      'insertBlankLinePaddingAfterRegionTags',
+      'insertBlankLinePaddingBeforeEndRegionTags',
+      'insertBlankLinePaddingAfterEndRegionTags',
+      'insertBlankLinePaddingBeforeUsingStatementBlocks',
+      'insertBlankLinePaddingAfterUsingStatementBlocks',
+      'insertBlankLinePaddingBeforeCaseStatements',
+    ]);
+    applyBooleanAlias(cleanup, overrides, 'insertExplicitAccessModifiers', [
+      'insertExplicitAccessModifiersOnClasses',
+      'insertExplicitAccessModifiersOnDelegates',
+      'insertExplicitAccessModifiersOnEnumerations',
+      'insertExplicitAccessModifiersOnEvents',
+      'insertExplicitAccessModifiersOnFields',
+      'insertExplicitAccessModifiersOnInterfaces',
+      'insertExplicitAccessModifiersOnMethods',
+      'insertExplicitAccessModifiersOnProperties',
+      'insertExplicitAccessModifiersOnStructs',
+    ]);
+
+    for (const key of Object.keys(defaults) as (keyof CleanupSettings)[]) {
+      const value = cleanup[key];
+      if (key === 'fileHeaderPosition' || key === 'fileHeaderUpdateMode') {
+        const enumValue = value === 'afterUsings' || value === 'replace' ? value : value === 'documentStart' || value === 'insert' ? value : undefined;
+        if (enumValue !== undefined) {
+          (overrides as Record<string, unknown>)[key] = key === 'fileHeaderPosition'
+            ? enumValue === 'afterUsings' ? HeaderPosition.AfterUsings : HeaderPosition.DocumentStart
+            : enumValue === 'replace' ? HeaderUpdateMode.Replace : HeaderUpdateMode.Insert;
+        }
+
+        continue;
+      }
+
+      if (value === undefined || typeof value !== typeof defaults[key]) {
+        continue;
+      }
+
+      (overrides as Record<string, unknown>)[key] = value;
+    }
+
+    return overrides;
+  } catch {
+    return {};
+  }
+}
+
+function applyBooleanAlias(
+  config: Record<string, unknown>,
+  overrides: Partial<CleanupSettings>,
+  key: string,
+  targetKeys: readonly string[]
+): void {
+  if (typeof config[key] !== 'boolean') {
+    return;
+  }
+
+  for (const targetKey of targetKeys) {
+    (overrides as Record<string, unknown>)[targetKey] = config[key];
+  }
 }
 
 /** Maps the `codeJanitor.ai.xmlDoc.*` settings onto the documentation planner's options. */

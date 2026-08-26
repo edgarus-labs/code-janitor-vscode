@@ -199,6 +199,16 @@ class SettingsPanel {
 
         return;
 
+      case 'exportRepository':
+        void vscode.commands.executeCommand('codeJanitor.exportRepositorySettings');
+
+        return;
+
+      case 'importRepository':
+        void vscode.commands.executeCommand('codeJanitor.importRepositorySettings');
+
+        return;
+
       default:
         return;
     }
@@ -294,6 +304,8 @@ function buildHtml(webview: vscode.Webview): string {
     <option value="user">User</option>
     <option value="workspace">Workspace</option>
   </select>
+  <button id="export" type="button">Export .codejanitor</button>
+  <button id="import" type="button">Import .codejanitor</button>
   <button id="reset" type="button">Reset all to defaults</button>
   <div class="hint">Changes are saved immediately. Settings left at their default are not written to settings.json.</div>
 </header>
@@ -308,6 +320,14 @@ function buildHtml(webview: vscode.Webview): string {
 
   document.getElementById('reset').addEventListener('click', function () {
     vscode.postMessage({ type: 'reset' });
+  });
+
+  document.getElementById('export').addEventListener('click', function () {
+    vscode.postMessage({ type: 'exportRepository' });
+  });
+
+  document.getElementById('import').addEventListener('click', function () {
+    vscode.postMessage({ type: 'importRepository' });
   });
 
   scopeSelect.addEventListener('change', function () {

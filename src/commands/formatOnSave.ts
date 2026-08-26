@@ -31,7 +31,11 @@ function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.Text
   const content = document.getText();
 
   try {
-    const output = runCleanup(content, document.uri.fsPath, readCleanupSettings());
+    const output = runCleanup(
+      content,
+      document.uri.fsPath,
+      readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath)
+    );
     if (output === content) {
       return Promise.resolve([]);
     }

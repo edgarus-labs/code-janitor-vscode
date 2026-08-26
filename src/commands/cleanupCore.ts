@@ -65,7 +65,7 @@ export async function runCleanupOnUris(
   uris: vscode.Uri[]
 ): Promise<{ changed: number; failed: number }> {
   const targets = uris.filter(isSupportedFile);
-  const settings = readCleanupSettings();
+  const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
 
   return runBatch(
     targets,
