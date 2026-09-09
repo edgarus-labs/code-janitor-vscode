@@ -153,6 +153,172 @@ describe('repository settings commands', () => {
       expect.arrayContaining(['codeJanitor.exportRepositorySettings', 'codeJanitor.importRepositorySettings'])
     );
   });
+
+  it('exports with file header position and update mode', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    state.configuration.set('codeJanitor.cleanup.fileHeaderPosition', 'afterUsings');
+    state.configuration.set('codeJanitor.cleanup.fileHeaderUpdateMode', 'replace');
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as {
+      cleanup: Record<string, unknown>;
+    };
+    expect(exported.cleanup.fileHeaderPosition).toBe('afterUsings');
+    expect(exported.cleanup.fileHeaderUpdateMode).toBe('replace');
+  });
+
+  it('exports grouped blank line padding setting', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    state.configuration.set('codeJanitor.cleanup.insertBlankLinePadding', false);
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as {
+      cleanup: Record<string, unknown>;
+    };
+    expect(exported.cleanup.insertBlankLinePadding).toBe(false);
+    expect(exported.cleanup.insertBlankLinePaddingBeforeClasses).toBeUndefined();
+  });
+
+  it('exports grouped explicit access modifiers setting', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    state.configuration.set('codeJanitor.cleanup.insertExplicitAccessModifiers', false);
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as {
+      cleanup: Record<string, unknown>;
+    };
+    expect(exported.cleanup.insertExplicitAccessModifiers).toBe(false);
+    expect(exported.cleanup.insertExplicitAccessModifiersOnClasses).toBeUndefined();
+  });
+
+  it('omits grouped settings when not configured', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as {
+      cleanup: Record<string, unknown>;
+    };
+    expect(exported.cleanup.insertBlankLinePadding).toBeUndefined();
+    expect(exported.cleanup.insertExplicitAccessModifiers).toBeUndefined();
+  });
+
+  it('asks before overwriting an existing .codejanitor', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(path.join(root, '.codejanitor'), '{"cleanup":{}}');
+    state.modalChoice = undefined; // dismiss
+
+    await exportRepositorySettings(root);
+
+    // File should not be overwritten
+    expect(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')).toBe('{"cleanup":{}}');
+  });
+
+  it('overwrites when the user confirms', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(path.join(root, '.codejanitor'), '{"cleanup":{}}');
+    state.modalChoice = 'Overwrite';
+
+    await exportRepositorySettings(root);
+
+    const content = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: object };
+    expect(content.cleanup).toBeDefined();
+  });
+
+  it('reports when no workspace is open for export', async () => {
+    await exportRepositorySettings();
+
+    expect(state.informationMessages).toContain('Code Janitor: open a workspace to export repository settings.');
+  });
+
+  it('reports when no workspace is open for import', async () => {
+    await importRepositorySettings();
+
+    expect(state.informationMessages).toContain('Code Janitor: open a workspace to import repository settings.');
+  });
+
+  it('reports when .codejanitor is not found for import', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+
+    await importRepositorySettings(root);
+
+    expect(state.informationMessages).toContain('Code Janitor: .codejanitor was not found.');
+  });
+
+  it('imports file header position and update mode', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { fileHeaderPosition: 'afterUsings', fileHeaderUpdateMode: 'replace' } })
+    );
+
+    await importRepositorySettings(root);
+
+    expect(state.configuration.get('codeJanitor.cleanup.fileHeaderPosition')).toBe('afterUsings');
+    expect(state.configuration.get('codeJanitor.cleanup.fileHeaderUpdateMode')).toBe('replace');
+  });
+
+  it('imports grouped settings when all values match', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({
+        cleanup: {
+          insertBlankLinePaddingBeforeClasses: false,
+          insertBlankLinePaddingAfterClasses: false,
+          insertBlankLinePaddingBeforeMethods: false,
+          insertBlankLinePaddingAfterMethods: false,
+          insertBlankLinePaddingBeforeDelegates: false,
+          insertBlankLinePaddingAfterDelegates: false,
+          insertBlankLinePaddingBeforeEnumerations: false,
+          insertBlankLinePaddingAfterEnumerations: false,
+          insertBlankLinePaddingBeforeEvents: false,
+          insertBlankLinePaddingAfterEvents: false,
+          insertBlankLinePaddingBeforeFieldsMultiLine: false,
+          insertBlankLinePaddingAfterFieldsMultiLine: false,
+          insertBlankLinePaddingBeforeInterfaces: false,
+          insertBlankLinePaddingAfterInterfaces: false,
+          insertBlankLinePaddingBeforeNamespaces: false,
+          insertBlankLinePaddingAfterNamespaces: false,
+          insertBlankLinePaddingBeforePropertiesMultiLine: false,
+          insertBlankLinePaddingAfterPropertiesMultiLine: false,
+          insertBlankLinePaddingBeforeStructs: false,
+          insertBlankLinePaddingAfterStructs: false,
+          insertBlankLinePaddingBeforeRegionTags: false,
+          insertBlankLinePaddingAfterRegionTags: false,
+          insertBlankLinePaddingBeforeEndRegionTags: false,
+          insertBlankLinePaddingAfterEndRegionTags: false,
+          insertBlankLinePaddingBeforeUsingStatementBlocks: false,
+          insertBlankLinePaddingAfterUsingStatementBlocks: false,
+          insertBlankLinePaddingBeforeCaseStatements: false,
+        },
+      })
+    );
+
+    await importRepositorySettings(root);
+
+    expect(state.configuration.get('codeJanitor.cleanup.insertBlankLinePadding')).toBe(false);
+  });
+
+  it('does not import grouped settings when values differ', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({
+        cleanup: {
+          insertBlankLinePaddingBeforeClasses: true,
+          insertBlankLinePaddingAfterClasses: false,
+        },
+      })
+    );
+
+    await importRepositorySettings(root);
+
+    expect(state.configuration.get('codeJanitor.cleanup.insertBlankLinePadding')).toBeUndefined();
+  });
 });
 
 describe('isSupportedFile', () => {
@@ -308,6 +474,8 @@ describe('cleanup commands', () => {
     'codeJanitor.cleanupWorkspace',
     'codeJanitor.removeXmlDocWorkspace',
     'codeJanitor.toggleCleanupOnSave',
+    'codeJanitor.splitTopLevelTypes',
+    'codeJanitor.splitTopLevelTypesSelectedFiles',
   ];
 
   it('registers every command and disposes them with the context', () => {
@@ -434,6 +602,59 @@ describe('cleanup commands', () => {
     await run('codeJanitor.formatCommentsSelectedFiles');
 
     expect(state.informationMessages.filter((m) => m === 'Code Janitor: no files selected.')).toHaveLength(3);
+  });
+
+  it('splits the active file into one file per top-level type', async () => {
+    const document = new TextDocument(
+      Uri.file('/w/Foo.cs'),
+      'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n',
+      'csharp'
+    );
+    state.documents.push(document);
+    window.activeTextEditor = new TextEditor(document);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypes');
+
+    expect(document.getText()).toContain('class Foo');
+    expect(document.getText()).not.toContain('class Bar');
+    expect(state.files.get(path.join('/w', 'Bar.cs'))).toContain('class Bar');
+  });
+
+  it('reports a missing active editor for splitting top-level types', async () => {
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypes');
+
+    expect(state.informationMessages).toContain('Code Janitor: no active editor.');
+  });
+
+  it('splits selected files into one file per top-level type', async () => {
+    state.files.set('/w/Foo.cs', 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n');
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypesSelectedFiles', Uri.file('/w/Foo.cs'), [Uri.file('/w/Foo.cs')]);
+
+    expect(state.files.get('/w/Foo.cs')).toContain('class Foo');
+    expect(state.files.get('/w/Foo.cs')).not.toContain('class Bar');
+    expect(state.files.get(path.join('/w', 'Bar.cs'))).toContain('class Bar');
+  });
+
+  it('leaves a single-type file untouched when splitting', async () => {
+    state.files.set('/w/Foo.cs', 'internal class Foo\n{\n}\n');
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypesSelectedFiles', Uri.file('/w/Foo.cs'), [Uri.file('/w/Foo.cs')]);
+
+    expect(state.files.get('/w/Foo.cs')).toBe('internal class Foo\n{\n}\n');
+  });
+
+  it('warns when nothing is selected for splitting top-level types', async () => {
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypesSelectedFiles');
+
+    expect(state.informationMessages).toContain('Code Janitor: no files selected.');
   });
 
   it('cleans the files the Git extension reports as changed', async () => {

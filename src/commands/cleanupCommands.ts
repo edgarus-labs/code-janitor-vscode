@@ -8,6 +8,7 @@ import {
   runFormatCommentsOnUris,
   runRemoveRegionsOnUris,
   runRemoveXmlDocOnUris,
+  runSplitTopLevelTypesOnUris,
 } from './cleanupCore';
 
 export function registerCleanupCommands(context: vscode.ExtensionContext): void {
@@ -190,7 +191,42 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
       await config.update('cleanup.onSave', enabled, vscode.ConfigurationTarget.Workspace);
 
       void vscode.window.showInformationMessage(`Code Janitor: cleanup on save ${enabled ? 'enabled' : 'disabled'}.`);
-    })
+    }),
+
+    vscode.commands.registerCommand('codeJanitor.splitTopLevelTypes', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        void vscode.window.showInformationMessage('Code Janitor: no active editor.');
+
+        return;
+      }
+
+      await runWithProgress(
+        'Splitting top-level types...',
+        () => runSplitTopLevelTypesOnUris([editor.document.uri]),
+        'top-level types split'
+      );
+    }),
+
+    vscode.commands.registerCommand(
+      'codeJanitor.splitTopLevelTypesSelectedFiles',
+      async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
+        const targets = selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
+        if (targets.length === 0) {
+          void vscode.window.showInformationMessage('Code Janitor: no files selected.');
+
+          return;
+        }
+
+        const expanded = (await Promise.all(targets.map((u) => expandToCSharpFiles(u)))).flat();
+
+        await runWithProgress(
+          'Splitting top-level types in selected files...',
+          () => runSplitTopLevelTypesOnUris(expanded),
+          'top-level types split'
+        );
+      }
+    )
   );
 }
 

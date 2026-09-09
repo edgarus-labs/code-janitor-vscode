@@ -125,6 +125,11 @@ export function registerSettingsUiCommand(context: vscode.ExtensionContext): voi
   );
 }
 
+/** Test-only: resets the singleton so each test starts with a fresh panel. */
+export function resetSettingsPanelForTesting(): void {
+  SettingsPanel.current = undefined;
+}
+
 class SettingsPanel {
   private static current: SettingsPanel | undefined;
 
@@ -279,21 +284,67 @@ function buildHtml(webview: vscode.Webview): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Code Janitor Settings</title>
 <style>
-  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); padding: 0 24px 32px; }
-  header { position: sticky; top: 0; background: var(--vscode-editor-background); padding: 16px 0 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--vscode-panel-border); }
-  h1 { font-size: 1.4em; margin: 0; flex: 1 1 auto; }
-  h2 { font-size: 1.05em; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-panel-border); }
-  .setting { padding: 10px 0; border-bottom: 1px solid var(--vscode-editorWidget-border, transparent); }
+  * { box-sizing: border-box; }
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); margin: 0; }
+  header {
+    position: sticky; top: 0; z-index: 2; background: var(--vscode-editor-background);
+    padding: 16px 24px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    border-bottom: 1px solid var(--vscode-panel-border);
+  }
+  h1 { font-size: 1.25em; font-weight: 600; margin: 0; flex: 1 1 auto; }
+  .spacer { flex: 1 1 auto; }
+  .layout { display: flex; align-items: flex-start; }
+  nav.toc {
+    position: sticky; top: 64px; align-self: flex-start; width: 232px; flex: 0 0 232px;
+    max-height: calc(100vh - 88px); overflow-y: auto; padding: 16px 8px 16px 24px;
+  }
+  nav.toc a {
+    display: block; padding: 6px 10px; border-radius: 6px; color: var(--vscode-foreground);
+    text-decoration: none; opacity: 0.75; font-size: 0.95em; margin-bottom: 2px;
+  }
+  nav.toc a:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
+  nav.toc a.active { background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)); opacity: 1; font-weight: 600; }
+  main { flex: 1 1 auto; min-width: 0; padding: 16px 24px 48px; }
+  .search {
+    width: 100%; max-width: 420px; padding: 6px 10px; margin-bottom: 4px; font-family: inherit; font-size: inherit;
+    color: var(--vscode-input-foreground); background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px;
+  }
+  section.group { margin-top: 8px; scroll-margin-top: 72px; }
+  h2 { font-size: 1.05em; margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--vscode-panel-border); }
+  .card {
+    padding: 12px 14px; margin-bottom: 8px; border-radius: 8px;
+    background: var(--vscode-editorWidget-background, transparent);
+    border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  }
+  .card.hidden { display: none; }
   .label { font-weight: 600; }
-  .description { opacity: 0.85; margin: 3px 0 6px; line-height: 1.45; }
-  .modified { color: var(--vscode-charts-blue, var(--vscode-textLink-foreground)); font-weight: 600; margin-left: 6px; font-size: 0.85em; }
-  input[type="text"], input[type="number"], select, textarea { width: 100%; max-width: 560px; box-sizing: border-box; padding: 4px 6px; font-family: inherit; font-size: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); }
-  textarea { min-height: 68px; resize: vertical; font-family: var(--vscode-editor-font-family); }
+  .description {
+    display: flex; gap: 6px; align-items: flex-start;
+    opacity: 0.85; margin: 3px 0 8px; line-height: 1.45; font-size: 0.95em;
+  }
+  .description .icon { flex: 0 0 auto; line-height: 1.45; opacity: 0.9; }
+  .modified {
+    color: var(--vscode-badge-foreground); background: var(--vscode-badge-background, var(--vscode-textLink-foreground));
+    font-weight: 600; margin-left: 8px; font-size: 0.75em; padding: 1px 7px; border-radius: 999px; vertical-align: middle;
+  }
+  input[type="text"], input[type="number"], select, textarea {
+    width: 100%; max-width: 560px; padding: 5px 8px; font-family: inherit; font-size: inherit;
+    color: var(--vscode-input-foreground); background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px;
+  }
+  input:focus, select:focus, textarea:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  textarea { min-height: 64px; resize: vertical; font-family: var(--vscode-editor-font-family); }
   label.check { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
-  button, select.scope { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: none; padding: 5px 12px; cursor: pointer; }
+  button, select.scope {
+    color: var(--vscode-button-foreground); background: var(--vscode-button-background);
+    border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;
+  }
+  button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground, transparent); }
   button:hover { background: var(--vscode-button-hoverBackground); }
   select.scope { color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); }
-  .hint { opacity: 0.75; flex-basis: 100%; }
+  .hint { opacity: 0.7; font-size: 0.85em; flex-basis: 100%; display: flex; gap: 6px; align-items: flex-start; }
+  .empty { opacity: 0.7; padding: 24px 0; }
 </style>
 </head>
 <body>
@@ -304,19 +355,31 @@ function buildHtml(webview: vscode.Webview): string {
     <option value="user">User</option>
     <option value="workspace">Workspace</option>
   </select>
-  <button id="export" type="button">Export .codejanitor</button>
-  <button id="import" type="button">Import .codejanitor</button>
-  <button id="reset" type="button">Reset all to defaults</button>
-  <div class="hint">Changes are saved immediately. Settings left at their default are not written to settings.json.</div>
+  <div class="spacer"></div>
+  <button id="export" class="secondary" type="button">Export .codejanitor</button>
+  <button id="import" class="secondary" type="button">Import .codejanitor</button>
+  <button id="reset" class="secondary" type="button">Reset all to defaults</button>
+  <div class="hint"><span>&#128161;</span><span>Changes are saved immediately. Settings left at their default are not written to settings.json.</span></div>
 </header>
-<main id="content"></main>
+<div class="layout">
+  <nav id="toc" class="toc"></nav>
+  <main>
+    <input id="search" class="search" type="search" placeholder="Search settings\u2026">
+    <div id="content"></div>
+    <div id="empty" class="empty" hidden>&#128269; No settings match your search.</div>
+  </main>
+</div>
 <script nonce="${nonce}">
 (function () {
   const vscode = acquireVsCodeApi();
   const content = document.getElementById('content');
+  const toc = document.getElementById('toc');
+  const searchBox = document.getElementById('search');
+  const emptyState = document.getElementById('empty');
   const scopeSelect = document.getElementById('scope');
   let controls = {};
   let defaults = {};
+  let cards = [];
 
   document.getElementById('reset').addEventListener('click', function () {
     vscode.postMessage({ type: 'reset' });
@@ -351,7 +414,8 @@ function buildHtml(webview: vscode.Webview): string {
 
   function buildSetting(setting) {
     const wrapper = document.createElement('div');
-    wrapper.className = 'setting';
+    wrapper.className = 'card';
+    wrapper.dataset.searchText = (setting.label + ' ' + setting.description + ' ' + setting.key).toLowerCase();
 
     const badge = document.createElement('span');
     badge.className = 'modified';
@@ -388,7 +452,16 @@ function buildHtml(webview: vscode.Webview): string {
     if (setting.description) {
       const description = document.createElement('div');
       description.className = 'description';
-      description.textContent = setting.description;
+
+      const icon = document.createElement('span');
+      icon.className = 'icon';
+      icon.textContent = '\\u2139\\uFE0F';
+      description.appendChild(icon);
+
+      const text = document.createElement('span');
+      text.textContent = setting.description;
+      description.appendChild(text);
+
       wrapper.appendChild(description);
     }
 
@@ -450,19 +523,89 @@ function buildHtml(webview: vscode.Webview): string {
 
   function render(sections) {
     content.textContent = '';
+    toc.textContent = '';
     controls = {};
+    cards = [];
 
-    sections.forEach(function (section) {
+    sections.forEach(function (section, index) {
+      const sectionId = 'section-' + index;
+
+      const group = document.createElement('section');
+      group.className = 'group';
+      group.id = sectionId;
+
       const heading = document.createElement('h2');
       heading.textContent = section.title;
-      content.appendChild(heading);
+      group.appendChild(heading);
 
       section.settings.forEach(function (setting) {
         defaults[setting.key] = setting.defaultValue;
-        content.appendChild(buildSetting(setting));
+        const card = buildSetting(setting);
+        cards.push(card);
+        group.appendChild(card);
       });
+
+      content.appendChild(group);
+
+      const link = document.createElement('a');
+      link.href = '#' + sectionId;
+      link.textContent = section.title;
+      link.addEventListener('click', function (event) {
+        event.preventDefault();
+        group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      toc.appendChild(link);
     });
+
+    observeSections();
   }
+
+  function observeSections() {
+    const links = Array.from(toc.querySelectorAll('a'));
+    if (!('IntersectionObserver' in window) || links.length === 0) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) {
+          return;
+        }
+
+        links.forEach(function (link) { link.classList.remove('active'); });
+        const active = toc.querySelector('a[href="#' + entry.target.id + '"]');
+        if (active) {
+          active.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-72px 0px -70% 0px' });
+
+    document.querySelectorAll('section.group').forEach(function (section) { observer.observe(section); });
+  }
+
+  function applyFilter() {
+    const query = searchBox.value.trim().toLowerCase();
+    let visibleCount = 0;
+
+    cards.forEach(function (card) {
+      const matches = !query || card.dataset.searchText.indexOf(query) !== -1;
+      card.classList.toggle('hidden', !matches);
+      if (matches) {
+        visibleCount++;
+      }
+    });
+
+    document.querySelectorAll('section.group').forEach(function (section) {
+      const visible = Array.from(section.querySelectorAll('.card')).some(function (card) {
+        return !card.classList.contains('hidden');
+      });
+      section.style.display = visible ? '' : 'none';
+    });
+
+    emptyState.hidden = visibleCount !== 0;
+  }
+
+  searchBox.addEventListener('input', applyFilter);
 
   function applyValues(values) {
     Object.keys(controls).forEach(function (key) {
@@ -480,6 +623,7 @@ function buildHtml(webview: vscode.Webview): string {
         scopeSelect.options[1].disabled = true;
       }
       applyValues(message.values);
+      applyFilter();
     } else if (message.type === 'values') {
       scopeSelect.value = message.scope;
       applyValues(message.values);

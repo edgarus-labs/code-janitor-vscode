@@ -57,6 +57,83 @@ export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3
 export const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 } as const;
 export const ViewColumn = { Active: -1, Beside: -2, One: 1 } as const;
 
+// ---------------------------------------------------------------- webview
+
+export interface MockWebviewPanel {
+  webview: {
+    html: string;
+    cspSource: string;
+    postMessage: (message: unknown) => Thenable<boolean>;
+    onDidReceiveMessage: (handler: (message: unknown) => void) => { dispose(): void };
+  };
+  reveal: (column: number) => void;
+  dispose: () => void;
+  onDidDispose: (handler: () => void) => { dispose(): void };
+}
+
+/** Registered webview message handlers. */
+export const webviewMessageHandlers: ((message: unknown) => void)[][] = [];
+export const webviewDisposeHandlers: (() => void)[][] = [];
+
+let nextWebviewPanelId = 0;
+
+/** Resets webview panel tracking - call from test setup. */
+export function resetWebviewPanels(): void {
+  webviewMessageHandlers.length = 0;
+  webviewDisposeHandlers.length = 0;
+  nextWebviewPanelId = 0;
+}
+
+export function createMockWebviewPanel(): MockWebviewPanel {
+  const id = nextWebviewPanelId++;
+  const messageHandlers: ((message: unknown) => void)[] = [];
+  const disposeHandlers: (() => void)[] = [];
+  const postedMessages: unknown[] = [];
+  webviewMessageHandlers[id] = messageHandlers;
+  webviewDisposeHandlers[id] = disposeHandlers;
+
+  const panel: MockWebviewPanel = {
+    webview: {
+      html: '',
+      cspSource: 'mock-csp',
+      postMessage: (message) => {
+        postedMessages.push(message);
+
+        return Promise.resolve(true);
+      },
+      onDidReceiveMessage: (handler) => {
+        messageHandlers.push(handler);
+
+        return { dispose: () => messageHandlers.splice(messageHandlers.indexOf(handler), 1) };
+      },
+    },
+    reveal: () => undefined,
+    dispose: () => {
+      for (const handler of disposeHandlers) {
+        handler();
+      }
+    },
+    onDidDispose: (handler) => {
+      disposeHandlers.push(handler);
+
+      return { dispose: () => disposeHandlers.splice(disposeHandlers.indexOf(handler), 1) };
+    },
+  };
+
+  // Attach the id and message log so tests can target this panel.
+  (panel as MockWebviewPanel & { __panelId: number; __postedMessages: unknown[] }).__panelId = id;
+  (panel as MockWebviewPanel & { __postedMessages: unknown[] }).__postedMessages = postedMessages;
+
+  return panel;
+}
+
+/** Fires a message to all handlers on the panel created with the given id. */
+export function simulateWebviewMessage(panelId: number, message: unknown): void {
+  for (const handler of webviewMessageHandlers[panelId] ?? []) {
+    handler(message);
+  }
+}
+
 export class TextEdit {
   private constructor(
     readonly range: Range,
@@ -249,13 +326,13 @@ export interface ExtensionContext {
   secrets: { get(key: string): Thenable<string | undefined>; store(key: string, value: string): Thenable<void>; delete(key: string): Thenable<void> };
 }
 
-export function createContext(): ExtensionContext {
+export function createContext(packageJSON?: unknown): ExtensionContext {
   const secrets = new Map<string, string>();
 
   return {
     subscriptions: [],
     extensionUri: Uri.file('/ext'),
-    extension: { packageJSON: { version: '0.0.0-test' } },
+    extension: { packageJSON: packageJSON ?? { version: '0.0.0-test' } },
     secrets: {
       get: (key) => Promise.resolve(secrets.get(key)),
       store: (key, value) => {
@@ -323,6 +400,15 @@ export const window = {
   withProgress<T>(_options: unknown, task: (progress: unknown, token: unknown) => Thenable<T>): Thenable<T> {
     return task({ report: () => undefined }, { isCancellationRequested: false, onCancellationRequested: () => undefined });
   },
+
+  createWebviewPanel(
+    _viewType: string,
+    _title: string,
+    _column: number,
+    _options: unknown
+  ): MockWebviewPanel {
+    return createMockWebviewPanel();
+  },
 };
 
 export const commands = {
@@ -360,20 +446,29 @@ export const workspace = {
     return state.workspaceFolders;
   },
 
-  getConfiguration(section: string) {
+  getConfiguration(section?: string) {
+    const prefix = section ? `${section}.` : '';
+
     return {
       get<T>(key: string, defaultValue?: T): T | undefined {
-        const full = `${section}.${key}`;
+        const full = `${prefix}${key}`;
         state.configurationReads.push(full);
 
         return (state.configuration.has(full) ? (state.configuration.get(full) as T) : defaultValue);
       },
       update(key: string, value: unknown, target?: unknown): Thenable<void> {
-        const full = `${section}.${key}`;
+        const full = `${prefix}${key}`;
         state.configuration.set(full, value);
         state.configurationUpdates.push({ key: full, value, target });
 
         return Promise.resolve();
+      },
+      inspect<T>(key: string): { globalValue?: T; workspaceValue?: T; workspaceFolderValue?: T } | undefined {
+        const full = `${prefix}${key}`;
+
+        return state.configuration.has(full)
+          ? { globalValue: state.configuration.get(full) as T, workspaceValue: undefined }
+          : undefined;
       },
     };
   },
@@ -409,6 +504,10 @@ export const workspace = {
     return { dispose: () => undefined };
   },
 
+  onDidChangeConfiguration(_handler: (event: { affectsConfiguration(section: string): boolean }) => void): { dispose(): void } {
+    return { dispose: () => undefined };
+  },
+
   fs: {
     readFile(uri: Uri): Thenable<Uint8Array> {
       const content = state.files.get(uri.fsPath);
@@ -432,6 +531,27 @@ export const workspace = {
 
       return Promise.resolve({ type: FileType.File });
     },
+
+    /** Lists the immediate children of `uri` derived from the flat `state.files` map. */
+    readDirectory(uri: Uri): Thenable<[string, number][]> {
+      const dir = uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
+      const seen = new Map<string, number>();
+
+      for (const filePath of state.files.keys()) {
+        const normalized = filePath.replace(/\\/g, '/');
+        if (!normalized.startsWith(`${dir}/`)) {
+          continue;
+        }
+
+        const rest = normalized.slice(dir.length + 1);
+        const isNested = rest.includes('/');
+        const name = isNested ? rest.slice(0, rest.indexOf('/')) : rest;
+
+        seen.set(name, isNested ? FileType.Directory : FileType.File);
+      }
+
+      return Promise.resolve([...seen.entries()]);
+    },
   },
 };
 
@@ -440,3 +560,48 @@ export const lm = {
     return Promise.resolve(state.copilotModels);
   },
 };
+
+export class LanguageModelChatMessage {
+  static User(content: string): { content: string; role: string } {
+    return { content, role: 'user' };
+  }
+}
+
+export class CancellationTokenSource {
+  readonly token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) };
+
+  cancel(): void {
+    this.token.isCancellationRequested = true;
+  }
+
+  dispose(): void {}
+}
+
+export interface MockChatModel {
+  id: string;
+  family: string;
+  vendor: string;
+  name: string;
+  maxInputTokens: number;
+  sendRequest(messages: unknown[], _options: unknown, _token: unknown): Thenable<{ text: AsyncIterable<string> }>;
+}
+
+export function createMockChatModel(
+  overrides: Partial<MockChatModel> = {},
+  fragments: string[] = ['Hello']
+): MockChatModel {
+  return {
+    id: 'copilot-4o',
+    family: 'copilot-4o',
+    vendor: 'copilot',
+    name: 'GPT-4o',
+    maxInputTokens: 128000,
+    sendRequest: () =>
+      Promise.resolve({
+        text: (async function* () {
+          for (const f of fragments) yield f;
+        })(),
+      }),
+    ...overrides,
+  };
+}

@@ -64,6 +64,16 @@
         "category": "Code Janitor"
       },
       {
+        "command": "codeJanitor.splitTopLevelTypes",
+        "title": "Split Top-Level Types",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.splitTopLevelTypesSelectedFiles",
+        "title": "Split Top-Level Types (Selected Files)",
+        "category": "Code Janitor"
+      },
+      {
         "command": "codeJanitor.fixNamespace",
         "title": "Fix Namespace",
         "category": "Code Janitor"
@@ -246,6 +256,10 @@
           "group": "2_code"
         },
         {
+          "command": "codeJanitor.splitTopLevelTypes",
+          "group": "2_code"
+        },
+        {
           "command": "codeJanitor.aiExplain",
           "group": "3_ai"
         },
@@ -297,6 +311,10 @@
         },
         {
           "command": "codeJanitor.formatCommentsSelectedFiles",
+          "group": "2_code"
+        },
+        {
+          "command": "codeJanitor.splitTopLevelTypesSelectedFiles",
           "group": "2_code"
         },
         {
@@ -365,7 +383,7 @@
           "codeJanitor.cleanup.moveUsingsOutsideNamespace": {
             "type": "boolean",
             "default": true,
-            "description": "Move using directives outside the namespace declaration."
+            "markdownDescription": "Move using directives outside the namespace declaration, so they sit at the top of the file instead of nested inside `namespace { ... }`."
           },
           "codeJanitor.cleanup.organizeUsings": {
             "type": "boolean",
@@ -375,7 +393,7 @@
           "codeJanitor.cleanup.convertToFileScopedNamespace": {
             "type": "boolean",
             "default": false,
-            "description": "Convert a single top-level block-scoped namespace to a file-scoped namespace."
+            "markdownDescription": "Convert a single top-level block-scoped namespace to a file-scoped namespace: `namespace Demo { ... }` becomes `namespace Demo;`, removing one level of indentation. Skipped when the file declares more than one namespace."
           }
         }
       },
@@ -468,12 +486,12 @@
           "codeJanitor.cleanup.updateSingleLineMethods": {
             "type": "boolean",
             "default": true,
-            "description": "Reformat single-line methods/properties consistently."
+            "markdownDescription": "Reformat single-line methods and properties onto multiple lines, so `void M() { }` becomes a normal braced body. Keeps declaration layout consistent across the file."
           },
           "codeJanitor.cleanup.updateAccessorsToBothBeSingleLineOrMultiLine": {
             "type": "boolean",
             "default": false,
-            "description": "Ensure property accessors are consistently single-line or multi-line."
+            "markdownDescription": "Ensure both accessors of a property use the same layout: if one is multi-line, `get`/`set` are both expanded, otherwise both are collapsed onto one line."
           }
         }
       },
@@ -509,27 +527,27 @@
           "codeJanitor.cleanup.simplifySingleStatementLambdas": {
             "type": "boolean",
             "default": false,
-            "description": "Simplify single-statement lambda block bodies to expression bodies."
+            "markdownDescription": "Simplify single-statement lambda block bodies to expression bodies: `x => { return x + 1; }` becomes `x => x + 1`."
           },
           "codeJanitor.cleanup.convertToPatternMatchingNullChecks": {
             "type": "boolean",
             "default": true,
-            "description": "Convert null checks to pattern matching (e.g. 'x is null')."
+            "markdownDescription": "Convert null checks to pattern matching: `x == null` becomes `x is null` and `x != null` becomes `x is not null`."
           },
           "codeJanitor.cleanup.convertStringFormatToInterpolation": {
             "type": "boolean",
             "default": true,
-            "description": "Convert string.Format calls to string interpolation."
+            "markdownDescription": "Convert `string.Format` calls to string interpolation: `string.Format(\"Hi {0}\", name)` becomes `$\"Hi {name}\"`."
           },
           "codeJanitor.cleanup.convertToStringNameOf": {
             "type": "boolean",
             "default": true,
-            "description": "Convert string literals of member names to the 'nameof' operator."
+            "markdownDescription": "Convert string literals that name a parameter or member to the `nameof` operator, so `throw new ArgumentNullException(\"name\")` becomes `nameof(name)` and survives renames."
           },
           "codeJanitor.cleanup.inlineOutVariableDeclarations": {
             "type": "boolean",
             "default": true,
-            "description": "Inline 'out' variable declarations."
+            "markdownDescription": "Inline `out` variable declarations into the call itself: a separate `int value;` before `TryParse(text, out value)` becomes `TryParse(text, out int value)`."
           }
         }
       },
@@ -549,6 +567,10 @@
               "documentStart",
               "afterUsings"
             ],
+            "enumDescriptions": [
+              "Place the header on the very first line, above any using directives.",
+              "Place the header below the using directives, directly before the namespace or type."
+            ],
             "default": "documentStart",
             "order": 2,
             "description": "Where the configured file header should be placed."
@@ -558,6 +580,10 @@
             "enum": [
               "insert",
               "replace"
+            ],
+            "enumDescriptions": [
+              "Add the header only when the file does not already start with it, leaving existing comments alone.",
+              "Replace the existing leading comment block with the configured header."
             ],
             "default": "insert",
             "order": 3,
@@ -572,7 +598,7 @@
           "codeJanitor.cleanup.formatComments": {
             "type": "boolean",
             "default": false,
-            "description": "Normalize comment spacing and alignment."
+            "markdownDescription": "Normalize comment spacing and alignment, so `//comment` becomes `// comment` and comment blocks line up consistently."
           }
         }
       },

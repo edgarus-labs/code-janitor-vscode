@@ -20,7 +20,8 @@ First release of the Visual Studio Code port.
   accessor formatting.
 - **Commands**: cleanup of the active file, selected files, open files, files changed in Git and
   the whole workspace; toggle cleanup on save; fix namespace; remove regions; format comments;
-  remove XML documentation; join lines; sort lines.
+  remove XML documentation; join lines; sort lines; split a file's top-level types into their own
+  files.
 - **AI features**: XML documentation generation, explain, code review, clean/refactor and unit test
   generation - through GitHub Copilot (Language Model API) or a custom OpenAI/Claude-compatible
   endpoint.

@@ -61,7 +61,7 @@ export function isLocalEndpoint(endpointUrl: string): boolean {
   }
 
   const host = uri.hostname;
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
     return true;
   }
 

@@ -560,3 +560,95 @@ describe('AI token budgets', () => {
     expect(getAiChatCompletion).toHaveBeenCalledWith(expect.anything(), expect.any(String), expect.any(String), 2048);
   });
 });
+
+describe('coverage report edge cases', () => {
+  it('reports when the coverage report is empty', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
+    state.files.set('/w/coverage.cobertura.xml', '   \n  ');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiCoverageReport');
+
+    expect(state.warningMessages.join(' ')).toContain('coverage report is empty');
+    expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
+
+  it('reports when the coverage report is empty for gap generation', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
+    state.files.set('/w/coverage.cobertura.xml', '   \n  ');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    expect(state.warningMessages.join(' ')).toContain('coverage report is empty');
+    expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
+
+  it('uses the single coverage file without prompting when only one exists', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
+    state.files.set('/w/coverage.cobertura.xml', '<class filename="src/Sample.cs" line-rate="0.25" />');
+    state.files.set('/w/src/Sample.cs', SOURCE);
+    getAiChatCompletion.mockResolvedValue('```csharp\npublic class Tests { }\n```');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    expect(state.quickPickItems).toEqual([]);
+    expect(getAiChatCompletion).toHaveBeenCalled();
+  });
+
+  it('prompts when multiple source files are found in coverage', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
+    state.files.set(
+      '/w/coverage.cobertura.xml',
+      '<class filename="src/Sample.cs" line-rate="0.25" /><class filename="src/Other.cs" line-rate="0.5" />'
+    );
+    state.files.set('/w/src/Sample.cs', SOURCE);
+    state.files.set('/w/src/Other.cs', SOURCE);
+    state.quickPickChoice = 'src/Other.cs';
+    getAiChatCompletion.mockResolvedValue('```csharp\npublic class OtherTests { }\n```');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    expect(state.quickPickItems.length).toBeGreaterThan(0);
+    expect(getAiChatCompletion).toHaveBeenCalled();
+  });
+
+  it('opens the raw AI response when it has no code block for gap tests', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
+    state.files.set('/w/coverage.cobertura.xml', '<class filename="src/Sample.cs" line-rate="0.25" />');
+    state.files.set('/w/src/Sample.cs', SOURCE);
+    getAiChatCompletion.mockResolvedValue('No code here.');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    // The command opens the raw response as a C# document even without a code block
+    expect(state.openedDocuments).toEqual([{ content: 'No code here.', language: 'csharp' }]);
+  });
+
+  it('reports when no workspace is open for gap test generation', async () => {
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    expect(state.informationMessages).toContain('Code Janitor: open a workspace with a coverage report first.');
+    expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
+
+  it('reports when no coverage report is found for gap generation', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiGenerateTestsFromCoverageGaps');
+
+    expect(state.informationMessages.join(' ')).toContain('no coverage report found');
+    expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
+});

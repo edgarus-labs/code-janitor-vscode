@@ -38,8 +38,13 @@ then either:
 - Right-click a file, folder or multi-selection in the Explorer for a **Code Janitor** submenu with
   batch actions, coverage report analysis, and coverage-gap test generation.
 - Right-click inside a C# file for a submenu with the rest of the commands: generating or removing
-  XML documentation, fixing a namespace, removing regions, formatting comments, and the AI-powered
-  actions (explain, review, refactor, generate tests, analyze coverage reports, generate tests from coverage gaps).
+  XML documentation, fixing a namespace, removing regions, formatting comments, splitting a file's
+  top-level types into their own files, and the AI-powered actions (explain, review, refactor,
+  generate tests, analyze coverage reports, generate tests from coverage gaps).
+- **Code Janitor: Split Top-Level Types** splits a C# file that declares more than one class,
+  interface, record, enum or delegate into one file per type, keeping the type matching the
+  current file name (or the first one) in place. It's an explicit, manual command - like the
+  other file-creating actions, it never runs as part of cleanup-on-save or workspace cleanup.
 
 Everything is configurable: open **Code Janitor: Open Settings** for a single page with every
 option, or use the regular VS Code Settings editor - Code Janitor's settings are grouped there the

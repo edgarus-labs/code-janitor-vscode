@@ -1,8 +1,10 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
 import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
 import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
 import { commentFormatConverter, regionDirectiveRemover } from '../cleanup/transformations/text';
+import { createTopLevelTypeSplitPlan } from '../cleanup/topLevelTypeSplit';
 import { suggestNamespace } from './editorCommands';
 import { logError, logInfo } from '../logging';
 import { readCleanupSettings } from './settings';
@@ -126,6 +128,74 @@ export async function runFixNamespaceOnUris(uris: vscode.Uri[]): Promise<{ chang
     'Fix Namespace',
     'Code Janitor: no C# files to fix the namespace of.'
   );
+}
+
+/**
+ * Splits every given C# file that declares more than one eligible top-level type into one file
+ * per type, applying the cleanup pipeline to both the updated original and each created file. This
+ * is an explicit, manual operation - unlike ordinary cleanup it creates files, so it is never part
+ * of cleanup-on-save or workspace-wide cleanup.
+ */
+export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{ changed: number; failed: number }> {
+  const targets = uris.filter((uri) => isCSharp(uri) && isPathCleanable(uri));
+
+  if (targets.length === 0) {
+    void vscode.window.showInformationMessage('Code Janitor: no C# files to split.');
+
+    return { changed: 0, failed: 0 };
+  }
+
+  logInfo(`Split Top-Level Types: starting on ${targets.length} file(s).`);
+
+  const collected = await collectFiles(targets);
+  const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath);
+
+  let changedOriginals = 0;
+  let createdFiles = 0;
+  let failed = 0;
+
+  for (const file of collected) {
+    try {
+      const reserved = await siblingCSharpFileNames(file.uri);
+      const plan = createTopLevelTypeSplitPlan(file.content, file.uri.fsPath, reserved);
+
+      if (!plan.hasChanges) {
+        continue;
+      }
+
+      for (const newFile of plan.newFiles) {
+        const cleaned = runCleanup(newFile.content, newFile.filePath, settings);
+        await vscode.workspace.fs.writeFile(vscode.Uri.file(newFile.filePath), Buffer.from(cleaned, 'utf8'));
+        createdFiles++;
+      }
+
+      await writeFileContent(file, runCleanup(plan.updatedSource, file.uri.fsPath, settings));
+      changedOriginals++;
+    } catch (err) {
+      failed++;
+      logError(`Split Top-Level Types of ${file.uri.fsPath}`, err);
+      void vscode.window.showWarningMessage(`Code Janitor: ${file.uri.fsPath} - ${(err as Error).message}`);
+    }
+  }
+
+  logInfo(
+    `Split Top-Level Types: finished - ${changedOriginals} file(s) updated, ${createdFiles} file(s) created, ${failed} failed.`
+  );
+
+  return { changed: changedOriginals + createdFiles, failed };
+}
+
+/** Existing `.cs` file names in the same directory, used to avoid overwriting a file when planning new names. */
+async function siblingCSharpFileNames(uri: vscode.Uri): Promise<Set<string>> {
+  const directory = vscode.Uri.file(path.dirname(uri.fsPath));
+
+  try {
+    const entries = await vscode.workspace.fs.readDirectory(directory);
+
+    return new Set(entries.filter(([name]) => name.toLowerCase().endsWith('.cs')).map(([name]) => name));
+  } catch {
+    return new Set();
+  }
 }
 
 /**

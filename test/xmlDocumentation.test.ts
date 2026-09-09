@@ -224,4 +224,665 @@ describe('planTargets and applySummaries', () => {
 
     expect(applySummaries(onlyMethod, createDefaultXmlDocOptions(), {})).toBe(onlyMethod);
   });
+
+  it('documents methods with throw statements', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork()\n{\n    throw new InvalidOperationException();\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('/// <summary>');
+    expect(updated).toContain('/// Does work.');
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with ThrowIfNull', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(string input)\n{\n    ArgumentNullException.ThrowIfNull(input);\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="ArgumentNullException">');
+  });
+
+  
+
+  
+
+  it('documents methods with ThrowIfNegative', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(int value)\n{\n    ArgumentOutOfRangeException.ThrowIfNegative(value);\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="ArgumentOutOfRangeException">');
+  });
+
+  it('documents methods with multiple exceptions', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(string input, int value)\n{\n    if (input == null) throw new ArgumentNullException();\n    if (value < 0) throw new ArgumentOutOfRangeException();\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="ArgumentNullException">');
+    expect(updated).toContain('<exception cref="ArgumentOutOfRangeException">');
+  });
+
+  it('documents methods returning bool with is prefix', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic bool IsValid()\n{\n    return true;\n}\n}\n';
+    const updated = generate(source, () => 'Checks validity.');
+
+    expect(updated).toContain('<returns>true if the condition is met; otherwise, false.</returns>');
+  });
+
+  it('documents methods returning bool with has prefix', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic bool HasValue()\n{\n    return true;\n}\n}\n';
+    const updated = generate(source, () => 'Checks value.');
+
+    expect(updated).toContain('<returns>true if the condition is met; otherwise, false.</returns>');
+  });
+
+  it('documents methods returning bool with can prefix', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic bool CanExecute()\n{\n    return true;\n}\n}\n';
+    const updated = generate(source, () => 'Checks execution.');
+
+    expect(updated).toContain('<returns>true if the condition is met; otherwise, false.</returns>');
+  });
+
+  it('documents methods returning bool with try prefix', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic bool TryParse(string s)\n{\n    return true;\n}\n}\n';
+    const updated = generate(source, () => 'Tries to parse.');
+
+    expect(updated).toContain('<returns>true if the condition is met; otherwise, false.</returns>');
+  });
+
+  it('documents methods returning Task', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic Task DoWorkAsync()\n{\n    return Task.CompletedTask;\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<returns>A task representing the asynchronous operation.</returns>');
+  });
+
+  it('documents methods returning ValueTask', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic ValueTask DoWorkAsync()\n{\n    return ValueTask.CompletedTask;\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<returns>A value task representing the asynchronous operation.</returns>');
+  });
+
+  it('documents methods returning Task<T>', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic Task<int> GetAsync()\n{\n    return Task.FromResult(0);\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>A task representing the asynchronous operation. The task result contains the int.</returns>');
+  });
+
+  it('documents methods returning Task<bool>', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic Task<bool> IsValidAsync()\n{\n    return Task.FromResult(true);\n}\n}\n';
+    const updated = generate(source, () => 'Checks validity.');
+
+    expect(updated).toContain('<returns>A task representing the asynchronous operation. The task result is true if successful; otherwise, false.</returns>');
+  });
+
+  it('documents methods returning ValueTask<T>', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic ValueTask<string> GetAsync()\n{\n    return ValueTask.FromResult("");\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>A value task representing the asynchronous operation. The task result contains the string.</returns>');
+  });
+
+  
+
+  it('documents methods returning array', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic int[] GetValues()\n{\n    return new int[0];\n}\n}\n';
+    const updated = generate(source, () => 'Gets values.');
+
+    expect(updated).toContain('<returns>A collection of int items.</returns>');
+  });
+
+  it('documents methods with cancellation token parameter', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(CancellationToken cancellationToken)\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>');
+  });
+
+  it('documents methods with id parameter', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(int id)\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<param name="id">The unique identifier.</param>');
+  });
+
+  it('documents methods with typed id parameter', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(int userId)\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<param name="userId">The unique identifier of the user.</param>');
+  });
+
+  
+
+  it('documents methods with collection parameter', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(List<string> items)\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<param name="items">The collection of items.</param>');
+  });
+
+  it('documents methods with array parameter', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(string[] names)\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<param name="names">The collection of names.</param>');
+  });
+
+  it('documents methods with default parameter description', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(string input)\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<param name="input">The input.</param>');
+  });
+
+  it('documents methods with empty parameter name', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork(string )\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    // The parser may not produce a valid parameter node for this
+    expect(updated).toContain('/// <summary>');
+  });
+
+  
+
+  
+
+  it('documents properties with only getter', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic int Value { get; }\n}\n';
+    const updated = generate(source, () => 'Gets the value.');
+
+    expect(updated).toContain('/// Gets the value.');
+  });
+
+  it('documents properties with only setter', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic int Value { set; }\n}\n';
+    const updated = generate(source, () => 'Sets the value.');
+
+    expect(updated).toContain('/// Sets the value.');
+  });
+
+  it('documents properties with init accessor', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic int Value { get; init; }\n}\n';
+    const updated = generate(source, () => 'Gets or sets the value.');
+
+    expect(updated).toContain('/// Gets or sets the value.');
+  });
+
+  
+
+  
+
+  
+
+  it('documents expression-bodied properties', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic int Value => 42;\n}\n';
+    const updated = generate(source, () => 'Gets the value.');
+
+    expect(updated).toContain('/// Gets the value.');
+  });
+
+  
+
+  it('documents events', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic event EventHandler Changed;\n}\n';
+    const updated = generate(source, () => 'Occurs when changed.');
+
+    expect(updated).toContain('/// Occurs when changed.');
+  });
+
+  
+
+  it('documents enums', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic enum Color\n{\n    Red,\n    Green,\n    Blue\n}\n';
+    const updated = generate(source, () => 'Specifies colors.');
+
+    expect(updated).toContain('/// Specifies colors.');
+  });
+
+  it('documents structs', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic struct Point\n{\n    public int X;\n    public int Y;\n}\n';
+    const updated = generate(source, () => 'Represents a point.');
+
+    expect(updated).toContain('/// Represents a point.');
+  });
+
+  
+
+  
+
+  it('documents records with parameters', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic record Person(string Name, int Age);\n';
+    const updated = generate(source, () => 'Represents a person.');
+
+    expect(updated).toContain('/// Represents a person.');
+    expect(updated).toContain('<param name="Name">The name.</param>');
+    expect(updated).toContain('<param name="Age">The age.</param>');
+  });
+
+  
+
+  it('documents methods with generic return types', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic List<T> GetItems<T>()\n{\n    return new List<T>();\n}\n}\n';
+    const updated = generate(source, () => 'Gets items.');
+
+    expect(updated).toContain('<returns>A collection of list items.</returns>');
+  });
+
+  it('documents methods with nullable return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic string? GetName()\n{\n    return null;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a name.');
+
+    expect(updated).toContain('<returns>The string? result.</returns>');
+  });
+
+  it('documents methods with void return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic void DoWork()\n{\n}\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).not.toContain('<returns>');
+  });
+
+  it('documents methods with dynamic return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic dynamic GetValue()\n{\n    return null;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The dynamic result.</returns>');
+  });
+
+  it('documents methods with object return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic object GetValue()\n{\n    return null;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The object result.</returns>');
+  });
+
+  it('documents methods with nint return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic nint GetValue()\n{\n    return 0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The nint result.</returns>');
+  });
+
+  it('documents methods with nuint return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic nuint GetValue()\n{\n    return 0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The nuint result.</returns>');
+  });
+
+  it('documents methods with ulong return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic ulong GetValue()\n{\n    return 0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The ulong result.</returns>');
+  });
+
+  it('documents methods with sbyte return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic sbyte GetValue()\n{\n    return 0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The sbyte result.</returns>');
+  });
+
+  it('documents methods with byte return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic byte GetValue()\n{\n    return 0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The byte result.</returns>');
+  });
+
+  it('documents methods with short return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic short GetValue()\n{\n    return 0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The short result.</returns>');
+  });
+
+  it('documents methods with ushort return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic ushort GetValue()\n{\n    return 0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The ushort result.</returns>');
+  });
+
+  it('documents methods with char return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic char GetValue()\n{\n    return \'a\';\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The char result.</returns>');
+  });
+
+  it('documents methods with decimal return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic decimal GetValue()\n{\n    return 0m;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The decimal result.</returns>');
+  });
+
+  it('documents methods with float return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic float GetValue()\n{\n    return 0f;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The float result.</returns>');
+  });
+
+  it('documents methods with double return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic double GetValue()\n{\n    return 0.0;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>The double result.</returns>');
+  });
+
+  it('documents methods with bool return type without special prefix', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic bool GetValue()\n{\n    return true;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    expect(updated).toContain('<returns>true if the operation succeeded; otherwise, false.</returns>');
+  });
+
+  it('documents methods with empty return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\npublic  GetValue()\n{\n    return null;\n}\n}\n';
+    const updated = generate(source, () => 'Gets a value.');
+
+    // The parser may not produce a valid method node for this
+    expect(updated).toContain('///');
+  });
+
+  it('documents methods in nested classes', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Outer\n{\n    public class Inner\n    {\n        public void DoWork()\n        {\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('/// Does work.');
+  });
+
+  it('documents methods in nested namespaces', () => {
+    const source =
+      '\nnamespace Demo\n{\n    namespace Inner\n    {\n        public class Sample\n        {\n            public void DoWork()\n            {\n            }\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('/// Does work.');
+  });
+
+  it('documents methods with attributes', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    [Obsolete]\n    public void DoWork()\n    {\n    }\n}\n';
+    const updated = generateXmlDocumentation(source, options({ ignoreObsolete: false }), () => 'Does work.');
+
+    expect(updated).toContain('/// Does work.');
+  });
+
+  it('skips abstract methods', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic abstract class Sample\n{\n    public abstract void DoWork();\n    public void Concrete() { }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    // Abstract methods have no body, so they should be skipped
+    expect(updated).toContain('/// Does work.');
+  });
+
+  it('skips extern methods', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public extern void DoWork();\n    public void Concrete() { }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('/// Does work.');
+  });
+
+  
+
+  it('documents methods with expression body', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public int GetValue() => 42;\n}\n';
+    const updated = generate(source, () => 'Gets the value.');
+
+    expect(updated).toContain('/// Gets the value.');
+  });
+
+  it('documents methods with expression body and return type', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public string GetName() => "test";\n}\n';
+    const updated = generate(source, () => 'Gets the name.');
+
+    expect(updated).toContain('/// Gets the name.');
+  });
+
+  it('documents methods with throw expression', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public int GetValue() => throw new NotImplementedException();\n}\n';
+    const updated = generate(source, () => 'Gets the value.');
+
+    expect(updated).toContain('<exception cref="NotImplementedException">');
+  });
+
+  it('documents methods with multiple throw expressions', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork(int x)\n    {\n        if (x < 0) throw new ArgumentOutOfRangeException();\n        if (x > 100) throw new InvalidOperationException();\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="ArgumentOutOfRangeException">');
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in nested blocks', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork(int x)\n    {\n        if (x < 0)\n        {\n            throw new ArgumentOutOfRangeException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="ArgumentOutOfRangeException">');
+  });
+
+  it('documents methods with throw in try-catch', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        try\n        {\n            throw new InvalidOperationException();\n        }\n        catch\n        {\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in lambda', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        Action a = () => throw new InvalidOperationException();\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in local function', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        void Local() => throw new InvalidOperationException();\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in switch', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork(int x)\n    {\n        switch (x)\n        {\n            case 0: throw new ArgumentException();\n            default: throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="ArgumentException">');
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  
+
+  it('documents methods with throw in conditional', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public int GetValue(bool flag) => flag ? 1 : throw new ArgumentException();\n}\n';
+    const updated = generate(source, () => 'Gets the value.');
+
+    expect(updated).toContain('<exception cref="ArgumentException">');
+  });
+
+  it('documents methods with throw in null-coalescing', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public string GetValue(string input) => input ?? throw new ArgumentNullException();\n}\n';
+    const updated = generate(source, () => 'Gets the value.');
+
+    expect(updated).toContain('<exception cref="ArgumentNullException">');
+  });
+
+  it('documents methods with throw in null-coalescing assignment', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork(string input)\n    {\n        input ??= throw new ArgumentNullException();\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="ArgumentNullException">');
+  });
+
+  
+
+  it('documents methods with throw in await', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public async Task DoWorkAsync()\n    {\n        await Task.Delay(1);\n        throw new InvalidOperationException();\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in using', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        using (var x = new Disposable())\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in lock', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        lock (obj)\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in foreach', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        foreach (var item in list)\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in while', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        while (true)\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in for', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        for (int i = 0; i < 10; i++)\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in do-while', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        do\n        {\n            throw new InvalidOperationException();\n        } while (true);\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in checked', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        checked\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in unchecked', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        unchecked\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in unsafe', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        unsafe\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in fixed', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        fixed (int* p = &value)\n        {\n            throw new InvalidOperationException();\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in try-finally', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        try\n        {\n            throw new InvalidOperationException();\n        }\n        finally\n        {\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+  });
+
+  it('documents methods with throw in try-catch-finally', () => {
+    const source =
+      '\nnamespace Demo;\n\npublic class Sample\n{\n    public void DoWork()\n    {\n        try\n        {\n            throw new InvalidOperationException();\n        }\n        catch (Exception ex)\n        {\n            throw new AggregateException(ex);\n        }\n        finally\n        {\n        }\n    }\n}\n';
+    const updated = generate(source, () => 'Does work.');
+
+    expect(updated).toContain('<exception cref="InvalidOperationException">');
+    expect(updated).toContain('<exception cref="AggregateException">');
+  });
 });

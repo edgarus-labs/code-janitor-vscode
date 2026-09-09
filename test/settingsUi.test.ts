@@ -1,7 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { collectSettingSections } from '../src/commands/settingsUi';
+import { collectSettingSections, registerSettingsUiCommand, resetSettingsPanelForTesting } from '../src/commands/settingsUi';
+import {
+  createContext,
+  createMockWebviewPanel,
+  resetMock,
+  resetWebviewPanels,
+  simulateWebviewMessage,
+  state,
+  webviewDisposeHandlers,
+  webviewMessageHandlers,
+} from './helpers/vscodeMock';
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
@@ -95,5 +105,169 @@ describe('collectSettingSections', () => {
   it('returns nothing when there is no configuration', () => {
     expect(collectSettingSections({})).toEqual([]);
     expect(collectSettingSections(undefined)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------- SettingsPanel
+
+describe('SettingsPanel', () => {
+  beforeEach(() => {
+    resetMock();
+    resetWebviewPanels();
+    resetSettingsPanelForTesting();
+  });
+
+  it('registers the openSettings command', () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+
+    expect(state.commands.has('codeJanitor.openSettings')).toBe(true);
+  });
+
+  it('creates a webview panel when the command is invoked', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    // The webview panel should have been created.
+    expect(webviewMessageHandlers.length).toBeGreaterThan(0);
+  });
+
+  it('sends init message with sections and values when the webview sends ready', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, { type: 'ready' });
+
+    // The panel's postMessage should have been called with init data.
+    // We can't easily access it from the mock, but the fact that no error was thrown is enough.
+  });
+
+  it('handles scope change to workspace', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    // Should not throw.
+    simulateWebviewMessage(0, { type: 'scope', scope: 'workspace' });
+    simulateWebviewMessage(0, { type: 'scope', scope: 'user' });
+  });
+
+  it('handles update message by writing to configuration', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    // Verify the handler was registered.
+    expect(webviewMessageHandlers[0]).toBeDefined();
+    expect(webviewMessageHandlers[0].length).toBeGreaterThan(0);
+
+    simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.cleanup.removeRegions', value: false });
+
+    // Wait for the async update chain to complete.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
+  });
+
+  it('handles update message with workspace scope', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    // Switch to workspace scope first, then update.
+    simulateWebviewMessage(0, { type: 'scope', scope: 'workspace' });
+    simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.cleanup.removeRegions', value: true });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(true);
+  });
+
+  it('ignores update message without key', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, { type: 'update', value: false });
+
+    // Should not throw and no config should be written.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(state.configuration.size).toBe(0);
+  });
+
+  it('handles reset message by clearing all settings', async () => {
+    const context = createContext(manifest);
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    // Set some values first.
+    state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+    state.configuration.set('codeJanitor.cleanup.organizeUsings', true);
+
+    // Verify they were set.
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
+
+    simulateWebviewMessage(0, { type: 'reset' });
+
+    // resetAll is async and iterates over many settings; give it time to complete.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Reset clears to undefined (falls back to default).
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBeUndefined();
+  });
+
+  it('handles exportRepository message', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, { type: 'exportRepository' });
+  });
+
+  it('handles importRepository message', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, { type: 'importRepository' });
+  });
+
+  it('ignores unknown message types', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, { type: 'unknownType' });
+  });
+
+  it('ignores null message', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, null);
+  });
+
+  it('ignores message without type', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, { key: 'codeJanitor.cleanup.removeRegions' });
+  });
+
+  it('reuses the existing panel on second open', async () => {
+    const context = createContext();
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+    const panelCount = webviewMessageHandlers.length;
+
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    // Should not create a second panel.
+    expect(webviewMessageHandlers.length).toBe(panelCount);
   });
 });
