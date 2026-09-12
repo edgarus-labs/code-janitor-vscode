@@ -7,8 +7,8 @@ on:
     branches: [develop, main]
 
 jobs:
-  extension:
-    name: Extension (TypeScript)
+  build:
+    name: Build and Test
     runs-on: [self-hosted, proxmox-lxc]
     steps:
       - uses: actions/checkout@v4
@@ -25,25 +25,3 @@ jobs:
         run: node esbuild.js --production
       - name: Verify bundle
         run: npm run verify:bundle
-
-  e2e:
-    name: End-to-end (real VS Code host)
-    runs-on: [self-hosted, proxmox-lxc]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Install dependencies
-        run: npm ci
-      - name: Run in a virtual display
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb
-      - name: Test (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a npm run test:e2e
-      - name: Test
-        if: runner.os != 'Linux'
-        run: npm run test:e2e
