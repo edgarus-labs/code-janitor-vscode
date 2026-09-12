@@ -2,7 +2,7 @@
   "name": "code-janitor",
   "displayName": "Code Janitor",
   "description": "Code Janitor cleans up and simplifies C# code: whitespace, blank lines, usings, namespaces, access modifiers, regions and modern C# syntax, with optional AI-assisted XML documentation.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publisher": "codejanitor",
   "license": "LGPL-3.0-only",
   "icon": "assets/icon.png",
