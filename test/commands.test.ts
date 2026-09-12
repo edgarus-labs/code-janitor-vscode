@@ -464,6 +464,7 @@ describe('runCleanupOnUris', () => {
 describe('cleanup commands', () => {
   const commandIds = [
     'codeJanitor.cleanupActiveFile',
+    'codeJanitor.previewCleanupActiveFile',
     'codeJanitor.cleanupSelectedFiles',
     'codeJanitor.removeXmlDocSelectedFiles',
     'codeJanitor.fixNamespaceSelectedFiles',

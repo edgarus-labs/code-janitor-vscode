@@ -39,6 +39,11 @@
         "category": "Code Janitor"
       },
       {
+        "command": "codeJanitor.previewCleanupActiveFile",
+        "title": "Preview Cleanup (Active File)",
+        "category": "Code Janitor"
+      },
+      {
         "command": "codeJanitor.cleanupSelectedFiles",
         "title": "Cleanup Selected Files",
         "category": "Code Janitor"
@@ -235,6 +240,10 @@
         }
       ],
       "codeJanitor.editorSubmenu": [
+        {
+          "command": "codeJanitor.previewCleanupActiveFile",
+          "group": "0_cleanup"
+        },
         {
           "command": "codeJanitor.generateXmlDoc",
           "group": "1_doc"

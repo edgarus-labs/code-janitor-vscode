@@ -1,0 +1,11 @@
+{
+  "name": "regions-preserved-when-disabled",
+  "description": "Turning removeRegions off keeps region directives in place.",
+  "input": "#region Helpers\nclass C { }\n#endregion\n",
+  "settings": {
+    "removeRegions": false,
+    "updateEndRegionDirectives": false,
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["#region Helpers", "#endregion"]
+}

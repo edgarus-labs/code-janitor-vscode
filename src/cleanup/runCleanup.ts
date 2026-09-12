@@ -58,9 +58,17 @@ export function runCleanup(source: string, filePath: string, settings: CleanupSe
     return source;
   }
 
+  return getCleanupPipeline(source, filePath, settings).run(source);
+}
+
+export function getCleanupPipeline(
+  source: string,
+  filePath: string,
+  settings: CleanupSettings
+): SourceTransformationPipeline {
   const editorConfig = loadCSharpOptions(filePath);
 
-  return buildPipeline(source, settings, editorConfig).run(source);
+  return buildPipeline(source, settings, editorConfig);
 }
 
 export function buildPipeline(

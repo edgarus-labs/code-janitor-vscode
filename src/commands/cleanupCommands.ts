@@ -10,6 +10,9 @@ import {
   runRemoveXmlDocOnUris,
   runSplitTopLevelTypesOnUris,
 } from './cleanupCore';
+import { getCleanupPipeline } from '../cleanup/runCleanup';
+import { readCleanupSettings } from './settings';
+import { logInfo } from '../logging';
 
 export function registerCleanupCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
@@ -22,6 +25,17 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
       }
 
       await runWithProgress('Cleaning up active file...', () => runCleanupOnUris(context, [editor.document.uri]));
+    }),
+
+    vscode.commands.registerCommand('codeJanitor.previewCleanupActiveFile', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        void vscode.window.showInformationMessage('Code Janitor: no active editor.');
+
+        return;
+      }
+
+      await previewCleanupActiveDocument(context, editor);
     }),
 
     vscode.commands.registerCommand('codeJanitor.cleanupSelectedFiles', async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
@@ -275,4 +289,79 @@ async function runWithProgress(
   }
 
   void vscode.window.showInformationMessage(`Code Janitor: ${doneLabel} - ${parts.join(', ')}.`);
+}
+
+async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, editor: vscode.TextEditor): Promise<void> {
+  const document = editor.document;
+  if (!isSupportedFile(document.uri)) {
+    void vscode.window.showInformationMessage('Code Janitor: active file is not a supported file type.');
+
+    return;
+  }
+
+  const content = document.getText();
+  const root = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+  const settings = readCleanupSettings(root);
+  const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings);
+
+  const preview = pipeline.preview(content);
+  if (!preview.hasChanges) {
+    void vscode.window.showInformationMessage('Code Janitor: file is already clean (no changes).');
+
+    return;
+  }
+
+  const previewDoc = await vscode.workspace.openTextDocument({
+    content: preview.updatedSource,
+    language: document.languageId,
+  });
+
+  const changedSteps = preview.steps.filter((s) => s.changed).map((s) => s.name);
+  logInfo(
+    `Preview cleanup for ${document.fileName}: ${changedSteps.length} rule(s) would make changes (${changedSteps.join(
+      ', '
+    )}).`
+  );
+
+  const fileName = document.fileName.split(/[\\/]/).pop() ?? 'file';
+  await vscode.commands.executeCommand(
+    'vscode.diff',
+    document.uri,
+    previewDoc.uri,
+    `Code Janitor: Cleanup Preview (${fileName})`
+  );
+
+  const choice = await vscode.window.showInformationMessage(
+    `Code Janitor: apply cleanup changes to ${fileName}?`,
+    { modal: true },
+    'Apply'
+  );
+
+  if (choice !== 'Apply') {
+    return;
+  }
+
+  if (document.isClosed) {
+    void vscode.window.showWarningMessage('Code Janitor: the document was closed before preview could be applied.');
+
+    return;
+  }
+
+  const currentContent = document.getText();
+  const applied = preview.tryApply(currentContent, async (updated) => {
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(currentContent.length));
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, fullRange, updated);
+    const success = await vscode.workspace.applyEdit(edit);
+    if (success) {
+      logInfo(`Preview cleanup applied to ${document.fileName}.`);
+      void vscode.window.showInformationMessage('Code Janitor: cleanup applied.');
+    }
+  });
+
+  if (!applied) {
+    void vscode.window.showWarningMessage(
+      'Code Janitor: the file changed since preview was generated. Please run preview again.'
+    );
+  }
 }

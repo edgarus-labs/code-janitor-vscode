@@ -66,9 +66,15 @@ export async function testAiConnection(context: vscode.ExtensionContext): Promis
     }
 
     const result = await testCustomConnection(config);
+    const modelInfo =
+      result.availableModels && result.availableModels.length > 0
+        ? ` Discovered ${result.availableModels.length} model(s): ${result.availableModels.slice(0, 5).join(', ')}${
+            result.availableModels.length > 5 ? '...' : ''
+          }.`
+        : '';
 
     return result.succeeded
-      ? { succeeded: true, message: `Connected to ${config.endpointUrl}.` }
+      ? { succeeded: true, message: `Connected to ${config.endpointUrl}.${modelInfo}` }
       : { succeeded: false, message: result.errorMessage ?? 'Unknown error.' };
   }
 

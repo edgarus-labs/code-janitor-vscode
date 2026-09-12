@@ -1,0 +1,10 @@
+{
+  "name": "final-newline",
+  "description": "Exactly one final newline is guaranteed.",
+  "input": "class C { }",
+  "settings": {
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["class C { }\n"],
+  "mustNotContain": ["}\n\n"]
+}
