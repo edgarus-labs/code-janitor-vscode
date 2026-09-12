@@ -1,0 +1,9 @@
+{
+  "name": "nameof-operator",
+  "description": "String literals matching a parameter name are rewritten to nameof; enabled by default on both platforms.",
+  "input": "class C\n{\n    void M(string name)\n    {\n        throw new System.ArgumentNullException(\"name\");\n    }\n}\n",
+  "settings": {
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["nameof(name)"]
+}

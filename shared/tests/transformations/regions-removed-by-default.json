@@ -1,0 +1,8 @@
+{
+  "name": "regions-removed-by-default",
+  "description": "Region directives are removed by the default configuration; #if directives are preserved.",
+  "input": "#region Fields\ninternal class C\n{\n}\n#endregion\n",
+  "settings": {},
+  "mustContain": ["internal class C"],
+  "mustNotContain": ["#region", "#endregion"]
+}

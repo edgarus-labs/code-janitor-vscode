@@ -1,0 +1,9 @@
+{
+  "name": "explicit-access-modifiers",
+  "description": "Missing access modifiers are inserted: classes become internal, members become private. Part of the default pipeline.",
+  "input": "namespace Demo\n{\n    class Sample\n    {\n        void M() { }\n    }\n}\n",
+  "settings": {
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["internal class Sample", "private void M()"]
+}
