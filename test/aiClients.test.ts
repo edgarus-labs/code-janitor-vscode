@@ -209,8 +209,16 @@ describe('getCopilotChatCompletion', () => {
 
 // ---------------------------------------------------------------- customClient
 
-const { isEndpointConfigured, getNormalizedEndpointUrl, isLocalEndpoint, testCustomConnection, getCustomChatCompletion } =
-  await import('../src/ai/customClient');
+const {
+  isEndpointConfigured,
+  getNormalizedEndpointUrl,
+  getModelsEndpointUrl,
+  parseModelIds,
+  fetchAvailableModels,
+  isLocalEndpoint,
+  testCustomConnection,
+  getCustomChatCompletion,
+} = await import('../src/ai/customClient');
 
 describe('isEndpointConfigured', () => {
   it('returns false for undefined', () => {
@@ -281,6 +289,58 @@ describe('getNormalizedEndpointUrl', () => {
   });
 });
 
+describe('getModelsEndpointUrl', () => {
+  it('strips /chat/completions and appends /models', () => {
+    expect(getModelsEndpointUrl('https://api.example.com/v1/chat/completions')).toBe('https://api.example.com/v1/models');
+  });
+
+  it('strips /completions and appends /models', () => {
+    expect(getModelsEndpointUrl('https://api.example.com/v1/completions')).toBe('https://api.example.com/v1/models');
+  });
+
+  it('strips /messages and appends /models', () => {
+    expect(getModelsEndpointUrl('https://api.example.com/v1/messages')).toBe('https://api.example.com/v1/models');
+  });
+
+  it('strips /generate and appends /models', () => {
+    expect(getModelsEndpointUrl('https://api.example.com/api/generate')).toBe('https://api.example.com/api/models');
+  });
+
+  it('appends /models to base URL', () => {
+    expect(getModelsEndpointUrl('https://api.example.com/v1')).toBe('https://api.example.com/v1/models');
+    expect(getModelsEndpointUrl('https://api.example.com/v1/')).toBe('https://api.example.com/v1/models');
+  });
+});
+
+describe('parseModelIds', () => {
+  it('parses OpenAI format with data array', () => {
+    const json = JSON.stringify({
+      data: [{ id: 'gpt-4o' }, { id: 'gpt-3.5-turbo' }],
+    });
+    expect(parseModelIds(json)).toEqual(['gpt-3.5-turbo', 'gpt-4o']);
+  });
+
+  it('parses Ollama format with models array', () => {
+    const json = JSON.stringify({
+      models: [{ name: 'llama3:latest' }, { model: 'mistral:latest' }, { id: 'phi3' }],
+    });
+    expect(parseModelIds(json)).toEqual(['llama3:latest', 'mistral:latest', 'phi3']);
+  });
+
+  it('deduplicates and sorts model IDs', () => {
+    const json = JSON.stringify({
+      data: [{ id: 'b-model' }, { id: 'a-model' }, { id: 'b-model' }],
+    });
+    expect(parseModelIds(json)).toEqual(['a-model', 'b-model']);
+  });
+
+  it('returns empty array for invalid json or empty input', () => {
+    expect(parseModelIds('')).toEqual([]);
+    expect(parseModelIds('not-json')).toEqual([]);
+    expect(parseModelIds('{}')).toEqual([]);
+  });
+});
+
 describe('isLocalEndpoint', () => {
   it('returns true for localhost', () => {
     expect(isLocalEndpoint('http://localhost:8080')).toBe(true);
@@ -342,20 +402,87 @@ describe('testCustomConnection', () => {
     }
   });
 
-  it('returns success when endpoint responds', async () => {
+  it('returns success and models when GET /models responds', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (url: string | URL | Request) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.endsWith('/models')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          text: () => Promise.resolve('{"data":[{"id":"gpt-4o"},{"id":"o3-mini"}]}'),
+        } as Response);
+      }
+
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: () => Promise.resolve('not found'),
+      } as Response);
+    };
+
+    try {
+      const result = await testCustomConnection({ endpointUrl: 'https://api.example.com/v1' });
+
+      expect(result.succeeded).toBe(true);
+      expect(result.availableModels).toEqual(['gpt-4o', 'o3-mini']);
+
+      const models = await fetchAvailableModels({ endpointUrl: 'https://api.example.com/v1' });
+      expect(models).toEqual(['gpt-4o', 'o3-mini']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('returns auth failure on 401 response from /models', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = () =>
       Promise.resolve({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: () => Promise.resolve('Invalid API key'),
+      } as Response);
+
+    try {
+      const result = await testCustomConnection({ endpointUrl: 'https://api.example.com/v1' });
+
+      expect(result.succeeded).toBe(false);
+      expect(result.errorMessage).toContain('401');
+      expect(result.errorMessage).toContain('Invalid API key');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to chat completions when /models returns 404', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (url: string | URL | Request) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('/models')) {
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: () => Promise.resolve('404 Not Found'),
+        } as Response);
+      }
+
+      return Promise.resolve({
         ok: true,
         status: 200,
         statusText: 'OK',
         text: () => Promise.resolve('{"choices":[{"message":{"content":"OK"}}]}'),
       } as Response);
+    };
 
     try {
-      const result = await testCustomConnection({ endpointUrl: 'https://api.example.com' });
+      const result = await testCustomConnection({ endpointUrl: 'https://api.example.com/v1' });
 
       expect(result.succeeded).toBe(true);
+      expect(result.availableModels).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
     }

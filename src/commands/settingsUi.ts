@@ -127,11 +127,15 @@ export function registerSettingsUiCommand(context: vscode.ExtensionContext): voi
 
 /** Test-only: resets the singleton so each test starts with a fresh panel. */
 export function resetSettingsPanelForTesting(): void {
-  SettingsPanel.current = undefined;
+  SettingsPanel.resetForTesting();
 }
 
 class SettingsPanel {
   private static current: SettingsPanel | undefined;
+
+  static resetForTesting(): void {
+    SettingsPanel.current = undefined;
+  }
 
   private readonly disposables: vscode.Disposable[] = [];
 

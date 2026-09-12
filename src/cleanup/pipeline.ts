@@ -1,5 +1,36 @@
 import { SourceTransformation } from './types';
 
+export interface PreviewStep {
+  readonly index: number;
+  readonly name: string;
+  readonly included: boolean;
+  readonly changed: boolean;
+}
+
+export class PreviewResult {
+  constructor(
+    readonly originalSource: string,
+    readonly updatedSource: string,
+    readonly steps: readonly PreviewStep[]
+  ) {}
+
+  get hasChanges(): boolean {
+    return this.originalSource !== this.updatedSource;
+  }
+
+  tryApply(currentSource: string, replaceSource: (updated: string) => void): boolean {
+    if (this.originalSource !== currentSource) {
+      return false;
+    }
+
+    if (this.hasChanges) {
+      replaceSource(this.updatedSource);
+    }
+
+    return true;
+  }
+}
+
 /**
  * Runs an ordered sequence of transformations over a piece of C# source text. Each block receives
  * the output of the previous one; a block that does not apply returns its input unchanged, so the
@@ -13,13 +44,37 @@ export class SourceTransformationPipeline {
   }
 
   run(source: string): string {
+    return this.execute(source);
+  }
+
+  preview(source: string, excludedTransformations?: ReadonlySet<number>): PreviewResult {
+    const steps: PreviewStep[] = [];
+    const updatedSource = this.execute(source, excludedTransformations, steps);
+
+    return new PreviewResult(source, updatedSource, steps);
+  }
+
+  private execute(
+    source: string,
+    excludedTransformations?: ReadonlySet<number>,
+    steps?: PreviewStep[]
+  ): string {
     if (!source) {
       return source;
     }
 
     let current = source;
-    for (const transformation of this.transformations) {
-      current = transformation.apply(current) ?? current;
+    for (let index = 0; index < this.transformations.length; index++) {
+      const transformation = this.transformations[index];
+      const included = excludedTransformations?.has(index) !== true;
+      const updated = included ? transformation.apply(current) ?? current : current;
+      steps?.push({
+        index,
+        name: transformation.name,
+        included,
+        changed: current !== updated,
+      });
+      current = updated;
     }
 
     return current;

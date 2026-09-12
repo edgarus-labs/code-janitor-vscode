@@ -365,4 +365,59 @@ describe('cleanup pipeline', () => {
     expect(result).toContain('internal class C');
     expect(result).not.toContain('private void M');
   });
+
+  describe('pipeline preview', () => {
+    it('returns preview steps and tracks changes', () => {
+      const source = 'class C\n{\n    int x;   \n}\n';
+      const pipeline = buildPipeline(source, createDefaultSettings(), {});
+      const preview = pipeline.preview(source);
+
+      expect(preview.hasChanges).toBe(true);
+      expect(preview.originalSource).toBe(source);
+      expect(preview.updatedSource).not.toBe(source);
+      expect(preview.steps.length).toBeGreaterThan(0);
+
+      const changedSteps = preview.steps.filter((s) => s.changed);
+      expect(changedSteps.length).toBeGreaterThan(0);
+    });
+
+    it('reports no changes when source is already clean', () => {
+      const source = 'namespace Demo\n{\n    internal class C\n    {\n        private void M() { }\n    }\n}\n';
+      const cleanSource = run(source);
+      const pipeline = buildPipeline(cleanSource, createDefaultSettings(), {});
+      const preview = pipeline.preview(cleanSource);
+
+      expect(preview.hasChanges).toBe(false);
+      expect(preview.updatedSource).toBe(cleanSource);
+    });
+
+    it('respects excluded transformations', () => {
+      const source = 'class C\n{\n    int x;   \n}\n';
+      const pipeline = buildPipeline(source, createDefaultSettings(), {});
+      const allIndices = new Set(pipeline.transformations.map((_, i) => i));
+      const preview = pipeline.preview(source, allIndices);
+
+      expect(preview.hasChanges).toBe(false);
+      expect(preview.updatedSource).toBe(source);
+      expect(preview.steps.every((s) => !s.included)).toBe(true);
+    });
+
+    it('applies changes conditionally via tryApply', () => {
+      const source = 'class C\n{\n}\n';
+      const pipeline = buildPipeline(source, createDefaultSettings(), {});
+      const preview = pipeline.preview(source);
+
+      let target = source;
+      const applied = preview.tryApply(target, (updated) => {
+        target = updated;
+      });
+
+      expect(applied).toBe(true);
+      expect(target).toContain('internal class C');
+
+      // Fails when current source has diverged
+      const staleApplied = preview.tryApply('different source', () => {});
+      expect(staleApplied).toBe(false);
+    });
+  });
 });
