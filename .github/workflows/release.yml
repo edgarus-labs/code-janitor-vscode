@@ -11,7 +11,7 @@ permissions:
 jobs:
   release:
     name: Build, package and publish a GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox-lxc]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

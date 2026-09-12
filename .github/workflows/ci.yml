@@ -9,10 +9,7 @@ on:
 jobs:
   extension:
     name: Extension (TypeScript)
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: [self-hosted, proxmox-lxc]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,10 +28,7 @@ jobs:
 
   e2e:
     name: End-to-end (real VS Code host)
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: [self-hosted, proxmox-lxc]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
