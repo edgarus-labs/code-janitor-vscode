@@ -63,6 +63,7 @@ const TYPE_DECLARATIONS = new Set([
 
 const DOCUMENTABLE = new Set([
   'method_declaration',
+  'constructor_declaration',
   ...TYPE_DECLARATIONS,
   'property_declaration',
   'field_declaration',
@@ -150,7 +151,10 @@ export function generateXmlDocumentation(
 
       const insertPosition = lineStart(builder, member.startIndex);
       const indent = lineIndent(builder, insertPosition);
-      const exceptions = member.type === 'method_declaration' ? detectThrownExceptions(member) : [];
+      const exceptions =
+        member.type === 'method_declaration' || member.type === 'constructor_declaration'
+          ? detectThrownExceptions(member)
+          : [];
       const block = buildXmlCommentBlock(indent, member, normalizeSentence(rawSummary), exceptions);
 
       builder = builder.slice(0, insertPosition) + block + builder.slice(insertPosition);
@@ -184,12 +188,20 @@ function selectTargets(root: Node, options: XmlDocRunOptions): Node[] {
 
 /** Property, field, indexer and event wording is formulaic, so it never costs an AI request. */
 function requiresAiSummary(member: Node): boolean {
-  return member.type === 'method_declaration' || TYPE_DECLARATIONS.has(member.type);
+  return (
+    member.type === 'method_declaration' ||
+    member.type === 'constructor_declaration' ||
+    TYPE_DECLARATIONS.has(member.type)
+  );
 }
 
 function canDocumentMember(member: Node, options: XmlDocRunOptions): boolean {
   if (member.type === 'method_declaration') {
     return canDocumentMethod(member, options);
+  }
+
+  if (member.type === 'constructor_declaration') {
+    return canDocumentConstructor(member, options);
   }
 
   if (isInInterface(member) && member.type !== 'interface_declaration') {
@@ -208,8 +220,7 @@ function canDocumentMember(member: Node, options: XmlDocRunOptions): boolean {
   }
 
   if (options.ignoreTestMethods && TYPE_DECLARATIONS.has(member.type)) {
-    const name = member.childForFieldName('name')?.text ?? '';
-    if (/tests?$/i.test(name)) {
+    if (isLikelyTestType(member)) {
       return false;
     }
   }
@@ -229,6 +240,36 @@ function canDocumentMember(member: Node, options: XmlDocRunOptions): boolean {
   return true;
 }
 
+function canDocumentConstructor(constructor: Node, options: XmlDocRunOptions): boolean {
+  if (hasAnyModifier(constructor, ['static', 'extern'])) {
+    return false;
+  }
+
+  const body = constructor.childForFieldName('body') ?? constructor.childForFieldName('expression_body');
+  if (!body) {
+    return false;
+  }
+
+  if (hasDocumentationComment(constructor)) {
+    return false;
+  }
+
+  if (options.ignoreObsolete && hasAnyAttribute(constructor, ['Obsolete'])) {
+    return false;
+  }
+
+  if (options.ignoreGeneratedCode && hasGeneratedCodeAttribute(constructor)) {
+    return false;
+  }
+
+  const containingType = getContainingTypeNode(constructor);
+  if (options.ignoreTestMethods && isLikelyTestType(containingType)) {
+    return false;
+  }
+
+  return !(options.ignorePattern.trim() && matchesIgnorePattern(constructor, options.ignorePattern));
+}
+
 function canDocumentMethod(method: Node, options: XmlDocRunOptions): boolean {
   if (isInInterface(method)) {
     return false;
@@ -238,7 +279,7 @@ function canDocumentMethod(method: Node, options: XmlDocRunOptions): boolean {
     return false;
   }
 
-  const body = method.childForFieldName('body');
+  const body = method.childForFieldName('body') ?? method.childForFieldName('expression_body');
   if (!body) {
     return false;
   }
@@ -266,6 +307,36 @@ function isInInterface(member: Node): boolean {
   const container = member.parent;
 
   return container?.type === 'declaration_list' && container.parent?.type === 'interface_declaration';
+}
+
+function getContainingTypeNode(member: Node): Node | undefined {
+  return member.parent?.type === 'declaration_list' ? member.parent.parent ?? undefined : undefined;
+}
+
+function getContainingTypeInfo(member: Node): { containingTypeName: string; typeKind: string } {
+  const typeNode = getContainingTypeNode(member);
+  const containingTypeName = typeNode?.childForFieldName('name')?.text ?? 'instance';
+  const typeKind =
+    typeNode?.type === 'record_declaration'
+      ? 'record'
+      : typeNode?.type === 'struct_declaration'
+      ? 'struct'
+      : 'class';
+
+  return { containingTypeName, typeKind };
+}
+
+function isLikelyTestType(typeNode?: Node): boolean {
+  if (!typeNode) {
+    return false;
+  }
+
+  const name = typeNode.childForFieldName('name')?.text ?? '';
+  if (/tests?$/i.test(name)) {
+    return true;
+  }
+
+  return hasAnyAttribute(typeNode, TEST_ATTRIBUTES);
 }
 
 function hasAnyModifier(node: Node, names: readonly string[]): boolean {
@@ -314,19 +385,18 @@ function isLikelyTestMethod(method: Node): boolean {
     return true;
   }
 
-  const owner = method.parent?.type === 'declaration_list' ? method.parent.parent : undefined;
-  const typeName = owner?.childForFieldName('name')?.text ?? '';
+  const owner = getContainingTypeNode(method);
 
-  return /tests?$/i.test(typeName);
+  return isLikelyTestType(owner);
 }
 
-function matchesIgnorePattern(method: Node, ignorePattern: string): boolean {
+function matchesIgnorePattern(member: Node, ignorePattern: string): boolean {
   try {
-    const owner = method.parent?.type === 'declaration_list' ? method.parent.parent : undefined;
+    const owner = getContainingTypeNode(member);
     const typeName = owner?.childForFieldName('name')?.text ?? '';
-    const namespaceName = enclosingNamespace(method);
-    const methodName = method.childForFieldName('name')?.text ?? '';
-    const fullName = namespaceName ? `${namespaceName}.${typeName}.${methodName}` : `${typeName}.${methodName}`;
+    const namespaceName = enclosingNamespace(member);
+    const memberName = member.childForFieldName('name')?.text ?? '';
+    const fullName = namespaceName ? `${namespaceName}.${typeName}.${memberName}` : `${typeName}.${memberName}`;
 
     return new RegExp(ignorePattern, 'i').test(fullName);
   } catch {
@@ -358,6 +428,8 @@ function describeKind(member: Node): string {
   switch (member.type) {
     case 'method_declaration':
       return 'method';
+    case 'constructor_declaration':
+      return 'constructor';
     case 'interface_declaration':
       return 'interface';
     case 'enum_declaration':
@@ -394,7 +466,40 @@ function describeName(member: Node): string {
 }
 
 function buildPrompt(member: Node, options: XmlDocRunOptions): string {
-  return member.type === 'method_declaration' ? buildMethodPrompt(member, options) : buildTypePrompt(member, options);
+  if (member.type === 'method_declaration') {
+    return buildMethodPrompt(member, options);
+  }
+
+  if (member.type === 'constructor_declaration') {
+    return buildConstructorPrompt(member, options);
+  }
+
+  return buildTypePrompt(member, options);
+}
+
+function buildConstructorPrompt(constructor: Node, options: XmlDocRunOptions): string {
+  const body = constructor.childForFieldName('body') ?? constructor.childForFieldName('expression_body');
+  const signature = constructor.text
+    .slice(0, body ? body.startIndex - constructor.startIndex : undefined)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const bodyText = body ? body.text.trim() : '';
+  const exceptions = detectThrownExceptions(constructor);
+  const exceptionList = exceptions.length > 0 ? exceptions.join(', ') : 'none detected';
+  const { containingTypeName, typeKind } = getContainingTypeInfo(constructor);
+
+  return (
+    `Generate a professional C# XML documentation <summary> sentence for the following C# constructor of ${typeKind} '${containingTypeName}':\n` +
+    `Signature: ${signature}\n` +
+    `Constructor body:\n${truncate(bodyText, options.maxInputCharsPerMember)}\n` +
+    `Detected thrown exceptions: ${exceptionList}\n\n` +
+    'Guidelines:\n' +
+    `- Standard Microsoft style for constructors: 'Initializes a new instance of the ${containingTypeName} ${typeKind}.' or 'Initializes a new instance of the ${containingTypeName} ${typeKind} with the specified parameters.'\n` +
+    '- Describe any validation or initialization done by the constructor.\n' +
+    "- Do NOT output vague generic filler.\n" +
+    '- Output ONLY the single summary sentence (plain text, no XML, no quotes, no reasoning).'
+  );
 }
 
 function buildMethodPrompt(method: Node, options: XmlDocRunOptions): string {
@@ -440,7 +545,7 @@ function buildTypePrompt(type: Node, options: XmlDocRunOptions): string {
   for (const child of body?.namedChildren ?? []) {
     if (child?.type === 'property_declaration') {
       memberNames.push(`${child.childForFieldName('name')?.text} (${child.childForFieldName('type')?.text ?? 'property'})`);
-    } else if (child?.type === 'method_declaration') {
+    } else if (child?.type === 'method_declaration' || child?.type === 'constructor_declaration') {
       memberNames.push(`${child.childForFieldName('name')?.text}()`);
     } else if (child?.type === 'field_declaration') {
       for (const declarator of variableDeclarators(child)) {
@@ -750,6 +855,15 @@ export function buildFallbackSummary(member: Node): string {
 
   if (member.type === 'event_declaration' || member.type === 'event_field_declaration') {
     return `Occurs when ${splitIdentifier(describeName(member)).toLowerCase()}.`;
+  }
+
+  if (member.type === 'constructor_declaration') {
+    const { containingTypeName, typeKind } = getContainingTypeInfo(member);
+    const hasParams = documentedParameters(member).length > 0;
+
+    return hasParams
+      ? `Initializes a new instance of the ${containingTypeName} ${typeKind} with the specified parameters.`
+      : `Initializes a new instance of the ${containingTypeName} ${typeKind}.`;
   }
 
   const methodName = member.childForFieldName('name')?.text ?? '';

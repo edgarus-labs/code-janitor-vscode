@@ -1,0 +1,11 @@
+{
+  "name": "explicit-access-modifiers-disabled",
+  "description": "The group alias turns all access modifier insertion off at once.",
+  "input": "namespace Demo\n{\n    class Sample\n    {\n        void M() { }\n    }\n}\n",
+  "settings": {
+    "insertExplicitAccessModifiers": false,
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["class Sample", "void M()"],
+  "mustNotContain": ["internal class Sample", "private void M()"]
+}

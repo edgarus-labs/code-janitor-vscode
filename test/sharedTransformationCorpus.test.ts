@@ -23,7 +23,7 @@ interface SharedFixture {
 const BLANK_LINE_PADDING_ALIAS = 'insertBlankLinePadding';
 const EXPLICIT_ACCESS_MODIFIERS_ALIAS = 'insertExplicitAccessModifiers';
 
-function resolveCorpusDirectory(): string {
+function resolveCorpusDirectory(): string | null {
   let directory = __dirname;
   for (;;) {
     const local = path.join(directory, 'shared', 'tests', 'transformations');
@@ -38,7 +38,7 @@ function resolveCorpusDirectory(): string {
 
     const parent = path.dirname(directory);
     if (parent === directory) {
-      throw new Error('Could not locate the shared transformation corpus (expected in the sibling code-janitor-vs repository).');
+      return null;
     }
 
     directory = parent;
@@ -73,11 +73,15 @@ function applyFixtureSettings(settings: Record<string, unknown>): CleanupSetting
 }
 
 const corpusDirectory = resolveCorpusDirectory();
-const fixtureFiles = fs.readdirSync(corpusDirectory).filter((name) => name.endsWith('.json')).sort();
+const fixtureFiles = corpusDirectory
+  ? fs.readdirSync(corpusDirectory).filter((name) => name.endsWith('.json')).sort()
+  : [];
 
-describe('shared transformation corpus', () => {
+const suite = corpusDirectory && fixtureFiles.length > 0 ? describe : describe.skip;
+
+suite('shared transformation corpus', () => {
   for (const fixtureFile of fixtureFiles) {
-    const fixture = JSON.parse(fs.readFileSync(path.join(corpusDirectory, fixtureFile), 'utf8')) as SharedFixture;
+    const fixture = JSON.parse(fs.readFileSync(path.join(corpusDirectory!, fixtureFile), 'utf8')) as SharedFixture;
     const lf = fixture.settings?.newlines === 'lf';
     const normalize = (text: string): string => (lf ? text.replace(/\r\n/g, '\n') : text);
     const input = normalize(fixture.input);

@@ -1,0 +1,10 @@
+{
+  "name": "trailing-whitespace",
+  "description": "End-of-line whitespace is removed by the default configuration.",
+  "input": "class C\n{\n    int _x;   \n}\n",
+  "settings": {
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["int _x;"],
+  "mustNotContain": ["_x;   "]
+}

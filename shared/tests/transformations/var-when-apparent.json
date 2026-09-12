@@ -1,0 +1,10 @@
+{
+  "name": "var-when-apparent",
+  "description": "Local declarations whose type is textually apparent from a 'new' expression are converted to var. Both implementations agree on the textual case; the Roslyn-based extension additionally converts cases only a semantic model can see (e.g. string literals), which is intentionally not part of the shared corpus.",
+  "input": "class C\n{\n    void M()\n    {\n        System.Text.StringBuilder builder = new System.Text.StringBuilder();\n    }\n}\n",
+  "settings": {
+    "convertToVarWhenApparent": true,
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["var builder = new System.Text.StringBuilder();"]
+}

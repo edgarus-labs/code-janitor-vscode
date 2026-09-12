@@ -1,0 +1,11 @@
+{
+  "name": "file-scoped-namespace",
+  "description": "A single block-scoped namespace is converted to file-scoped form when enabled.",
+  "input": "namespace Demo\n{\n    public class C\n    {\n    }\n}\n",
+  "settings": {
+    "convertToFileScopedNamespace": true,
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["namespace Demo;"],
+  "mustNotContain": ["namespace Demo\n{"]
+}

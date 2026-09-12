@@ -1,0 +1,10 @@
+{
+  "name": "pattern-matching-null-checks",
+  "description": "Equality null checks are rewritten to pattern matching; enabled by default on both platforms.",
+  "input": "class C\n{\n    void M(string name)\n    {\n        if (name == null)\n        {\n            return;\n        }\n    }\n}\n",
+  "settings": {
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["name is null"],
+  "mustNotContain": ["== null"]
+}

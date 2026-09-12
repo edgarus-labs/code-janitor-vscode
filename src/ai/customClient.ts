@@ -17,6 +17,7 @@ export interface CustomEndpointConfig {
 export interface ConnectionTestResult {
   succeeded: boolean;
   errorMessage?: string;
+  availableModels?: string[];
 }
 
 const MAX_ATTEMPTS = 3;
@@ -50,6 +51,72 @@ export function getNormalizedEndpointUrl(endpointUrl: string): string {
   }
 
   return url.replace(/\/+$/, '') + '/chat/completions';
+}
+
+export function getModelsEndpointUrl(endpointUrl: string): string {
+  if (!endpointUrl || !endpointUrl.trim()) {
+    return endpointUrl;
+  }
+
+  const url = endpointUrl.trim();
+  try {
+    // eslint-disable-next-line no-new
+    new URL(url);
+  } catch {
+    return url;
+  }
+
+  const recognizedSuffixes = ['/chat/completions', '/completions', '/messages', '/generate'];
+  for (const suffix of recognizedSuffixes) {
+    if (url.toLowerCase().endsWith(suffix)) {
+      return url.slice(0, -suffix.length).replace(/\/+$/, '') + '/models';
+    }
+  }
+
+  return url.replace(/\/+$/, '') + '/models';
+}
+
+export function parseModelIds(json: string): string[] {
+  const models = new Set<string>();
+  if (!json || !json.trim()) {
+    return [];
+  }
+
+  try {
+    const payload = JSON.parse(json) as Record<string, unknown>;
+    if (Array.isArray(payload.data)) {
+      for (const item of payload.data) {
+        if (item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string') {
+          const id = ((item as Record<string, unknown>).id as string).trim();
+          if (id) {
+            models.add(id);
+          }
+        }
+      }
+    } else if (Array.isArray(payload.models)) {
+      for (const item of payload.models) {
+        if (item && typeof item === 'object') {
+          const rec = item as Record<string, unknown>;
+          const candidate = (
+            typeof rec.id === 'string'
+              ? rec.id
+              : typeof rec.name === 'string'
+              ? rec.name
+              : typeof rec.model === 'string'
+              ? rec.model
+              : undefined
+          )?.trim();
+          if (candidate) {
+            models.add(candidate);
+          }
+        }
+      }
+    }
+  } catch {
+    // Best-effort parsing: return any models collected
+  }
+
+  return [...models].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
 export function isLocalEndpoint(endpointUrl: string): boolean {
@@ -230,6 +297,70 @@ async function postChatCompletion(userPrompt: string, maxTokens: number, systemP
 }
 
 export async function testCustomConnection(config: CustomEndpointConfig): Promise<ConnectionTestResult> {
+  if (!isEndpointConfigured(config.endpointUrl)) {
+    return { succeeded: false, errorMessage: 'AI endpoint is not configured.' };
+  }
+
+  const modelsUrl = getModelsEndpointUrl(config.endpointUrl);
+  const timeoutSeconds = config.timeoutSeconds && config.timeoutSeconds > 0 ? config.timeoutSeconds : 30;
+
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  applyAuthHeaders(headers, config);
+
+  const queryModels = async (
+    url: string
+  ): Promise<{ ok: boolean; status: number; text: string } | undefined> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+    try {
+      const resp = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+      const text = await resp.text();
+
+      return { ok: resp.ok, status: resp.status, text };
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const firstTry = await queryModels(modelsUrl);
+  let modelsResult = firstTry;
+
+  // Fallback: if modelsUrl returned 404 and didn't include "/v1", try with "/v1/models"
+  if (
+    firstTry &&
+    firstTry.status === 404 &&
+    !modelsUrl.includes('/v1/') &&
+    !modelsUrl.toLowerCase().endsWith('/v1/models')
+  ) {
+    const v1Url = modelsUrl.toLowerCase().endsWith('/models')
+      ? modelsUrl.slice(0, -'/models'.length).replace(/\/+$/, '') + '/v1/models'
+      : undefined;
+    if (v1Url) {
+      const fallbackTry = await queryModels(v1Url);
+      if (fallbackTry && (fallbackTry.ok || fallbackTry.status === 401 || fallbackTry.status === 403)) {
+        modelsResult = fallbackTry;
+      }
+    }
+  }
+
+  if (modelsResult) {
+    if (modelsResult.status === 401 || modelsResult.status === 403) {
+      return {
+        succeeded: false,
+        errorMessage: `AI endpoint rejected the request (${modelsResult.status}). Check the API key. ${modelsResult.text.slice(0, 512)}`,
+      };
+    }
+
+    if (modelsResult.ok) {
+      const models = parseModelIds(modelsResult.text);
+
+      return { succeeded: true, availableModels: models };
+    }
+  }
+
+  // If GET /models is not supported (404/method not allowed, etc.), fall back to chat completion test
   try {
     await postChatCompletion('Reply with exactly: OK', 16, undefined, config);
 
@@ -237,6 +368,12 @@ export async function testCustomConnection(config: CustomEndpointConfig): Promis
   } catch (err) {
     return { succeeded: false, errorMessage: (err as Error).message };
   }
+}
+
+export async function fetchAvailableModels(config: CustomEndpointConfig): Promise<string[]> {
+  const result = await testCustomConnection(config);
+
+  return result.availableModels ?? [];
 }
 
 export async function getCustomChatCompletion(systemPrompt: string, userPrompt: string, maxTokens: number, config: CustomEndpointConfig): Promise<string> {
