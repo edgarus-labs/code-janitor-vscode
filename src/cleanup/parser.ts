@@ -21,15 +21,6 @@ export function* walk(node: Node): Generator<Node> {
   }
 }
 
-/** Depth-first walk including anonymous nodes (punctuation, keywords). */
-export function* walkAll(node: Node): Generator<Node> {
-  yield node;
-
-  for (const child of node.children) {
-    yield* walkAll(child);
-  }
-}
-
 export function findAll(root: Node, type: string | readonly string[]): Node[] {
   const types = typeof type === 'string' ? [type] : type;
   const matches: Node[] = [];
