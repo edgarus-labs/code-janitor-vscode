@@ -1,4 +1,4 @@
-# Code Janitor
+# Code Janitor for VS Code
 
 **Stop reviewing whitespace. Start reviewing logic.**
 
@@ -13,16 +13,21 @@ AI endpoint.
 Every C# codebase accumulates the same small mess over time: inconsistent whitespace, usings in
 the wrong order, methods missing an explicit access modifier, null checks written the old way,
 undocumented public members. None of it is hard to fix, but doing it by hand is tedious and it
-rarely happens consistently across a team. Code Janitor fixes all of it in one pass, works fully
-offline (no .NET, no network, no external services required for cleanup), and never touches
-anything you haven't asked it to.
+rarely happens consistently across a team. Code Janitor applies configurable cleanup rules to the scope you select. Deterministic cleanup
+runs locally without .NET or an AI service. Review the resulting diff and build your project,
+especially when enabling syntax modernization rules.
+
+## Requirements
+
+- Visual Studio Code 1.90 or later on Windows, macOS or Linux.
+- No .NET runtime is required by the extension's cleanup engine.
+- AI actions require an available provider; access and usage costs depend on that provider.
 
 ## Installation
 
 Grab the latest `.vsix` from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases),
 then either:
 
-- double-click the downloaded file with VS Code installed, or
 - run `code --install-extension code-janitor-<version>.vsix`, or
 - in VS Code, open the Extensions view, click the `...` menu, and choose **Install from VSIX...**.
 
@@ -34,7 +39,7 @@ then either:
 - **Code Janitor: Cleanup Active File** cleans the file you're currently editing.
 - **Code Janitor: Cleanup Workspace** cleans every C# file in the project; **Cleanup Open Files**
   and **Cleanup Changed Files (Git)** clean a smaller, more targeted set.
-- Turn on **Code Janitor: Toggle Cleanup on Save** to clean every file automatically as you save it.
+- Turn on **Code Janitor: Toggle Cleanup on Save** to run cleanup automatically when saving supported files.
 - Right-click a file, folder or multi-selection in the Explorer for a **Code Janitor** submenu with
   batch actions, coverage report analysis, and coverage-gap test generation.
 - Right-click inside a C# file for a submenu with the rest of the commands: generating or removing
@@ -81,8 +86,7 @@ OpenAI/Claude-compatible endpoint you configure yourself. Every plain cleanup co
 AI, no account and no network access at all.
 
 Generating XML documentation can also run across a selection or the whole workspace at once
-(**Generate XML Documentation (AI, Selected Files / Workspace)**). Files are scanned first, for
-free, so if any AI request would actually be sent you get a single confirmation stating exactly how
+(**Generate XML Documentation (AI, Selected Files / Workspace)**). Files are scanned locally first, without an AI request, so if any AI request would actually be sent you get a single confirmation stating exactly how
 many, across how many files, before anything happens. **Clean and Refactor (Cleanup + AI)** cleans
 the active file and then offers the AI refactor for it - the refactor step still shows its usual
 diff preview and asks before applying anything.
@@ -93,6 +97,30 @@ markdown report with the highest-risk gaps and the tests to add first.
 
 **Generate Tests From Coverage Gaps (AI)** uses the same coverage reports, lets you pick a source
 file referenced by the report, and opens a generated C# test class focused on the uncovered code.
+
+## Scope and review
+
+The C# cleanup engine uses a TypeScript parser, without Roslyn semantic analysis. Syntax
+modernization rules can depend on your project's language version and usage; review changes and
+run your normal build and tests. Non-C# cleanup is optional and limited to layout rules.
+
+AI actions send the selected code or report context to the provider you configure. Use a provider
+appropriate for the source code you are working with, and review generated output before use.
+
+## Development and support
+
+See [the development guide](PLAN.md) for architecture and verification commands and
+[CHANGELOG.md](CHANGELOG.md) for release history. Report reproducible problems in
+[GitHub Issues](https://github.com/edgarus-labs/code-janitor-vscode/issues), including the extension
+version, VS Code version, relevant settings and a minimal example without credentials or private code.
+
+## Project origin
+
+This extension ports cleanup functionality from
+[Code Janitor for Visual Studio](https://github.com/edgarus-labs/code-janitor-vs), an independently
+maintained fork of [CodeMaid](https://github.com/codecadwallader/codemaid), originally created by
+[Steve Cadwallader](https://github.com/codecadwallader). It is a separate VS Code implementation
+with its own feature set and is not an official CodeMaid extension.
 
 ## License
 
