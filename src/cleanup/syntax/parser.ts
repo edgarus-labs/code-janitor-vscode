@@ -2362,6 +2362,16 @@ class CSharpParser {
   private parseIdentifierExpression(): Node | undefined {
     const text = this.textOf(this.current);
 
+    // A query expression can only start where an expression is expected, and only once a lookahead
+    // confirms the range-variable/`in` shape actually follows - an ordinary variable or method
+    // literally named `from` must keep parsing as a plain identifier.
+    if (text === 'from') {
+      const query = this.tryParseQueryExpression();
+      if (query) {
+        return query;
+      }
+    }
+
     // `async x => ...` and `async (a, b) => ...`
     if (text === 'async' && (this.peek(1).type === '(' || this.peek(1).type === 'identifier' || this.peek(1).type === 'delegate')) {
       const save = this.pos;
@@ -2395,6 +2405,334 @@ class CSharpParser {
 
     // `var` outside a declaration is just an identifier, so no implicit_type node here.
     return this.leaf();
+  }
+
+  // ---------------------------------------------------------------- query expressions
+
+  /**
+   * `from_clause query_body`. Attempts the clause and rewinds cleanly on any shape mismatch, so an
+   * ordinary identifier or method literally named `from` still parses as itself - see the call site
+   * in {@link parseIdentifierExpression}.
+   */
+  private tryParseQueryExpression(): Node | undefined {
+    const save = this.pos;
+    const startToken = this.pos;
+    const from = this.tryParseFromClause();
+
+    if (!from) {
+      return undefined;
+    }
+
+    const children = [from];
+
+    if (!this.parseQueryBody(children)) {
+      this.pos = save;
+
+      return undefined;
+    }
+
+    return this.finish('query_expression', true, startToken, children);
+  }
+
+  /** `from Type? identifier in expression`. Rewinds and returns `undefined` on a shape mismatch. */
+  private tryParseFromClause(): Node | undefined {
+    const save = this.pos;
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+    const fields = new Map<string, Node>();
+
+    const typeOrName = this.parseType();
+    if (!typeOrName) {
+      this.pos = save;
+
+      return undefined;
+    }
+
+    let name = typeOrName;
+    children.push(typeOrName);
+
+    if (this.is('identifier')) {
+      fields.set('type', typeOrName);
+      name = this.take(children);
+    }
+
+    fields.set('name', name);
+
+    if (!this.is('in')) {
+      this.pos = save;
+
+      return undefined;
+    }
+
+    this.take(children);
+
+    const source = this.parseExpression();
+    if (source) {
+      children.push(source);
+      fields.set('source', source);
+    }
+
+    return this.finish('from_clause', true, startToken, children, fields);
+  }
+
+  /** `query_body_clause* select_or_group_clause query_continuation?`, appended onto `children`. */
+  private parseQueryBody(children: Node[]): boolean {
+    for (;;) {
+      const clause = this.tryParseQueryBodyClause();
+      if (!clause) {
+        break;
+      }
+
+      children.push(clause);
+    }
+
+    const finalClause = this.tryParseSelectOrGroupClause();
+    if (!finalClause) {
+      return false;
+    }
+
+    children.push(finalClause);
+
+    const continuation = this.tryParseQueryContinuation();
+    if (continuation) {
+      children.push(continuation);
+    }
+
+    return true;
+  }
+
+  /** `from_clause | let_clause | query_where_clause | join_clause | join_into_clause | orderby_clause`. */
+  private tryParseQueryBodyClause(): Node | undefined {
+    if (this.isContextual('from')) {
+      return this.tryParseFromClause();
+    }
+
+    if (this.isContextual('let')) {
+      return this.parseLetClause();
+    }
+
+    if (this.isContextual('where')) {
+      return this.parseQueryWhereClause();
+    }
+
+    if (this.isContextual('join')) {
+      return this.parseJoinClause();
+    }
+
+    if (this.isContextual('orderby')) {
+      return this.parseOrderByClause();
+    }
+
+    return undefined;
+  }
+
+  /** `let identifier = expression`, binding a new range variable computed from the current one. */
+  private parseLetClause(): Node {
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+    const fields = new Map<string, Node>();
+
+    if (this.is('identifier')) {
+      fields.set('name', this.take(children));
+    }
+
+    this.eat('=', children);
+
+    const value = this.parseExpression();
+    if (value) {
+      children.push(value);
+      fields.set('value', value);
+    }
+
+    return this.finish('let_clause', true, startToken, children, fields);
+  }
+
+  /**
+   * `where expression`. Named `query_where_clause`, not `where_clause`, so it never collides with
+   * `type_parameter_constraints_clause`, which already owns the plain `where` keyword there.
+   */
+  private parseQueryWhereClause(): Node {
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+    const fields = new Map<string, Node>();
+
+    const condition = this.parseExpression();
+    if (condition) {
+      children.push(condition);
+      fields.set('condition', condition);
+    }
+
+    return this.finish('query_where_clause', true, startToken, children, fields);
+  }
+
+  /** `join Type? identifier in expression on expression equals expression (into identifier)?`. */
+  private parseJoinClause(): Node {
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+    const fields = new Map<string, Node>();
+
+    const typeOrName = this.parseType();
+    if (typeOrName) {
+      let name = typeOrName;
+      children.push(typeOrName);
+
+      if (this.is('identifier')) {
+        fields.set('type', typeOrName);
+        name = this.take(children);
+      }
+
+      fields.set('name', name);
+    }
+
+    this.eat('in', children);
+
+    const inExpression = this.parseExpression();
+    if (inExpression) {
+      children.push(inExpression);
+      fields.set('inExpression', inExpression);
+    }
+
+    if (this.isContextual('on')) {
+      this.take(children);
+    }
+
+    const onExpression = this.parseExpression();
+    if (onExpression) {
+      children.push(onExpression);
+      fields.set('onExpression', onExpression);
+    }
+
+    if (this.isContextual('equals')) {
+      this.take(children);
+    }
+
+    const equalsExpression = this.parseExpression();
+    if (equalsExpression) {
+      children.push(equalsExpression);
+      fields.set('equalsExpression', equalsExpression);
+    }
+
+    const join = this.finish('join_clause', true, startToken, children, fields);
+
+    return this.isContextual('into') ? this.parseJoinIntoClause(startToken, join) : join;
+  }
+
+  /** `join_clause into identifier`. */
+  private parseJoinIntoClause(startToken: number, join: Node): Node {
+    const children: Node[] = [join, this.leaf()];
+    const fields = new Map<string, Node>([['join', join]]);
+
+    if (this.is('identifier')) {
+      fields.set('name', this.take(children));
+    }
+
+    return this.finish('join_into_clause', true, startToken, children, fields);
+  }
+
+  /** `orderby ordering (',' ordering)*`. */
+  private parseOrderByClause(): Node {
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+
+    children.push(this.parseOrdering());
+
+    while (this.is(',')) {
+      this.take(children);
+      children.push(this.parseOrdering());
+    }
+
+    return this.finish('orderby_clause', true, startToken, children);
+  }
+
+  /** `expression ('ascending' | 'descending')?`. */
+  private parseOrdering(): Node {
+    const startToken = this.pos;
+    const children: Node[] = [];
+    const fields = new Map<string, Node>();
+
+    const expression = this.parseExpression();
+    if (expression) {
+      children.push(expression);
+      fields.set('expression', expression);
+    }
+
+    if (this.isContextual('ascending') || this.isContextual('descending')) {
+      this.take(children);
+    }
+
+    return this.finish('ordering', true, startToken, children, fields);
+  }
+
+  /** `select_clause | group_clause`. */
+  private tryParseSelectOrGroupClause(): Node | undefined {
+    if (this.isContextual('select')) {
+      return this.parseSelectClause();
+    }
+
+    if (this.isContextual('group')) {
+      return this.parseGroupClause();
+    }
+
+    return undefined;
+  }
+
+  /** `select expression`. */
+  private parseSelectClause(): Node {
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+    const fields = new Map<string, Node>();
+
+    const expression = this.parseExpression();
+    if (expression) {
+      children.push(expression);
+      fields.set('expression', expression);
+    }
+
+    return this.finish('select_clause', true, startToken, children, fields);
+  }
+
+  /** `group expression by expression`. */
+  private parseGroupClause(): Node {
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+    const fields = new Map<string, Node>();
+
+    const element = this.parseExpression();
+    if (element) {
+      children.push(element);
+      fields.set('element', element);
+    }
+
+    if (this.isContextual('by')) {
+      this.take(children);
+    }
+
+    const key = this.parseExpression();
+    if (key) {
+      children.push(key);
+      fields.set('key', key);
+    }
+
+    return this.finish('group_clause', true, startToken, children, fields);
+  }
+
+  /** `into identifier query_body`, continuing the query after a `select`/`group` clause. */
+  private tryParseQueryContinuation(): Node | undefined {
+    if (!this.isContextual('into')) {
+      return undefined;
+    }
+
+    const startToken = this.pos;
+    const children: Node[] = [this.leaf()];
+    const fields = new Map<string, Node>();
+
+    if (this.is('identifier')) {
+      fields.set('name', this.take(children));
+    }
+
+    this.parseQueryBody(children);
+
+    return this.finish('query_continuation', true, startToken, children, fields);
   }
 
   private parseAnonymousMethod(): Node {

@@ -124,35 +124,50 @@ describe('nullCheckPatternMatchingConverter', () => {
     expect(nullCheckPatternMatchingConverter.name).toBe('Convert to Pattern Matching Null Checks');
   });
 
-  it('skips a null check inside a lambda passed to Where (possible IQueryable expression tree)', () => {
-    const input = 'class C { void M() { var r = source.Where(x => x.Name != null); } }';
+  it('skips an expression-bodied lambda passed to a method regardless of its name', () => {
+    const input = 'class C { void M() { var r = repo.Find(x => x.Email == null); } }';
 
     expect(apply(input)).toBe(input);
   });
 
-  it('skips a null check inside a lambda passed to Select/OrderBy/Any and friends', () => {
-    const input =
-      'class C { void M() { a.Select(x => x != null); b.OrderBy(x => x != null); c.Any(x => x == null); } }';
-
-    expect(apply(input)).toBe(input);
-  });
-
-  it('skips a null check inside a lambda assigned to an Expression<...> variable', () => {
+  it('skips an expression-bodied lambda assigned to an Expression<...> variable', () => {
     const input = 'class C { void M() { Expression<Func<Foo, bool>> predicate = x => x.Bar != null; } }';
 
     expect(apply(input)).toBe(input);
   });
 
-  it('skips a null check inside a lambda cast to Expression<...>', () => {
+  it('skips an expression-bodied lambda cast to Expression<...>', () => {
     const input = 'class C { void M() { var p = (Expression<Func<Foo, bool>>)(x => x.Bar != null); } }';
 
     expect(apply(input)).toBe(input);
   });
 
-  it('still converts a null check inside a plain List<T>.Where lambda argument', () => {
-    // Cannot tell IEnumerable from IQueryable without a type checker, so this stays conservative
-    // (skipped) too - see the dedicated skip test above. This test locks in that current behavior.
-    const input = 'class C { void M() { list.Where(x => x != null); } }';
+  it('skips an expression-bodied lambda returned as an Expression<...>', () => {
+    const input = 'class C { Expression<Func<Foo, bool>> Predicate() { return x => x.Bar != null; } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('converts a block-bodied lambda even when passed to .Where(...)', () => {
+    expect(apply('class C { void M() { var r = source.Where(x => { return x.Name != null; }); } }')).toBe(
+      'class C { void M() { var r = source.Where(x => { return x.Name is not null; }); } }'
+    );
+  });
+
+  it('converts an async lambda even though it has an expression body', () => {
+    expect(apply('class C { void M() { Func<Foo, Task<bool>> f = async x => x.Bar != null; } }')).toBe(
+      'class C { void M() { Func<Foo, Task<bool>> f = async x => x.Bar is not null; } }'
+    );
+  });
+
+  it('converts an anonymous method regardless of what it is passed to', () => {
+    expect(apply('class C { void M() { source.Where(delegate(Foo x) { return x.Name != null; }); } }')).toBe(
+      'class C { void M() { source.Where(delegate(Foo x) { return x.Name is not null; }); } }'
+    );
+  });
+
+  it('skips a null check inside a LINQ query expression', () => {
+    const input = 'class C { void M() { var q = from c in customers where c.Email == null select c; } }';
 
     expect(apply(input)).toBe(input);
   });

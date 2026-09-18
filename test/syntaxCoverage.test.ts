@@ -939,47 +939,70 @@ describe('parseCSharpSource - broad coverage', () => {
     expect(root.descendantsOfType('anonymous_method_expression').length).toBeGreaterThan(0);
   });
 
-  it('parses query expression', () => {
+  it('parses query expression with from and select clauses', () => {
     const root = parse('class C { void M() { var q = from x in list select x; } }');
+    const query = root.descendantsOfType('query_expression')[0];
 
-    // The parser may not have a dedicated query_expression node
-    expect(root.type).toBe('compilation_unit');
+    expect(query).toBeDefined();
+    expect(query.descendantsOfType('from_clause')).toHaveLength(1);
+    expect(query.descendantsOfType('select_clause')).toHaveLength(1);
   });
 
-  it('parses query with where', () => {
+  it('parses query with where clause containing the condition', () => {
     const root = parse('class C { void M() { var q = from x in list where x > 0 select x; } }');
+    const whereClause = root.descendantsOfType('query_where_clause')[0];
 
-    expect(root.type).toBe('compilation_unit');
+    expect(whereClause).toBeDefined();
+    expect(whereClause.childForFieldName('condition')?.text).toBe('x > 0');
   });
 
-  it('parses query with orderby', () => {
+  it('parses query with orderby clause', () => {
     const root = parse('class C { void M() { var q = from x in list orderby x select x; } }');
+    const orderBy = root.descendantsOfType('orderby_clause')[0];
 
-    expect(root.type).toBe('compilation_unit');
+    expect(orderBy).toBeDefined();
+    expect(orderBy.descendantsOfType('ordering')).toHaveLength(1);
   });
 
-  it('parses query with group by', () => {
+  it('parses query with group by clause', () => {
     const root = parse('class C { void M() { var q = from x in list group x by x.Key; } }');
+    const group = root.descendantsOfType('group_clause')[0];
 
-    expect(root.type).toBe('compilation_unit');
+    expect(group).toBeDefined();
+    expect(group.childForFieldName('key')?.text).toBe('x.Key');
   });
 
-  it('parses query with join', () => {
-    const root = parse('class C { void M() { var q = from x in list join y in other on x.Id equals y.Id select x; } }');
+  it('parses query with join clause', () => {
+    const root = parse(
+      'class C { void M() { var q = from x in list join y in other on x.Id equals y.Id select x; } }'
+    );
+    const join = root.descendantsOfType('join_clause')[0];
 
-    expect(root.type).toBe('compilation_unit');
+    expect(join).toBeDefined();
+    expect(join.childForFieldName('equalsExpression')?.text).toBe('y.Id');
   });
 
-  it('parses query with let', () => {
+  it('parses query with let clause', () => {
     const root = parse('class C { void M() { var q = from x in list let y = x * 2 select y; } }');
+    const letClause = root.descendantsOfType('let_clause')[0];
 
-    expect(root.type).toBe('compilation_unit');
+    expect(letClause).toBeDefined();
+    expect(letClause.childForFieldName('value')?.text).toBe('x * 2');
   });
 
-  it('parses query with into', () => {
+  it('parses query with into continuation', () => {
     const root = parse('class C { void M() { var q = from x in list select x into g select g; } }');
+    const continuation = root.descendantsOfType('query_continuation')[0];
 
-    expect(root.type).toBe('compilation_unit');
+    expect(continuation).toBeDefined();
+    expect(continuation.descendantsOfType('select_clause')).toHaveLength(1);
+  });
+
+  it('parses from/select/where used as ordinary identifiers, not a query expression', () => {
+    const root = parse('class C { void M() { var from = 5; Console.WriteLine(from); } }');
+
+    expect(root.descendantsOfType('query_expression')).toHaveLength(0);
+    expect(root.descendantsOfType('invocation_expression')[0]?.text).toBe('Console.WriteLine(from)');
   });
 
   it('parses nested class in method', () => {
