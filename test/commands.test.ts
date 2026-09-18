@@ -459,6 +459,28 @@ describe('runCleanupOnUris', () => {
 
     expect(result).toEqual({ changed: 0, failed: 0 });
   });
+
+  it('leaves a base class unsealed when its only subclass lives in a same-directory sibling file outside the batch', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animal.cs', 'internal class Animal\n{\n}\n');
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
+
+    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
+  });
+
+  it('still seals a class whose only same-directory sibling has no reference to it', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Widget.cs', 'internal class Widget\n{\n}\n');
+    state.files.set('/w/Gadget.cs', 'internal class Gadget\n{\n}\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Widget.cs')]);
+
+    expect(result).toEqual({ changed: 1, failed: 0 });
+    expect(state.files.get('/w/Widget.cs')).toBe('internal sealed class Widget\n{\n}\n');
+  });
 });
 
 describe('cleanup commands', () => {

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import {
+  discoverDisqualifiedTypeNamesForFile,
   expandToCSharpFiles,
   expandToCleanableFiles,
   isSupportedFile,
@@ -302,7 +303,8 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   const content = document.getText();
   const root = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
   const settings = readCleanupSettings(root);
-  const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings);
+  const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
+  const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings, disqualifiedTypeNames);
 
   const preview = pipeline.preview(content);
   if (!preview.hasChanges) {

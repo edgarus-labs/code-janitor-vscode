@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
+import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
 import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
 import { commentFormatConverter, regionDirectiveRemover } from '../cleanup/transformations/text';
@@ -30,7 +31,7 @@ interface CleanupResult {
  */
 async function runBatch(
   targets: vscode.Uri[],
-  transform: (content: string, uri: vscode.Uri) => string,
+  transform: (content: string, uri: vscode.Uri, disqualifiedTypeNames: ReadonlySet<string>) => string,
   label: string,
   emptyMessage: string
 ): Promise<{ changed: number; failed: number }> {
@@ -43,10 +44,11 @@ async function runBatch(
   logInfo(`${label}: starting on ${targets.length} file(s).`);
 
   const collected = await collectFiles(targets);
+  const disqualifiedTypeNames = await discoverBatchDisqualifiedTypeNames(collected);
 
   const results: CleanupResult[] = collected.map((file) => {
     try {
-      const output = transform(file.content, file.uri);
+      const output = transform(file.content, file.uri, disqualifiedTypeNames);
 
       return { uri: file.uri, output, changed: output !== file.content, isOpen: file.isOpen };
     } catch (err) {
@@ -71,8 +73,10 @@ export async function runCleanupOnUris(
 
   return runBatch(
     targets,
-    (content, uri) =>
-      isCSharp(uri) ? runCleanup(content, uri.fsPath, settings) : runLayoutCleanup(content, uri.fsPath, settings),
+    (content, uri, disqualifiedTypeNames) =>
+      isCSharp(uri)
+        ? runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames)
+        : runLayoutCleanup(content, uri.fsPath, settings),
     'Cleanup',
     'Code Janitor: no files to clean up.'
   );
@@ -196,6 +200,70 @@ async function siblingCSharpFileNames(uri: vscode.Uri): Promise<Set<string>> {
   } catch {
     return new Set();
   }
+}
+
+/**
+ * Cross-file safety net for sealing a single file: reads every other same-directory `.cs` file
+ * not already in `alreadyCovered` (best effort - an unreadable or unparsable sibling is skipped,
+ * matching {@link collectFiles}'s tolerance) and unions the type names they and `ownContent`
+ * disqualify from sealing, so a file cleaned on its own still knows about a subclass or generic
+ * constraint declared right next to it.
+ */
+export async function discoverDisqualifiedTypeNamesForFile(
+  uri: vscode.Uri,
+  ownContent: string,
+  alreadyCovered: ReadonlySet<string> = new Set()
+): Promise<Set<string>> {
+  const directory = vscode.Uri.file(path.dirname(uri.fsPath));
+
+  let entries: [string, vscode.FileType][] = [];
+  try {
+    entries = await vscode.workspace.fs.readDirectory(directory);
+  } catch {
+    // No sibling directory to read (e.g. an untitled document) - fall back to just ownContent.
+  }
+
+  const siblingSources: string[] = [];
+  for (const [name, type] of entries) {
+    if (type !== vscode.FileType.File || !name.toLowerCase().endsWith('.cs')) {
+      continue;
+    }
+
+    const siblingUri = vscode.Uri.file(path.join(directory.fsPath, name));
+    if (alreadyCovered.has(siblingUri.toString())) {
+      continue;
+    }
+
+    try {
+      const bytes = await vscode.workspace.fs.readFile(siblingUri);
+      siblingSources.push(Buffer.from(bytes).toString('utf8'));
+    } catch {
+      // Unreadable sibling (e.g. deleted concurrently) - skip it.
+    }
+  }
+
+  return discoverDisqualifiedTypeNames([ownContent, ...siblingSources]);
+}
+
+/**
+ * Unions {@link discoverDisqualifiedTypeNamesForFile} across an entire batch, so cleaning several
+ * files together also sees a subclass or generic constraint that lives in one batch file but
+ * targets a type declared in another.
+ */
+async function discoverBatchDisqualifiedTypeNames(collected: readonly CollectedFile[]): Promise<Set<string>> {
+  const batchUris = new Set(collected.map((file) => file.uri.toString()));
+  const perFile = await Promise.all(
+    collected.map((file) => discoverDisqualifiedTypeNamesForFile(file.uri, file.content, batchUris))
+  );
+
+  const names = new Set<string>();
+  for (const fileNames of perFile) {
+    for (const name of fileNames) {
+      names.add(name);
+    }
+  }
+
+  return names;
 }
 
 /**
