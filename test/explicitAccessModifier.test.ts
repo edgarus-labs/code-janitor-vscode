@@ -119,6 +119,46 @@ describe('explicitAccessModifierConverter', () => {
     expect(apply('')).toBe('');
   });
 
+  it('keeps a generic method with an attributed type parameter, nullable return, where clause, and expression body intact', () => {
+    const input = `public class Service
+{
+    static T? Find<[SomeAttribute] T>(System.Guid id)
+        where T : SomeBaseType =>
+        GetAll<T>().FirstOrDefault(item => item.Id == id);
+
+    void Inspect<T>()
+    {
+        var fields = typeof(T).GetFields();
+    }
+}`;
+
+    const result = apply(input);
+
+    expect(result).toContain('private static T? Find<[SomeAttribute] T>');
+    expect(result).toContain('private void Inspect<T>');
+    expect(result).toContain('where T : SomeBaseType');
+    expect(result).toContain('typeof(T).GetFields()');
+  });
+
+  it('inserts the modifier before a doubly-generic method without corrupting either type parameter list', () => {
+    const input = `public class Repository<TEntity> where TEntity : class
+{
+    List<TEntity> FindAll<TKey>(TKey key) where TKey : notnull
+    {
+        return new List<TEntity>();
+    }
+}`;
+
+    const result = apply(input);
+
+    expect(result).toContain('private List<TEntity> FindAll<TKey>');
+    expect(result).toContain('Repository<TEntity> where TEntity : class');
+    expect(result).toContain('where TKey : notnull');
+    expect(result).not.toContain('<private');
+    expect(result).not.toContain('private TEntity');
+    expect(result).not.toContain('private TKey');
+  });
+
   it('is named', () => {
     expect(converter().name).toBe('Explicit Access Modifiers');
   });
