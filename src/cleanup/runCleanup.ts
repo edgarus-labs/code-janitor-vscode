@@ -35,7 +35,7 @@ import {
   updateSingleLineMethodsConverter,
 } from './transformations/readonlyFieldAndSingleLineMethods';
 import { returnThrowBlankLinePaddingConverter } from './transformations/returnThrowBlankLinePadding';
-import { sealedClassConverter } from './transformations/sealedClass';
+import { createSealedClassConverter } from './transformations/sealedClass';
 import {
   byteOrderMarkConverter,
   commentFormatConverter,
@@ -53,28 +53,35 @@ import { varWhenApparentConverter } from './transformations/varWhenApparent';
  * Builds and runs the cleanup pipeline for a single C# file, mirroring the converter set, the
  * conditional gating and the order of the source extension's headless cleanup path.
  */
-export function runCleanup(source: string, filePath: string, settings: CleanupSettings): string {
+export function runCleanup(
+  source: string,
+  filePath: string,
+  settings: CleanupSettings,
+  externalDisqualifiedTypeNames?: ReadonlySet<string>
+): string {
   if (!source) {
     return source;
   }
 
-  return getCleanupPipeline(source, filePath, settings).run(source);
+  return getCleanupPipeline(source, filePath, settings, externalDisqualifiedTypeNames).run(source);
 }
 
 export function getCleanupPipeline(
   source: string,
   filePath: string,
-  settings: CleanupSettings
+  settings: CleanupSettings,
+  externalDisqualifiedTypeNames?: ReadonlySet<string>
 ): SourceTransformationPipeline {
   const editorConfig = loadCSharpOptions(filePath);
 
-  return buildPipeline(source, settings, editorConfig);
+  return buildPipeline(source, settings, editorConfig, externalDisqualifiedTypeNames);
 }
 
 export function buildPipeline(
   source: string,
   settings: CleanupSettings,
-  editorConfig: EditorConfigCSharpOptions
+  editorConfig: EditorConfigCSharpOptions,
+  externalDisqualifiedTypeNames?: ReadonlySet<string>
 ): SourceTransformationPipeline {
   const transformations: (SourceTransformation | undefined)[] = [
     settings.removeRegions ? regionDirectiveRemover : undefined,
@@ -83,7 +90,7 @@ export function buildPipeline(
     settings.convertToFileScopedNamespace && !hasMultipleNamespaces(source) ? fileScopedNamespaceConverter : undefined,
     settings.convertToVarWhenApparent ? varWhenApparentConverter : undefined,
     settings.makeFieldsReadonlyWhenSafe ? readonlyFieldConverter : undefined,
-    settings.sealClassesWhenSafe ? sealedClassConverter : undefined,
+    settings.sealClassesWhenSafe ? createSealedClassConverter(externalDisqualifiedTypeNames) : undefined,
     settings.insertBlankLineBeforeReturnAndThrowStatements ? returnThrowBlankLinePaddingConverter : undefined,
     settings.convertToCollectionExpressions ? collectionExpressionConverter : undefined,
     settings.reuseJsonSerializerOptionsForCA1869 ? jsonSerializerOptionsReuseConverter : undefined,

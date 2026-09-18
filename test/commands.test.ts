@@ -459,6 +459,40 @@ describe('runCleanupOnUris', () => {
 
     expect(result).toEqual({ changed: 0, failed: 0 });
   });
+
+  it('leaves a base class unsealed when its only subclass lives in a same-directory sibling file outside the batch', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animal.cs', 'internal class Animal\n{\n}\n');
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
+
+    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
+  });
+
+  it('leaves a base class unsealed when its only subclass lives in a symlinked same-directory sibling file', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animal.cs', 'internal class Animal\n{\n}\n');
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+    state.symlinkedFiles.add('/w/Dog.cs');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
+
+    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
+  });
+
+  it('still seals a class whose only same-directory sibling has no reference to it', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Widget.cs', 'internal class Widget\n{\n}\n');
+    state.files.set('/w/Gadget.cs', 'internal class Gadget\n{\n}\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Widget.cs')]);
+
+    expect(result).toEqual({ changed: 1, failed: 0 });
+    expect(state.files.get('/w/Widget.cs')).toBe('internal sealed class Widget\n{\n}\n');
+  });
 });
 
 describe('cleanup commands', () => {
@@ -506,6 +540,34 @@ describe('cleanup commands', () => {
     expect(document.getText()).not.toContain('   \n');
   });
 
+  it('does not propose sealing a class in the preview when a same-directory sibling subclasses it', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+    const document = new TextDocument(Uri.file('/w/Animal.cs'), 'internal class Animal\n{\n}\n', 'csharp');
+    state.documents.push(document);
+    window.activeTextEditor = new TextEditor(document);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.previewCleanupActiveFile');
+
+    expect(state.informationMessages).toContain('Code Janitor: file is already clean (no changes).');
+    expect(state.openedDocuments).toHaveLength(0);
+  });
+
+  it('seals a class based on the live unsaved buffer, not a stale on-disk self-read', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    // Stale on-disk content still has the subclass the user already deleted in the editor.
+    state.files.set('/w/Animal.cs', 'internal class Animal\n{\n}\n\ninternal class Dog : Animal\n{\n}\n');
+    const document = new TextDocument(Uri.file('/w/Animal.cs'), 'internal class Animal\n{\n}\n', 'csharp');
+    state.documents.push(document);
+    window.activeTextEditor = new TextEditor(document);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.previewCleanupActiveFile');
+
+    expect(state.openedDocuments.at(-1)?.content).toContain('sealed class Animal');
+  });
+
   it('cleans every open file', async () => {
     const document = new TextDocument(Uri.file('/w/a.cs'), UNCLEAN, 'csharp');
     state.documents.push(document);
@@ -542,6 +604,15 @@ describe('cleanup commands', () => {
     await run('codeJanitor.removeXmlDocSelectedFiles', Uri.file('/w/a.cs'), [Uri.file('/w/a.cs')]);
 
     expect(state.files.get('/w/a.cs')).not.toContain('///');
+  });
+
+  it('does not perform sealing-discovery I/O when removing XML documentation', async () => {
+    state.files.set('/w/a.cs', XML_DOCUMENTED);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.removeXmlDocSelectedFiles', Uri.file('/w/a.cs'), [Uri.file('/w/a.cs')]);
+
+    expect(state.readDirectoryCalls).toBe(0);
   });
 
   it('expands selected folders to .cs files only when removing XML documentation, regardless of includeOtherFileTypes', async () => {
@@ -639,6 +710,35 @@ describe('cleanup commands', () => {
     expect(state.files.get('/w/Foo.cs')).toContain('class Foo');
     expect(state.files.get('/w/Foo.cs')).not.toContain('class Bar');
     expect(state.files.get(path.join('/w', 'Bar.cs'))).toContain('class Bar');
+  });
+
+  it('does not seal a base type when splitting creates a subclass sibling in the same operation', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animals.cs', 'public class Animal\n{\n}\n\npublic class Dog : Animal\n{\n}\n');
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypesSelectedFiles', Uri.file('/w/Animals.cs'), [Uri.file('/w/Animals.cs')]);
+
+    expect(state.files.get('/w/Animals.cs')).not.toContain('sealed');
+    expect(state.files.get(path.join('/w', 'Dog.cs'))).toContain('class Dog : Animal');
+  });
+
+  it('does not seal a base type split from one selected file when its subclass is a different selected file in another directory', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animals.cs', 'public class Animal\n{\n}\n\npublic class Extra\n{\n}\n');
+    state.files.set('/other/Dog.cs', 'public class Dog : Animal\n{\n}\n');
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypesSelectedFiles', undefined, [
+      Uri.file('/w/Animals.cs'),
+      Uri.file('/other/Dog.cs'),
+    ]);
+
+    // The split must have actually happened - not a vacuous pass from a silent no-op/crash.
+    expect(state.files.get(path.join('/w', 'Extra.cs'))).toContain('class Extra');
+    expect(state.files.get('/w/Animals.cs')).toContain('class Animal');
+    expect(state.files.get('/w/Animals.cs')).not.toContain('class Extra');
+    expect(state.files.get('/w/Animals.cs')).not.toContain('sealed');
   });
 
   it('leaves a single-type file untouched when splitting', async () => {
@@ -774,6 +874,17 @@ describe('cleanup on save', () => {
     registerFormatOnSave(createContext());
 
     const edits = await triggerSave(new TextDocument(Uri.file('/w/a.cs'), 'internal class C\n{\n}\n', 'csharp'))!;
+
+    expect(edits).toEqual([]);
+  });
+
+  it('does not seal a class on save when a same-directory sibling subclasses it', async () => {
+    state.configuration.set('codeJanitor.cleanup.onSave', true);
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+    registerFormatOnSave(createContext());
+
+    const edits = await triggerSave(new TextDocument(Uri.file('/w/Animal.cs'), 'internal class Animal\n{\n}\n', 'csharp'))!;
 
     expect(edits).toEqual([]);
   });

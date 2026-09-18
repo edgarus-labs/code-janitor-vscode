@@ -2,20 +2,28 @@ import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
 
 /**
- * LINQ query operators that have a `System.Linq.Queryable` overload taking `Expression<TDelegate>`
- * instead of a plain delegate. A lambda passed to one of these is compiled to an expression tree
- * whenever the receiver is `IQueryable<T>` (EF Core and every other ORM), and C# forbids pattern
- * matching (`is`/`is not`) inside an expression tree - CS8122. We have no type information to tell
- * an `IQueryable<T>` receiver from a plain `IEnumerable<T>` one, so every call to one of these
- * names is treated as unsafe: the cost of a missed `is null` simplification is negligible, the cost
- * of a broken build is not.
+ * Node types that can only ever be reached through a LINQ query-expression clause. Every clause
+ * desugars to the same method calls as its fluent-syntax equivalent (`from x in y where ...`
+ * becomes `y.Where(x => ...)`), so a null check inside one is just as capable of landing inside an
+ * `Expression<TDelegate>` overload as one inside an explicit `.Where(...)` lambda argument.
+ * `query_where_clause` is the query-expression `where`; it is a distinct node type from the
+ * `where` of a generic type-parameter constraint clause, which is unrelated.
  */
-const QUERYABLE_METHOD_NAMES = new Set([
-  'Where', 'Select', 'SelectMany', 'OrderBy', 'OrderByDescending', 'ThenBy', 'ThenByDescending',
-  'GroupBy', 'GroupJoin', 'Join', 'Any', 'All', 'Count', 'LongCount', 'First', 'FirstOrDefault',
-  'Single', 'SingleOrDefault', 'Last', 'LastOrDefault', 'Average', 'Sum', 'Min', 'Max', 'Aggregate',
-  'TakeWhile', 'SkipWhile', 'DefaultIfEmpty',
-]);
+const QUERY_CLAUSE_TYPES: Record<string, true> = {
+  from_clause: true, let_clause: true, query_where_clause: true, join_clause: true,
+  orderby_clause: true, ordering: true, select_clause: true, group_clause: true,
+};
+
+/**
+ * Declaration node types with their own executable body. A null check inside one is unaffected by
+ * whatever lambda or query clause encloses *that* declaration - local functions and locally
+ * declared members compile to ordinary methods, never expression trees.
+ */
+const MEMBER_DECLARATION_TYPES: Record<string, true> = {
+  method_declaration: true, constructor_declaration: true, destructor_declaration: true,
+  operator_declaration: true, conversion_operator_declaration: true, accessor_declaration: true,
+  property_declaration: true, indexer_declaration: true,
+};
 
 /**
  * Converts traditional null equality checks (`== null`, `!= null`) to pattern matching
@@ -74,68 +82,54 @@ export const nullCheckPatternMatchingConverter: SourceTransformation = {
 };
 
 /**
- * True when `node` sits inside the nearest enclosing lambda/anonymous method and that lambda may
- * be converted to an `Expression<TDelegate>` rather than a plain delegate. Only the innermost
- * enclosing lambda matters: whether an outer lambda is itself an expression tree has no bearing on
- * whether the inner one is.
+ * True when converting `node` (a `==`/`!=` null check) to `is`/`is not` could break compilation
+ * with CS8122. A lambda can only convert to `Expression<TDelegate>` when it has an expression body
+ * (`=> expr`, never `=> { ... }` - CS0834) and is not `async` (CS1989); those two hard compiler
+ * restrictions make every block-bodied or async lambda structurally incapable of becoming an
+ * expression tree, regardless of what it is assigned to, cast to, passed as, or returned as. LINQ
+ * query-expression clauses desugar to the same method calls as their fluent-syntax equivalents, so
+ * anything inside one is just as unsafe as inside an explicit `.Where(...)` lambda. We have no type
+ * information to rule out a *particular* delegate/queryable overload, so every expression-bodied,
+ * non-async lambda (and every query clause) is treated as unsafe: the cost of a missed `is null`
+ * simplification is negligible, the cost of a broken build is not. Only the nearest enclosing
+ * lambda/query-clause/declaration matters - ancestors further out have no bearing on `node`.
  */
 function isInPossibleExpressionTree(node: Node): boolean {
-  const lambda = enclosingLambda(node);
-
-  return lambda !== undefined && (isAssignedToExpressionType(lambda) || isArgumentToQueryableCall(lambda));
-}
-
-function enclosingLambda(node: Node): Node | undefined {
   for (let current = node.parent; current; current = current.parent) {
-    if (current.type === 'lambda_expression' || current.type === 'anonymous_method_expression') {
-      return current;
-    }
-  }
-
-  return undefined;
-}
-
-/** `Expression<Func<...>> predicate = x => ...;` and `(Expression<Func<...>>)(x => ...)`. */
-function isAssignedToExpressionType(lambda: Node): boolean {
-  const clause = lambda.parent;
-  if (clause?.type === 'equals_value_clause') {
-    const declarator = clause.parent;
-    const declaration = declarator?.type === 'variable_declarator' ? declarator.parent : undefined;
-    const type = declaration?.type === 'variable_declaration' ? declaration.childForFieldName('type') : undefined;
-
-    if (isExpressionType(type)) {
+    if (QUERY_CLAUSE_TYPES[current.type] === true) {
       return true;
     }
+
+    if (
+      current.type === 'anonymous_method_expression' ||
+      current.type === 'local_function_statement' ||
+      MEMBER_DECLARATION_TYPES[current.type] === true
+    ) {
+      return false;
+    }
+
+    if (current.type === 'lambda_expression') {
+      return hasExpressionBody(current) && !isAsyncLambda(current);
+    }
   }
 
-  const cast = lambda.parent?.type === 'parenthesized_expression' ? lambda.parent.parent : undefined;
-
-  return cast?.type === 'cast_expression' && isExpressionType(cast.childForFieldName('type'));
+  return false;
 }
 
-function isExpressionType(type: Node | null | undefined): boolean {
-  if (!type) {
-    return false;
-  }
-
-  const name = type.type === 'generic_name' ? (type.namedChild(0)?.text ?? '') : type.text;
-
-  return name === 'Expression' || name.endsWith('.Expression');
+/** True when `lambda`'s body is a single expression (`=> expr`) rather than a block (`=> { ... }`). */
+function hasExpressionBody(lambda: Node): boolean {
+  return lambda.childForFieldName('body')?.type !== 'block';
 }
 
-/** `source.Where(x => ...)`, including `queryable.Where(predicate: x => ...)`. */
-function isArgumentToQueryableCall(lambda: Node): boolean {
-  const argument = lambda.parent?.type === 'argument' ? lambda.parent : undefined;
-  const argumentList = argument?.parent?.type === 'argument_list' ? argument.parent : undefined;
-  const invocation = argumentList?.parent?.type === 'invocation_expression' ? argumentList.parent : undefined;
-  const target = invocation?.childForFieldName('function');
+/**
+ * True when `lambda` is the inner node of the `async` wrapper the parser builds for
+ * `async x => ...`: the parser re-uses the inner lambda's node type for the wrapper, with the
+ * `async` token as the wrapper's first child and the unwrapped lambda - the one this function is
+ * called with - as its second. See the `async` handling in `parseIdentifierExpression` in the
+ * native parser (`src/cleanup/syntax/parser.ts`).
+ */
+function isAsyncLambda(lambda: Node): boolean {
+  const parent = lambda.parent;
 
-  if (target?.type !== 'member_access_expression') {
-    return false;
-  }
-
-  const name = target.childForFieldName('name');
-  const methodName = name?.type === 'generic_name' ? (name.namedChild(0)?.text ?? '') : name?.text ?? '';
-
-  return QUERYABLE_METHOD_NAMES.has(methodName);
+  return parent?.type === lambda.type && parent.child(1) === lambda && parent.child(0)?.text === 'async';
 }

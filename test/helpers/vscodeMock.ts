@@ -52,7 +52,7 @@ export class RelativePattern {
   ) {}
 }
 
-export const FileType = { Unknown: 0, File: 1, Directory: 2 } as const;
+export const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 } as const;
 export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 } as const;
 export const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 } as const;
 export const ViewColumn = { Active: -1, Beside: -2, One: 1 } as const;
@@ -269,6 +269,8 @@ export const state = {
   /** Every setting key the code under test asked for, so it can be checked against the manifest. */
   configurationReads: [] as string[],
   files: new Map<string, string>(),
+  /** Paths in `files` that should also report the `SymbolicLink` bit from `readDirectory`. */
+  symlinkedFiles: new Set<string>(),
   directories: new Set<string>(),
   documents: [] as TextDocument[],
   workspaceFolders: [] as WorkspaceFolder[],
@@ -287,6 +289,7 @@ export const state = {
   openedDocuments: [] as { content: string; language: string }[],
   willSaveHandlers: [] as ((event: WillSaveEvent) => void)[],
   outputChannelLines: [] as string[],
+  readDirectoryCalls: 0,
 };
 
 export function resetMock(): void {
@@ -294,9 +297,11 @@ export function resetMock(): void {
   state.configurationUpdates = [];
   state.configurationReads = [];
   state.files = new Map();
+  state.symlinkedFiles = new Set();
   state.directories = new Set();
   state.documents = [];
   state.workspaceFolders = [];
+  state.readDirectoryCalls = 0;
   state.foundFiles = [];
   state.extensions = new Map();
   state.commands = new Map();
@@ -534,6 +539,7 @@ export const workspace = {
 
     /** Lists the immediate children of `uri` derived from the flat `state.files` map. */
     readDirectory(uri: Uri): Thenable<[string, number][]> {
+      state.readDirectoryCalls++;
       const dir = uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
       const seen = new Map<string, number>();
 
@@ -547,7 +553,12 @@ export const workspace = {
         const isNested = rest.includes('/');
         const name = isNested ? rest.slice(0, rest.indexOf('/')) : rest;
 
-        seen.set(name, isNested ? FileType.Directory : FileType.File);
+        const type = isNested
+          ? FileType.Directory
+          : state.symlinkedFiles.has(filePath)
+            ? FileType.File | FileType.SymbolicLink
+            : FileType.File;
+        seen.set(name, type);
       }
 
       return Promise.resolve([...seen.entries()]);

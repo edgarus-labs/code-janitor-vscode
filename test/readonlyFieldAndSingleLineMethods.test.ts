@@ -139,6 +139,44 @@ describe('readonlyFieldConverter', () => {
     expect(apply(input)).toBe(input);
   });
 
+  it('leaves a field mutated by a nested type mutable', () => {
+    const input =
+      'class C { private static int _x; static C() { _x = 1; } private class Inner { public static void M() { _x = 2; } } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('leaves a field mutated via a ref argument from a nested type mutable', () => {
+    const input =
+      'class C { private int _x; public C() { _x = 1; } private class Inner { private readonly C _outer; public Inner(C outer) { _outer = outer; } public void M() { Interlocked.Increment(ref _outer._x); } } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('leaves a field whose address is taken mutable', () => {
+    const input = 'class C { private int _x; public C() { _x = 1; } public unsafe void M() { var p = &_x; } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('leaves a field whose address is taken as an argument mutable', () => {
+    const input = 'class C { private int _x; public C() { _x = 1; } public unsafe void M() { Helper(&_x); } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('marks a field readonly even when read via bitwise-AND, proving address-of detection is AST-based, not a naive scan for &', () => {
+    expect(
+      apply('class C { private int _flags; public C() { _flags = 1; } bool M() { return (_flags & 2) != 0; } }')
+    ).toBe('class C { private readonly int _flags; public C() { _flags = 1; } bool M() { return (_flags & 2) != 0; } }');
+  });
+
+  it('leaves a field whose member is pre-incremented in a method mutable', () => {
+    const input = 'class C { private Point _pt; void M() { ++_pt.X; } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
   it('handles an empty source', () => {
     expect(apply('')).toBe('');
   });

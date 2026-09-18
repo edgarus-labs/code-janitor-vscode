@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { runCleanup } from '../cleanup/runCleanup';
-import { isPathCleanable } from './cleanupCore';
+import { discoverDisqualifiedTypeNamesForFile, isPathCleanable } from './cleanupCore';
 import { readCleanupSettings } from './settings';
 
 /**
@@ -27,23 +27,25 @@ export function registerFormatOnSave(context: vscode.ExtensionContext): void {
   );
 }
 
-function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
+async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
   const content = document.getText();
 
   try {
+    const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
     const output = runCleanup(
       content,
       document.uri.fsPath,
-      readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath)
+      readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath),
+      disqualifiedTypeNames
     );
     if (output === content) {
-      return Promise.resolve([]);
+      return [];
     }
 
     const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(content.length));
 
-    return Promise.resolve([vscode.TextEdit.replace(fullRange, output)]);
+    return [vscode.TextEdit.replace(fullRange, output)];
   } catch {
-    return Promise.resolve([]);
+    return [];
   }
 }
