@@ -167,13 +167,15 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
         continue;
       }
 
+      const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(file.uri, file.content);
+
       for (const newFile of plan.newFiles) {
-        const cleaned = runCleanup(newFile.content, newFile.filePath, settings);
+        const cleaned = runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames);
         await vscode.workspace.fs.writeFile(vscode.Uri.file(newFile.filePath), Buffer.from(cleaned, 'utf8'));
         createdFiles++;
       }
 
-      await writeFileContent(file, runCleanup(plan.updatedSource, file.uri.fsPath, settings));
+      await writeFileContent(file, runCleanup(plan.updatedSource, file.uri.fsPath, settings, disqualifiedTypeNames));
       changedOriginals++;
     } catch (err) {
       failed++;

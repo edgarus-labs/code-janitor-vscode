@@ -528,6 +528,20 @@ describe('cleanup commands', () => {
     expect(document.getText()).not.toContain('   \n');
   });
 
+  it('does not propose sealing a class in the preview when a same-directory sibling subclasses it', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+    const document = new TextDocument(Uri.file('/w/Animal.cs'), 'internal class Animal\n{\n}\n', 'csharp');
+    state.documents.push(document);
+    window.activeTextEditor = new TextEditor(document);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.previewCleanupActiveFile');
+
+    expect(state.informationMessages).toContain('Code Janitor: file is already clean (no changes).');
+    expect(state.openedDocuments).toHaveLength(0);
+  });
+
   it('cleans every open file', async () => {
     const document = new TextDocument(Uri.file('/w/a.cs'), UNCLEAN, 'csharp');
     state.documents.push(document);
@@ -663,6 +677,17 @@ describe('cleanup commands', () => {
     expect(state.files.get(path.join('/w', 'Bar.cs'))).toContain('class Bar');
   });
 
+  it('does not seal a base type when splitting creates a subclass sibling in the same operation', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animals.cs', 'public class Animal\n{\n}\n\npublic class Dog : Animal\n{\n}\n');
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypesSelectedFiles', Uri.file('/w/Animals.cs'), [Uri.file('/w/Animals.cs')]);
+
+    expect(state.files.get('/w/Animals.cs')).not.toContain('sealed');
+    expect(state.files.get(path.join('/w', 'Dog.cs'))).toContain('class Dog : Animal');
+  });
+
   it('leaves a single-type file untouched when splitting', async () => {
     state.files.set('/w/Foo.cs', 'internal class Foo\n{\n}\n');
     registerCleanupCommands(createContext());
@@ -796,6 +821,17 @@ describe('cleanup on save', () => {
     registerFormatOnSave(createContext());
 
     const edits = await triggerSave(new TextDocument(Uri.file('/w/a.cs'), 'internal class C\n{\n}\n', 'csharp'))!;
+
+    expect(edits).toEqual([]);
+  });
+
+  it('does not seal a class on save when a same-directory sibling subclasses it', async () => {
+    state.configuration.set('codeJanitor.cleanup.onSave', true);
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+    registerFormatOnSave(createContext());
+
+    const edits = await triggerSave(new TextDocument(Uri.file('/w/Animal.cs'), 'internal class Animal\n{\n}\n', 'csharp'))!;
 
     expect(edits).toEqual([]);
   });
