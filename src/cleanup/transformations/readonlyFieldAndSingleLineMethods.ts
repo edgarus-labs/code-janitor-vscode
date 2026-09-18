@@ -134,8 +134,7 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
         break;
       }
 
-      case 'postfix_unary_expression':
-      case 'prefix_unary_expression': {
+      case 'postfix_unary_expression': {
         if (!node.children.some((child) => child?.type === '++' || child?.type === '--')) {
           break;
         }
@@ -147,29 +146,49 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
 
         break;
       }
+
+      case 'prefix_unary_expression': {
+        // `&x` and `++x`/`--x` share this node type; only the token child tells them apart.
+        const isIncrementOrDecrement = node.children.some((child) => child?.type === '++' || child?.type === '--');
+        const isAddressOf = node.children.some((child) => child?.type === '&');
+        if (!isIncrementOrDecrement && !isAddressOf) {
+          break;
+        }
+
+        const operand = node.namedChild(0);
+        if (!operand || fieldAccessKind(operand, fieldName) === FieldAccess.None) {
+          break;
+        }
+
+        if (isAddressOf) {
+          // Taking a field's address can expose it to arbitrary pointer writes that this
+          // single-file analysis cannot rule out, so it unconditionally disqualifies `readonly`.
+          return false;
+        }
+
+        writes.push(node);
+
+        break;
+      }
     }
   }
 
   return writes.every((write) => isWriteInMatchingConstructor(write, typeDeclaration, isStatic));
 }
 
-/** Every descendant of the type, without descending into nested type declarations. */
+/** Every descendant of the type, including any nested type declarations it contains. */
 function* scopeNodes(typeDeclaration: Node): Generator<Node> {
-  function* visit(node: Node, isRoot: boolean): Generator<Node> {
+  function* visit(node: Node): Generator<Node> {
     yield node;
-
-    if (!isRoot && TYPE_DECLARATIONS.has(node.type)) {
-      return;
-    }
 
     for (const child of node.namedChildren) {
       if (child) {
-        yield* visit(child, false);
+        yield* visit(child);
       }
     }
   }
 
-  yield* visit(typeDeclaration, true);
+  yield* visit(typeDeclaration);
 }
 
 function fieldAccessKind(expression: Node, fieldName: string): FieldAccess {
