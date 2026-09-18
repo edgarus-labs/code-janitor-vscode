@@ -218,17 +218,20 @@ function constraintTypeNames(clause: Node): string[] {
   const tokens = clause.children;
   const names: string[] = [];
   let segment: Node[] = [];
+  let depth = 0;
 
   for (let i = skipConstraintClauseHeader(tokens); i < tokens.length; i++) {
     const token = tokens[i];
 
-    if (token.type === ',') {
+    if (token.type === '<') {
+      depth++;
+    } else if (token.type === '>') {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && token.type === ',') {
       appendConstraintSegmentName(names, segment);
       segment = [];
       continue;
-    }
-
-    if (token.type === '{' || token.type === ';' || (token.type === 'identifier' && token.text === 'where')) {
+    } else if (depth === 0 && (token.type === '{' || token.type === ';' || (token.type === 'identifier' && token.text === 'where'))) {
       break;
     }
 

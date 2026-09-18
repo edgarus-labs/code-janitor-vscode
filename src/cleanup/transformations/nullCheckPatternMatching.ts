@@ -11,7 +11,7 @@ import { SourceTransformation } from '../types';
  */
 const QUERY_CLAUSE_TYPES: Record<string, true> = {
   from_clause: true, let_clause: true, query_where_clause: true, join_clause: true,
-  join_into_clause: true, orderby_clause: true, ordering: true, select_clause: true, group_clause: true,
+  orderby_clause: true, ordering: true, select_clause: true, group_clause: true,
 };
 
 /**

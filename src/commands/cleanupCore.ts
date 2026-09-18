@@ -153,6 +153,7 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
 
   const collected = await collectFiles(targets);
   const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath);
+  const disqualifiedTypeNames = await discoverBatchDisqualifiedTypeNames(collected);
 
   let changedOriginals = 0;
   let createdFiles = 0;
@@ -166,8 +167,6 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
       if (!plan.hasChanges) {
         continue;
       }
-
-      const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(file.uri, file.content);
 
       for (const newFile of plan.newFiles) {
         const cleaned = runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames);
@@ -227,7 +226,7 @@ export async function discoverDisqualifiedTypeNamesForFile(
 
   const siblingSources: string[] = [];
   for (const [name, type] of entries) {
-    if (type !== vscode.FileType.File || !name.toLowerCase().endsWith('.cs')) {
+    if ((type & vscode.FileType.File) === 0 || !name.toLowerCase().endsWith('.cs')) {
       continue;
     }
 

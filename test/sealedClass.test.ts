@@ -136,6 +136,13 @@ describe('sealedClassConverter', () => {
     expect(apply(input)).toBe('public sealed class Result { } public sealed class Box<T> where T : class, new() { }');
   });
 
+  it('does not disqualify a type only nested inside a multi-argument generic constraint', () => {
+    const input =
+      'public class Wrapper<T> where T : IDictionary<string, List<Foo>> { } public class List { }';
+
+    expect(apply(input)).toContain('public sealed class List { }');
+  });
+
   it('is named', () => {
     expect(sealedClassConverter.name).toBe('Sealed Class');
   });

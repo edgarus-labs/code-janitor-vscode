@@ -471,6 +471,18 @@ describe('runCleanupOnUris', () => {
     expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
   });
 
+  it('leaves a base class unsealed when its only subclass lives in a symlinked same-directory sibling file', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animal.cs', 'internal class Animal\n{\n}\n');
+    state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
+    state.symlinkedFiles.add('/w/Dog.cs');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
+
+    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
+  });
+
   it('still seals a class whose only same-directory sibling has no reference to it', async () => {
     state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
     state.files.set('/w/Widget.cs', 'internal class Widget\n{\n}\n');
@@ -686,6 +698,20 @@ describe('cleanup commands', () => {
 
     expect(state.files.get('/w/Animals.cs')).not.toContain('sealed');
     expect(state.files.get(path.join('/w', 'Dog.cs'))).toContain('class Dog : Animal');
+  });
+
+  it('does not seal a base type split from one selected file when its subclass is a different selected file in another directory', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    state.files.set('/w/Animals.cs', 'public class Animal\n{\n}\n\npublic class Extra\n{\n}\n');
+    state.files.set('/other/Dog.cs', 'public class Dog : Animal\n{\n}\n');
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.splitTopLevelTypesSelectedFiles', undefined, [
+      Uri.file('/w/Animals.cs'),
+      Uri.file('/other/Dog.cs'),
+    ]);
+
+    expect(state.files.get('/w/Animals.cs')).not.toContain('sealed');
   });
 
   it('leaves a single-type file untouched when splitting', async () => {
