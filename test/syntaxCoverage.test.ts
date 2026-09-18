@@ -571,6 +571,40 @@ describe('parseCSharpSource - broad coverage', () => {
     expect(root.descendantsOfType('cast_expression').length).toBeGreaterThan(0);
   });
 
+  it('parses a cast to a generic type without misclassifying it as an invocation', () => {
+    const root = parse('class C { void M() { var x = (List<int>)obj; } }');
+    const cast = root.descendantsOfType('cast_expression')[0];
+
+    expect(cast).toBeDefined();
+    expect(cast.childForFieldName('type')?.text).toBe('List<int>');
+    expect(cast.childForFieldName('value')?.text).toBe('obj');
+  });
+
+  it('parses a cast to an array type without misclassifying it as an invocation', () => {
+    const root = parse('class C { void M() { var x = (int[])obj; } }');
+    const cast = root.descendantsOfType('cast_expression')[0];
+
+    expect(cast).toBeDefined();
+    expect(cast.childForFieldName('type')?.text).toBe('int[]');
+  });
+
+  it('parses a cast to a qualified dotted-name type without misclassifying it as an invocation', () => {
+    const root = parse('class C { void M() { var x = (System.Text.StringBuilder)obj; } }');
+    const cast = root.descendantsOfType('cast_expression')[0];
+
+    expect(cast).toBeDefined();
+    expect(cast.childForFieldName('type')?.text).toBe('System.Text.StringBuilder');
+  });
+
+  it('parses a cast to a generic type immediately followed by a parenthesized lambda argument', () => {
+    const root = parse('class C { void M() { var p = (Expression<Func<Foo, bool>>)(x => x.Bar != null); } }');
+    const cast = root.descendantsOfType('cast_expression')[0];
+
+    expect(cast).toBeDefined();
+    expect(cast.childForFieldName('type')?.text).toBe('Expression<Func<Foo, bool>>');
+    expect(root.descendantsOfType('lambda_expression').length).toBeGreaterThan(0);
+  });
+
   it('parses assignment expression', () => {
     const root = parse('class C { void M() { x = 42; } }');
 
@@ -1013,6 +1047,20 @@ describe('parseCSharpSource - broad coverage', () => {
 
     expect(root.descendantsOfType('query_expression')).toHaveLength(0);
     expect(root.descendantsOfType('invocation_expression')[0]?.text).toBe('Console.WriteLine(from)');
+  });
+
+  it('parses select used as an ordinary identifier, not a query expression', () => {
+    const root = parse('class C { void M() { var select = 5; Console.WriteLine(select); } }');
+
+    expect(root.descendantsOfType('query_expression')).toHaveLength(0);
+    expect(root.descendantsOfType('invocation_expression')[0]?.text).toBe('Console.WriteLine(select)');
+  });
+
+  it('parses where used as an ordinary identifier, not a query expression', () => {
+    const root = parse('class C { void M() { var where = 5; Console.WriteLine(where); } }');
+
+    expect(root.descendantsOfType('query_expression')).toHaveLength(0);
+    expect(root.descendantsOfType('invocation_expression')[0]?.text).toBe('Console.WriteLine(where)');
   });
 
   it('parses nested class in method', () => {

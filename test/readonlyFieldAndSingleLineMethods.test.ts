@@ -165,6 +165,12 @@ describe('readonlyFieldConverter', () => {
     expect(apply(input)).toBe(input);
   });
 
+  it('marks a field readonly even when read via bitwise-AND, proving address-of detection is AST-based, not a naive scan for &', () => {
+    expect(
+      apply('class C { private int _flags; public C() { _flags = 1; } bool M() { return (_flags & 2) != 0; } }')
+    ).toBe('class C { private readonly int _flags; public C() { _flags = 1; } bool M() { return (_flags & 2) != 0; } }');
+  });
+
   it('leaves a field whose member is pre-incremented in a method mutable', () => {
     const input = 'class C { private Point _pt; void M() { ++_pt.X; } }';
 
