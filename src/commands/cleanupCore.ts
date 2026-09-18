@@ -33,7 +33,8 @@ async function runBatch(
   targets: vscode.Uri[],
   transform: (content: string, uri: vscode.Uri, disqualifiedTypeNames: ReadonlySet<string>) => string,
   label: string,
-  emptyMessage: string
+  emptyMessage: string,
+  discoverSealingSafety = false
 ): Promise<{ changed: number; failed: number }> {
   if (targets.length === 0) {
     void vscode.window.showInformationMessage(emptyMessage);
@@ -44,7 +45,9 @@ async function runBatch(
   logInfo(`${label}: starting on ${targets.length} file(s).`);
 
   const collected = await collectFiles(targets);
-  const disqualifiedTypeNames = await discoverBatchDisqualifiedTypeNames(collected);
+  const disqualifiedTypeNames = discoverSealingSafety
+    ? await discoverBatchDisqualifiedTypeNames(collected)
+    : new Set<string>();
 
   const results: CleanupResult[] = collected.map((file) => {
     try {
@@ -78,7 +81,8 @@ export async function runCleanupOnUris(
         ? runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames)
         : runLayoutCleanup(content, uri.fsPath, settings),
     'Cleanup',
-    'Code Janitor: no files to clean up.'
+    'Code Janitor: no files to clean up.',
+    true
   );
 }
 
@@ -231,7 +235,7 @@ export async function discoverDisqualifiedTypeNamesForFile(
     }
 
     const siblingUri = vscode.Uri.file(path.join(directory.fsPath, name));
-    if (alreadyCovered.has(siblingUri.toString())) {
+    if (siblingUri.toString() === uri.toString() || alreadyCovered.has(siblingUri.toString())) {
       continue;
     }
 

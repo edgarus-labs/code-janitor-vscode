@@ -2829,7 +2829,20 @@ class CSharpParser {
     }
 
     for (let i = this.pos + 1; i < closing; i++) {
-      if (!TYPE_ARGUMENT_TOKENS.has(this.tokens[i].type) && this.tokens[i].type !== '<' && this.tokens[i].type !== '>') {
+      const type = this.tokens[i].type;
+      if (!TYPE_ARGUMENT_TOKENS.has(type) && type !== '<' && type !== '>') {
+        return false;
+      }
+
+      // No real type name ever has two bare name-shaped tokens back to back with nothing
+      // connecting them (`Foo.Bar`, `Foo<Bar>` - always via `.`/`<`/`::`; never `Foo Bar`).
+      // A query expression's clause keywords (`from`, `select`, `where`, ...) lex as plain
+      // identifiers, so `(from x in y select x)` would otherwise satisfy every check above.
+      if (
+        i > this.pos + 1 &&
+        (type === 'identifier' || type === 'predefined_type') &&
+        (this.tokens[i - 1].type === 'identifier' || this.tokens[i - 1].type === 'predefined_type')
+      ) {
         return false;
       }
     }

@@ -998,6 +998,16 @@ describe('parseCSharpSource - broad coverage', () => {
     expect(continuation.descendantsOfType('select_clause')).toHaveLength(1);
   });
 
+  it('parses a parenthesized subquery used as another query\'s from-clause source', () => {
+    const root = parse(
+      'class C { void M() { var q = from a in (from b in c select b) where a != null select a; } }'
+    );
+
+    expect(root.descendantsOfType('query_expression')).toHaveLength(2);
+    expect(root.descendantsOfType('query_where_clause')).toHaveLength(1);
+    expect(root.descendantsOfType('cast_expression')).toHaveLength(0);
+  });
+
   it('parses from/select/where used as ordinary identifiers, not a query expression', () => {
     const root = parse('class C { void M() { var from = 5; Console.WriteLine(from); } }');
 

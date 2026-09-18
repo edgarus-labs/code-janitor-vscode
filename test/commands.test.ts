@@ -554,6 +554,20 @@ describe('cleanup commands', () => {
     expect(state.openedDocuments).toHaveLength(0);
   });
 
+  it('seals a class based on the live unsaved buffer, not a stale on-disk self-read', async () => {
+    state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
+    // Stale on-disk content still has the subclass the user already deleted in the editor.
+    state.files.set('/w/Animal.cs', 'internal class Animal\n{\n}\n\ninternal class Dog : Animal\n{\n}\n');
+    const document = new TextDocument(Uri.file('/w/Animal.cs'), 'internal class Animal\n{\n}\n', 'csharp');
+    state.documents.push(document);
+    window.activeTextEditor = new TextEditor(document);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.previewCleanupActiveFile');
+
+    expect(state.openedDocuments.at(-1)?.content).toContain('sealed class Animal');
+  });
+
   it('cleans every open file', async () => {
     const document = new TextDocument(Uri.file('/w/a.cs'), UNCLEAN, 'csharp');
     state.documents.push(document);
@@ -590,6 +604,15 @@ describe('cleanup commands', () => {
     await run('codeJanitor.removeXmlDocSelectedFiles', Uri.file('/w/a.cs'), [Uri.file('/w/a.cs')]);
 
     expect(state.files.get('/w/a.cs')).not.toContain('///');
+  });
+
+  it('does not perform sealing-discovery I/O when removing XML documentation', async () => {
+    state.files.set('/w/a.cs', XML_DOCUMENTED);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.removeXmlDocSelectedFiles', Uri.file('/w/a.cs'), [Uri.file('/w/a.cs')]);
+
+    expect(state.readDirectoryCalls).toBe(0);
   });
 
   it('expands selected folders to .cs files only when removing XML documentation, regardless of includeOtherFileTypes', async () => {
@@ -711,6 +734,10 @@ describe('cleanup commands', () => {
       Uri.file('/other/Dog.cs'),
     ]);
 
+    // The split must have actually happened - not a vacuous pass from a silent no-op/crash.
+    expect(state.files.get(path.join('/w', 'Extra.cs'))).toContain('class Extra');
+    expect(state.files.get('/w/Animals.cs')).toContain('class Animal');
+    expect(state.files.get('/w/Animals.cs')).not.toContain('class Extra');
     expect(state.files.get('/w/Animals.cs')).not.toContain('sealed');
   });
 

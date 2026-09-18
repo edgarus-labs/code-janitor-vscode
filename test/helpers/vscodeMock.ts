@@ -289,6 +289,7 @@ export const state = {
   openedDocuments: [] as { content: string; language: string }[],
   willSaveHandlers: [] as ((event: WillSaveEvent) => void)[],
   outputChannelLines: [] as string[],
+  readDirectoryCalls: 0,
 };
 
 export function resetMock(): void {
@@ -300,6 +301,7 @@ export function resetMock(): void {
   state.directories = new Set();
   state.documents = [];
   state.workspaceFolders = [];
+  state.readDirectoryCalls = 0;
   state.foundFiles = [];
   state.extensions = new Map();
   state.commands = new Map();
@@ -537,6 +539,7 @@ export const workspace = {
 
     /** Lists the immediate children of `uri` derived from the flat `state.files` map. */
     readDirectory(uri: Uri): Thenable<[string, number][]> {
+      state.readDirectoryCalls++;
       const dir = uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
       const seen = new Map<string, number>();
 

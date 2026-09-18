@@ -172,6 +172,13 @@ describe('nullCheckPatternMatchingConverter', () => {
     expect(apply(input)).toBe(input);
   });
 
+  it('skips a null check inside a query where-clause when the from-source is a parenthesized subquery', () => {
+    const input =
+      'class C { void M() { var q = from a in (from b in c select b) where a != null select a; } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
   it('still converts a null check outside of any lambda', () => {
     expect(apply('class C { void M(object x) { source.Where(y => y.Ok); if (x != null) { } } }')).toBe(
       'class C { void M(object x) { source.Where(y => y.Ok); if (x is not null) { } } }'
