@@ -5,6 +5,7 @@ import {
   CodeStyleOption,
   EditorConfigIssueReporter,
   describeIssue,
+  hasModifier,
   hasParseErrors,
   readCodeStyleOption,
 } from './editorConfigSupport';
@@ -316,10 +317,6 @@ function nearestType(node: Node): Node | undefined {
   }
 
   return undefined;
-}
-
-function hasModifier(node: Node, name: string): boolean {
-  return node.namedChildren.some((child) => child.type === 'modifier' && child.text === name);
 }
 
 /** Members declared directly in `type`, by name. Names declared more than once ambiguously are dropped. */

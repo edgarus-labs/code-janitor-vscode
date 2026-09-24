@@ -9,9 +9,19 @@ import { logInfo } from '../logging';
  * The workspace-wide rename of Cleanup Selected Files and Cleanup Workspace
  * (`codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace`): plans the renames of the non-private
  * symbols the target files declare, shows them in a modal dialog, and applies them as one
- * WorkspaceEdit (one undo step). Violations it cannot rename go to `report`.
+ * WorkspaceEdit (one undo step). Violations it cannot rename go to `report`. `accounted` receives,
+ * by file, the symbols whose violations it renamed or reported, including when it then throws.
  */
-export async function renameSymbolsAcrossWorkspace(targets: readonly vscode.Uri[], report: EditorConfigIssueListener): Promise<void> {
+export async function renameSymbolsAcrossWorkspace(
+  targets: readonly vscode.Uri[],
+  report: EditorConfigIssueListener,
+  accounted: Map<string, Set<string>>
+): Promise<void> {
+  const account = (filePath: string, symbol: string) => {
+    const symbols = accounted.get(filePath) ?? new Set<string>();
+    symbols.add(symbol);
+    accounted.set(filePath, symbols);
+  };
   const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
   const files = targets.filter((uri) => uri.scheme === 'file' && uri.fsPath.toLowerCase().endsWith('.cs')).map((uri) => uri.fsPath);
   if (roots.length === 0 || files.length === 0) {
@@ -38,6 +48,7 @@ export async function renameSymbolsAcrossWorkspace(targets: readonly vscode.Uri[
   const plan = planWorkspaceRenames({ projects, targets: files, read });
   for (const issue of plan.issues) {
     report({ kind: 'unresolved', filePath: issue.filePath, detail: issue.detail });
+    account(issue.filePath, issue.symbol);
   }
 
   if (plan.renames.length === 0) {
@@ -53,14 +64,18 @@ export async function renameSymbolsAcrossWorkspace(targets: readonly vscode.Uri[
     { modal: true, detail: lines.join('\n') },
     'Rename'
   );
-  if (choice !== 'Rename') {
+  const reportNotRenamed = (outcome: string) => {
     for (const rename of plan.renames) {
       report({
         kind: 'unresolved',
         filePath: rename.declaredIn,
-        detail: `IDE1006 line ${rename.line}: ${rename.kind} '${rename.oldName}' should be named '${rename.newName}'; the workspace-wide rename was cancelled.`,
+        detail: `IDE1006 line ${rename.line}: ${rename.kind} '${rename.oldName}' should be named '${rename.newName}'; ${outcome}.`,
       });
+      account(rename.declaredIn, rename.oldName);
     }
+  };
+  if (choice !== 'Rename') {
+    reportNotRenamed('the workspace-wide rename was cancelled');
 
     return;
   }
@@ -71,7 +86,12 @@ export async function renameSymbolsAcrossWorkspace(targets: readonly vscode.Uri[
   }
 
   if (!(await vscode.workspace.applyEdit(edit))) {
+    reportNotRenamed('VS Code did not apply the workspace-wide rename');
     throw new Error('VS Code did not apply the workspace-wide rename; no file was changed.');
+  }
+
+  for (const rename of plan.renames) {
+    rename.files.forEach((filePath) => account(filePath, rename.oldName));
   }
 
   // Files that were closed are opened by the edit: save them, like the rest of batch cleanup.

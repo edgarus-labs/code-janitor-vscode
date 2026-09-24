@@ -1,20 +1,13 @@
-import { EditorConfigProperties, splitOptionSeverity } from '../editorconfig';
+import { EditorConfigProperties } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
 import { Token, lex } from '../syntax/lexer';
-import { isRecoveredNode } from './editorConfigSupport';
+import { isRecoveredNode, optionValue } from './editorConfigSupport';
 
 /**
  * The `csharp_space_*` formatting options. Every rule only changes the horizontal whitespace
  * between two tokens on the same line: a gap holding a line break, a comment or a directive is
  * left alone, and string literals are single tokens, so their text never changes.
  */
-
-/** A formatting option's value, lower-cased, ignoring a `:severity` suffix some files carry. */
-function optionValue(props: EditorConfigProperties, key: string): string | undefined {
-  const raw = props.get(key);
-
-  return raw === undefined ? undefined : splitOptionSeverity(raw).value.toLowerCase();
-}
 
 /** `' '` for `true`, `''` for `false`, `undefined` when unset or anything else. */
 function booleanSpace(props: EditorConfigProperties, key: string): string | undefined {

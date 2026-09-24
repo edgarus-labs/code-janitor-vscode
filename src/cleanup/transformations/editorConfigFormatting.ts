@@ -1,5 +1,5 @@
 import { CODE, STRING, classifyCSharp } from '../csharpScanner';
-import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity, splitOptionSeverity } from '../editorconfig';
+import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { OPEN_BRACE_KINDS } from '../editorConfigRegistry';
 import { SourceTransformation } from '../types';
@@ -9,6 +9,7 @@ import {
   isBlank,
   lineIndentAt,
   newlineOf,
+  optionValue,
   parseErrorCount,
   tabWidth,
 } from './editorConfigSupport';
@@ -70,13 +71,6 @@ export function createEditorConfigFormattingConverter(
       return optionValue(props, 'charset') === 'utf-8' ? current : bom + current;
     },
   };
-}
-
-/** A formatting option's value, lower-cased, ignoring a `:severity` suffix some files carry. */
-function optionValue(props: EditorConfigProperties, key: string): string | undefined {
-  const raw = props.get(key);
-
-  return raw === undefined ? undefined : splitOptionSeverity(raw).value.toLowerCase();
 }
 
 // ---------------------------------------------------------------------------------------------

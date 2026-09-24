@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { loadEditorConfigProperties } from '../cleanup/editorconfig';
 import { EditorConfigIssueLog, ReportedConfigurations, editorConfigSignature } from '../cleanup/editorConfigIssueLog';
 import { planOneTypePerFile, readOneTypePerFileRules } from '../cleanup/oneTypePerFile';
-import { EditorConfigIssueListener, runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
+import { EditorConfigIssue, EditorConfigIssueListener, runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
 import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
 import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
@@ -20,14 +20,21 @@ export interface CollectedFile {
   isOpen: boolean;
 }
 
-interface CleanupResult {
-  uri: vscode.Uri;
-  output: string;
-  changed: boolean;
-  isOpen: boolean;
-  /** A file the one-type-per-file split created: always written, counted as created. */
-  created?: boolean;
-  error?: string;
+/** A new file of a split: its path and content. */
+interface NewFile {
+  readonly uri: vscode.Uri;
+  readonly content: string;
+}
+
+/**
+ * A cleaned file with the files its one-type-per-file split creates: written together or not at
+ * all, as a type must never end up in two files (or in none).
+ */
+interface CleanupGroup {
+  readonly file: CollectedFile;
+  readonly output: string;
+  readonly newFiles: readonly NewFile[];
+  readonly error?: string;
 }
 
 /** A file a pre-cleanup step reshaped before cleanup: its new content and the files it split off. */
@@ -66,42 +73,43 @@ async function runBatch(
   logInfo(`${label}: starting on ${targets.length} file(s).`);
 
   const collected = await collectFiles(targets);
-  // Each entry is transformed from `input`; `original` is what is on disk or in the editor now.
-  const work: { file: CollectedFile; input: string; created: boolean; failed?: string }[] = [];
+  // Each file is transformed from `input` (the pre-cleanup's content); `file.content` is what is on
+  // disk or in the editor now.
+  const work: { file: CollectedFile; input: string; newFiles: readonly CollectedFile[]; failed?: string }[] = [];
   for (const file of collected) {
     try {
       const pre = await preCleanup?.(file);
-      work.push({ file, input: pre?.content ?? file.content, created: false });
-      for (const createdFile of pre?.createdFiles ?? []) {
-        work.push({ file: createdFile, input: createdFile.content, created: true });
-      }
+      work.push({ file, input: pre?.content ?? file.content, newFiles: pre?.createdFiles ?? [] });
     } catch (err) {
       logError(`${label} of ${file.uri.fsPath}`, err);
-      work.push({ file, input: file.content, created: false, failed: (err as Error).message });
+      work.push({ file, input: file.content, newFiles: [], failed: (err as Error).message });
     }
   }
 
   const disqualifiedTypeNames = discoverSealingSafety
-    ? await discoverBatchDisqualifiedTypeNames(work.map(({ file, input }) => ({ ...file, content: input })))
+    ? await discoverBatchDisqualifiedTypeNames(work.flatMap(({ file, input, newFiles }) => [{ ...file, content: input }, ...newFiles]))
     : new Set<string>();
 
-  const results: CleanupResult[] = work.map(({ file, input, created, failed }) => {
+  // A split and its new files are transformed together: when one fails, none is written.
+  const groups: CleanupGroup[] = work.map(({ file, input, newFiles, failed }) => {
     if (failed) {
-      return { uri: file.uri, output: file.content, changed: false, isOpen: file.isOpen, error: failed };
+      return { file, output: file.content, newFiles: [], error: failed };
     }
 
     try {
-      const output = transform(input, file.uri, disqualifiedTypeNames);
-
-      return { uri: file.uri, output, changed: created || output !== file.content, isOpen: file.isOpen, created };
+      return {
+        file,
+        output: transform(input, file.uri, disqualifiedTypeNames),
+        newFiles: newFiles.map((newFile) => ({ uri: newFile.uri, content: transform(newFile.content, newFile.uri, disqualifiedTypeNames) })),
+      };
     } catch (err) {
       logError(`${label} of ${file.uri.fsPath}`, err);
 
-      return { uri: file.uri, output: file.content, changed: false, isOpen: file.isOpen, error: (err as Error).message };
+      return { file, output: file.content, newFiles: [], error: (err as Error).message };
     }
   });
 
-  const outcome = await applyResults(results);
+  const outcome = await applyResults(groups, label);
   logInfo(
     `${label}: finished - ${outcome.changed} changed, ${outcome.failed} failed` +
       (outcome.created > 0 ? `, ${outcome.created} file(s) created by splitting types.` : '.')
@@ -123,31 +131,55 @@ export async function runCleanupOnUris(
   const report = issues.report;
   // Files the split plans to create in this batch, so no two files of the batch create the same one.
   const plannedFiles = new Set<string>();
-
-  const outcome = await runBatch(
-    targets,
-    (content, uri, disqualifiedTypeNames) =>
-      isCSharp(uri)
-        ? runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames, report)
-        : runLayoutCleanup(content, uri.fsPath, settings),
-    'Cleanup',
-    'Code Janitor: no files to clean up.',
-    true,
-    (file) => splitTypesForEditorConfig(file, report, plannedFiles)
-  );
-
   // Batch commands only (never on save): renames other files may depend on, after a preview.
-  if (options.renameAcrossWorkspace && settings.renamePublicSymbolsAcrossWorkspace) {
-    await renameSymbolsAcrossWorkspace(targets, report);
-  }
+  const renameAcrossWorkspace = options.renameAcrossWorkspace === true && settings.renamePublicSymbolsAcrossWorkspace;
+  // The violations only the workspace-wide rename can fix wait for it: it reports those it leaves.
+  const deferred: EditorConfigIssue[] = [];
+  const accounted = new Map<string, Set<string>>();
+  const batchReport: EditorConfigIssueListener = (issue) => {
+    if (renameAcrossWorkspace && issue.symbol) {
+      deferred.push(issue);
+    } else {
+      report(issue);
+    }
+  };
 
-  const { unresolved, unsupported } = issues.finish();
-  if (unresolved > 0) {
-    logInfo(`Cleanup: ${unresolved} .editorconfig rule violation(s) were not fixed.`);
-  }
+  let outcome: BatchOutcome = { changed: 0, failed: 0, created: 0 };
+  let unresolved = 0;
+  try {
+    outcome = await runBatch(
+      targets,
+      (content, uri, disqualifiedTypeNames) =>
+        isCSharp(uri)
+          ? runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames, batchReport)
+          : runLayoutCleanup(content, uri.fsPath, settings),
+      'Cleanup',
+      'Code Janitor: no files to clean up.',
+      true,
+      (file) => splitTypesForEditorConfig(file, report, plannedFiles)
+    );
 
-  if (unsupported > 0) {
-    logInfo(`Cleanup: ${unsupported} .editorconfig setting(s) are not supported and were not applied (listed above with the number of files).`);
+    if (renameAcrossWorkspace) {
+      try {
+        await renameSymbolsAcrossWorkspace(targets, report, accounted);
+      } catch (err) {
+        outcome = { ...outcome, failed: outcome.failed + 1 };
+        logError('Cleanup: workspace-wide rename', err);
+        void vscode.window.showWarningMessage(`Code Janitor: workspace-wide rename - ${(err as Error).message}`);
+      }
+    }
+  } finally {
+    // Those the workspace-wide rename neither renamed nor reported (it failed, or skipped the file).
+    deferred.filter((issue) => !(issue.symbol && accounted.get(issue.filePath)?.has(issue.symbol))).forEach(report);
+    const finished = issues.finish();
+    unresolved = finished.unresolved;
+    if (unresolved > 0) {
+      logInfo(`Cleanup: ${unresolved} .editorconfig rule violation(s) were not fixed.`);
+    }
+
+    if (finished.unsupported > 0) {
+      logInfo(`Cleanup: ${finished.unsupported} .editorconfig setting(s) are not supported and were not applied (listed above with the number of files).`);
+    }
   }
 
   return { ...outcome, unresolved };
@@ -156,12 +188,12 @@ export async function runCleanupOnUris(
 /**
  * The one-type-per-file pre-cleanup step (`SA1402`/`MA0048`/`SA1649` enforced in `.editorconfig`):
  * the file's content without the types moved out, and the new files holding them, which are
- * cleaned and written like the file itself. Violations it cannot fix go to `onIssue`. `undefined`
+ * cleaned and written with the file itself, all or nothing. Violations it cannot fix go to `onIssue`. `undefined`
  * when the file is not C# or nothing is split. `plannedFiles` holds the paths of the files other
  * files of the same batch will create: they are reserved like existing files, and the files this
  * split creates are added.
  */
-export async function splitTypesForEditorConfig(
+async function splitTypesForEditorConfig(
   file: CollectedFile,
   onIssue: EditorConfigIssueListener,
   plannedFiles: Set<string> = new Set()
@@ -195,6 +227,27 @@ export async function splitTypesForEditorConfig(
       isOpen: false,
     })),
   };
+}
+
+/**
+ * Cleanup on save reports the types one type per file would move instead of moving them: VS Code
+ * can drop the edits of a save (a slow or failing save participant), which would leave the types
+ * both in the saved file and in the new files.
+ */
+export async function reportOneTypePerFileOnSave(file: CollectedFile, onIssue: EditorConfigIssueListener): Promise<void> {
+  if (!isCSharp(file.uri)) {
+    return;
+  }
+
+  const rules = readOneTypePerFileRules(loadEditorConfigProperties(file.uri.fsPath));
+  if (!rules) {
+    return;
+  }
+
+  const outcome = planOneTypePerFile(file.content, file.uri.fsPath, rules, await reservedFileNames(file.uri, new Set()), false);
+  for (const message of outcome.issues) {
+    onIssue({ kind: 'unresolved', filePath: file.uri.fsPath, detail: message });
+  }
 }
 
 /** Unsupported settings reported in this session, by resolved `.editorconfig`. */
@@ -266,8 +319,10 @@ export async function runFixNamespaceOnUris(uris: vscode.Uri[]): Promise<{ chang
 /**
  * Splits every given C# file that declares more than one eligible top-level type into one file
  * per type, applying the cleanup pipeline to both the updated original and each created file. This
- * explicit command splits whatever the `.editorconfig` says; ordinary cleanup (including on save)
- * only splits when the `.editorconfig` enforces one type per file ({@link splitTypesForEditorConfig}).
+ * explicit command splits whatever the `.editorconfig` says; the cleanup commands only split when
+ * the `.editorconfig` enforces one type per file ({@link splitTypesForEditorConfig}), and cleanup on
+ * save never splits ({@link reportOneTypePerFileOnSave}). A file and its new files are written
+ * together or not at all.
  */
 export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{ changed: number; failed: number }> {
   const targets = uris.filter((uri) => isCSharp(uri) && isPathCleanable(uri));
@@ -298,16 +353,12 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
         continue;
       }
 
-      for (const newFile of plan.newFiles) {
-        const cleaned = runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames, issues.report);
-        await vscode.workspace.fs.writeFile(vscode.Uri.file(newFile.filePath), Buffer.from(cleaned, 'utf8'));
-        createdFiles++;
-      }
-
-      await writeFileContent(
-        file,
-        runCleanup(plan.updatedSource, file.uri.fsPath, settings, disqualifiedTypeNames, issues.report)
-      );
+      const newFiles = plan.newFiles.map((newFile) => ({
+        uri: vscode.Uri.file(newFile.filePath),
+        content: runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames, issues.report),
+      }));
+      await writeFileGroup(file, runCleanup(plan.updatedSource, file.uri.fsPath, settings, disqualifiedTypeNames, issues.report), newFiles);
+      createdFiles += newFiles.length;
       changedOriginals++;
     } catch (err) {
       failed++;
@@ -493,62 +544,95 @@ export async function collectFiles(uris: vscode.Uri[]): Promise<CollectedFile[]>
   return collected;
 }
 
-async function applyResults(results: readonly CleanupResult[]): Promise<BatchOutcome> {
-  const edit = new vscode.WorkspaceEdit();
+async function applyResults(groups: readonly CleanupGroup[], label: string): Promise<BatchOutcome> {
   let changed = 0;
   let failed = 0;
   let created = 0;
 
-  for (const result of results) {
-    if (result.error) {
+  for (const group of groups) {
+    let error = group.error;
+    if (!error) {
+      try {
+        await writeFileGroup(group.file, group.output, group.newFiles);
+      } catch (err) {
+        logError(`${label} of ${group.file.uri.fsPath}`, err);
+        error = (err as Error).message;
+      }
+    }
+
+    if (error) {
       failed++;
-      void vscode.window.showWarningMessage(`Code Janitor: ${result.uri.fsPath} - ${result.error}`);
+      void vscode.window.showWarningMessage(`Code Janitor: ${group.file.uri.fsPath} - ${error}`);
       continue;
     }
 
-    if (!result.changed) {
-      continue;
-    }
-
-    if (result.created) {
-      created++;
-    } else {
+    if (group.output !== group.file.content) {
       changed++;
     }
 
-    if (result.isOpen) {
-      const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === result.uri.toString());
-      if (doc) {
-        const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-        edit.replace(result.uri, fullRange, result.output);
-      }
-    } else {
-      await vscode.workspace.fs.writeFile(result.uri, Buffer.from(result.output, 'utf8'));
-    }
-  }
-
-  if (edit.size > 0) {
-    await vscode.workspace.applyEdit(edit);
+    created += group.newFiles.length;
   }
 
   return { changed, failed, created };
 }
 
-/** Writes one file's new content back - a `WorkspaceEdit` for an open document, a disk write otherwise. */
-export async function writeFileContent(file: CollectedFile, output: string): Promise<void> {
-  if (file.isOpen) {
-    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === file.uri.toString());
-    if (doc) {
-      const edit = new vscode.WorkspaceEdit();
-      const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-      edit.replace(file.uri, fullRange, output);
-      await vscode.workspace.applyEdit(edit);
+/**
+ * Writes a file's new content with the new files of its split, all or nothing: the new files
+ * first, then the file itself; when a write fails, the new files already written are deleted, so
+ * no type is left in two files. Throws the failure.
+ */
+async function writeFileGroup(file: CollectedFile, output: string, newFiles: readonly NewFile[]): Promise<void> {
+  const written: vscode.Uri[] = [];
+  try {
+    for (const newFile of newFiles) {
+      await vscode.workspace.fs.writeFile(newFile.uri, Buffer.from(newFile.content, 'utf8'));
+      written.push(newFile.uri);
     }
+
+    if (output !== file.content) {
+      await writeFileContent(file, output);
+    }
+  } catch (err) {
+    const leftOver: string[] = [];
+    for (const uri of written) {
+      try {
+        await vscode.workspace.fs.delete(uri);
+      } catch (deleteError) {
+        logError(`Removing ${uri.fsPath} after a failed split`, deleteError);
+        leftOver.push(uri.fsPath);
+      }
+    }
+
+    const message = (err as Error).message;
+    throw new Error(
+      leftOver.length > 0
+        ? `${message}; these new files repeat types of the file and could not be removed: ${leftOver.join(', ')}`
+        : `${message}; the file was not changed${written.length > 0 ? ' and its new files were removed' : ''}`
+    );
+  }
+}
+
+/**
+ * Writes one file's new content back - a `WorkspaceEdit` for an open document, a disk write
+ * otherwise. Throws when VS Code does not apply the edit or the document was closed meanwhile.
+ */
+export async function writeFileContent(file: CollectedFile, output: string): Promise<void> {
+  if (!file.isOpen) {
+    await vscode.workspace.fs.writeFile(file.uri, Buffer.from(output, 'utf8'));
 
     return;
   }
 
-  await vscode.workspace.fs.writeFile(file.uri, Buffer.from(output, 'utf8'));
+  const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === file.uri.toString());
+  if (!doc) {
+    throw new Error('the document was closed during cleanup');
+  }
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(file.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), output);
+  if (!(await vscode.workspace.applyEdit(edit))) {
+    throw new Error('VS Code did not apply the edit');
+  }
 }
 
 export async function expandToCleanableFiles(uri: vscode.Uri): Promise<vscode.Uri[]> {

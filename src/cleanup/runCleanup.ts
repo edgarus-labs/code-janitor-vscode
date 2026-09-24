@@ -77,6 +77,11 @@ export interface EditorConfigIssue {
   readonly filePath: string;
   /** What cleanup could not honor, without the file path. */
   readonly detail: string;
+  /**
+   * An IDE1006 violation of a type or non-private member, which other files may use: the symbol's
+   * name. Only the workspace-wide rename of the batch commands can fix it.
+   */
+  readonly symbol?: string;
 }
 
 export type EditorConfigIssueListener = (issue: EditorConfigIssue) => void;
@@ -118,7 +123,7 @@ export function getCleanupPipeline(
 
   const rules: EditorConfigRules = {
     properties,
-    report: (message) => onIssue?.({ kind: 'unresolved', filePath, detail: message }),
+    report: (message, symbol) => onIssue?.({ kind: 'unresolved', filePath, detail: message, ...(symbol && { symbol }) }),
     fileName: filePath ? path.basename(filePath) : undefined,
     filePath: filePath || undefined,
     // Every rule depends on the project's C# version; some also on its folder or frameworks.

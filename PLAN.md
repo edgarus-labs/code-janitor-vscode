@@ -54,8 +54,10 @@ counts those places.
 
 - `oneTypePerFile.ts`: `SA1402`/`MA0048`/`SA1649` (explicit `dotnet_diagnostic` severity only).
   Not a pipeline step: it creates files, so `commands/cleanupCore.ts` (`splitTypesForEditorConfig`)
-  runs it before the pipeline in batch cleanup and cleanup on save, using `topLevelTypeSplit.ts`
-  with `movableKinds` and `refuseFileNameCollisions`, and cleans the created files like the rest.
+  runs it before the pipeline in the cleanup commands, using `topLevelTypeSplit.ts` with
+  `movableKinds` and `refuseFileNameCollisions`, and cleans the created files like the rest; a file
+  and its new files are written all or nothing (`writeFileGroup`). Cleanup on save only reports
+  (`reportOneTypePerFileOnSave`): VS Code can drop a save's edits, so it never creates files.
 - `transformations/editorConfigNaming.ts`: IDE1006. `naming/namingRules.ts` parses and orders
   the rules (Roslyn `EditorConfigNamingStyleParser`), `naming/namingStyle.ts` checks names and
   derives the fixed name (Roslyn `NamingStyle`), `naming/sourceModel.ts` collects declarations,

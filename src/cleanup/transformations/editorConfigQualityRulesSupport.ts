@@ -4,7 +4,7 @@ import { DeclaredSymbol, SourceModel, TypeInfo, spans, typeAt } from '../naming/
 import { Node, TextEdit } from '../parser';
 import { lex } from '../syntax/lexer';
 import type { RuleContext } from './editorConfigCodeStyle';
-import { isRecoveredNode, lineEndAt, lineNumberAt, lineStartAt } from './editorConfigSupport';
+import { isRecoveredNode, lineEndAt, lineNumberAt, lineStartAt, modifiersOf } from './editorConfigSupport';
 
 /**
  * Shared infrastructure of the code-quality (CA) and IDE diagnostics without a code-style option
@@ -159,14 +159,6 @@ export function isOnObsoleteChain(declaration: Node): boolean {
 // ---------------------------------------------------------------------------------------------
 
 export const TYPE_DECLARATIONS = ['class_declaration', 'struct_declaration', 'record_declaration', 'interface_declaration', 'enum_declaration'];
-
-export function modifiersOf(node: Node): Node[] {
-  return node.namedChildren.filter((child) => child.type === 'modifier');
-}
-
-export function hasModifier(node: Node, name: string): boolean {
-  return modifiersOf(node).some((modifier) => modifier.text === name);
-}
 
 /**
  * True when the parser could not make sense of a member declaration of the type (a tuple type as

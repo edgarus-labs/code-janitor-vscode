@@ -2,7 +2,7 @@ import { CONTEXTUAL_KEYWORDS, Occurrence, SourceModel, TypeInfo, buildSourceMode
 import { Node, TextEdit, applyEdits, walk } from '../parser';
 import { lex } from '../syntax/lexer';
 import type { RuleContext } from './editorConfigCodeStyle';
-import { hasParseErrors, lineNumberAt, parseErrorCount } from './editorConfigSupport';
+import { hasModifier, hasParseErrors, lineNumberAt, parseErrorCount } from './editorConfigSupport';
 import { ProjectFacts, loadProjectFacts } from './editorConfigQualityRulesProject';
 import {
   DeclaredTypes,
@@ -14,7 +14,6 @@ import {
   declaredVisibility,
   describeDiagnostic,
   hasBrokenMemberDeclarations,
-  hasModifier,
   isOnObsoleteChain,
   isRecordStruct,
   isRuleActive,

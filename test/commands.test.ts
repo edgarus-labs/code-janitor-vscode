@@ -128,6 +128,23 @@ describe('readCleanupSettings', () => {
     expect(settings.insertBlankLinePaddingAfterMethods).toBe(false);
   });
 
+  it('logs the Visual Studio .codejanitor keys that VS Code ignores once per session', () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { applyEditorConfigNaming: false, applyAnalyzerCodeFixes: true, removeRegions: false } })
+    );
+    createOutputChannel(createContext());
+    const ignored = () => state.outputChannelLines.filter((line) => line.includes('is ignored by VS Code'));
+
+    expect(readCleanupSettings(root).removeRegions).toBe(false);
+    readCleanupSettings(root);
+    expect(ignored()).toEqual([
+      expect.stringMatching(/'\.codejanitor' key applyEditorConfigNaming is ignored by VS Code: \.editorconfig rules always apply\.$/),
+      expect.stringMatching(/'\.codejanitor' key applyAnalyzerCodeFixes is ignored by VS Code: fixes from third-party analyzers are never applied\.$/),
+    ]);
+  });
+
   it('lets explicit VS Code cleanup settings override the repository policy', () => {
     const root = tempRoot();
     fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
@@ -658,30 +675,108 @@ describe('cleanup commands', () => {
     }
   });
 
-  it('splits on save too, writing the new file and removing the type from the saved document', async () => {
+  it('reports extra types on save instead of moving them, as VS Code may drop the edits of a save', async () => {
     const root = tempRoot();
-    try {
-      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
-      state.configuration.set('codeJanitor.cleanup.onSave', true);
-      registerFormatOnSave(createContext());
-      const filePath = path.join(root, 'Foo.cs');
-      let captured: Promise<TextEdit[]> | undefined;
-      for (const handler of state.willSaveHandlers) {
-        handler({
-          document: new TextDocument(Uri.file(filePath), 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n', 'csharp'),
-          waitUntil: (edits) => {
-            captured = edits as Promise<TextEdit[]>;
-          },
-        });
-      }
-
-      const edits = await captured!;
-
-      expect(edits[0].newText).toBe('internal class Foo\n{\n}\n');
-      expect(state.files.get(path.join(root, 'Bar.cs'))).toBe('internal class Bar\n{\n}\n');
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+    state.configuration.set('codeJanitor.cleanup.onSave', true);
+    createOutputChannel(createContext());
+    registerFormatOnSave(createContext());
+    const filePath = path.join(root, 'Foo.cs');
+    const source = 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n';
+    let captured: Promise<TextEdit[]> | undefined;
+    for (const handler of state.willSaveHandlers) {
+      handler({
+        document: new TextDocument(Uri.file(filePath), source, 'csharp'),
+        waitUntil: (edits) => {
+          captured = edits as Promise<TextEdit[]>;
+        },
+      });
     }
+
+    const edits = await captured!;
+
+    expect(edits).toEqual([]);
+    expect(state.files.has(path.join(root, 'Bar.cs'))).toBe(false);
+    expect(state.outputChannelLines.some((line) => /SA1402 .*type 'Bar' was not moved to its own file because cleanup on save does not create files/.test(line))).toBe(true);
+  });
+
+  it('logs a failure of cleanup on save and leaves the document as it is', async () => {
+    state.configuration.set('codeJanitor.cleanup.onSave', true);
+    createOutputChannel(createContext());
+    registerFormatOnSave(createContext());
+    const document = new TextDocument(Uri.file('/w/Broken.cs'), 'internal class Broken\n{\n}\n', 'csharp');
+    document.getText = () => {
+      throw new Error('the document cannot be read');
+    };
+    let captured: Promise<TextEdit[]> | undefined;
+    for (const handler of state.willSaveHandlers) {
+      handler({
+        document,
+        waitUntil: (edits) => {
+          captured = edits as Promise<TextEdit[]>;
+        },
+      });
+    }
+
+    await expect(captured!).resolves.toEqual([]);
+    expect(state.outputChannelLines.some((line) => line.includes('the document cannot be read'))).toBe(true);
+  });
+
+  it('writes nothing of a split when one of its new files cannot be written', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+    const filePath = path.join(root, 'Foo.cs');
+    const source = 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n\ninternal class Baz\n{\n}\n';
+    state.files.set(filePath, source);
+    state.failingWrites.add(path.join(root, 'Baz.cs'));
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)]);
+
+    expect(result).toEqual({ changed: 0, failed: 1, unresolved: 0, created: 0 });
+    expect(state.files.get(filePath)).toBe(source);
+    expect(state.files.has(path.join(root, 'Bar.cs'))).toBe(false);
+    expect(state.files.has(path.join(root, 'Baz.cs'))).toBe(false);
+  });
+
+  it('removes the new files of a split when the original file cannot be written', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+    const filePath = path.join(root, 'Foo.cs');
+    const source = 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n';
+    state.files.set(filePath, source);
+    state.failingWrites.add(filePath);
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)]);
+
+    expect(result).toEqual({ changed: 0, failed: 1, unresolved: 0, created: 0 });
+    expect(state.files.get(filePath)).toBe(source);
+    expect(state.files.has(path.join(root, 'Bar.cs'))).toBe(false);
+  });
+
+  it('removes the new files of a split and counts a failure when VS Code rejects the edit of the open original', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+    const filePath = path.join(root, 'Foo.cs');
+    const source = 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n';
+    const document = new TextDocument(Uri.file(filePath), source, 'csharp');
+    state.documents.push(document);
+    state.applyEditResult = false;
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)]);
+
+    expect(result).toEqual({ changed: 0, failed: 1, unresolved: 0, created: 0 });
+    expect(document.getText()).toBe(source);
+    expect(state.files.has(path.join(root, 'Bar.cs'))).toBe(false);
+  });
+
+  it('counts an open file whose edit VS Code rejects as failed, not changed', async () => {
+    const document = new TextDocument(Uri.file('/w/C.cs'), UNCLEAN, 'csharp');
+    state.documents.push(document);
+    state.applyEditResult = false;
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/C.cs')]);
+
+    expect(result).toEqual({ changed: 0, failed: 1, unresolved: 0, created: 0 });
   });
 
   it('does not count unsupported .editorconfig settings as violations', async () => {
@@ -1425,11 +1520,13 @@ describe('workspace-wide rename of non-private symbols (renamePublicSymbolsAcros
     state.configuration.set('codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace', true);
     state.modalChoices = ['Rename'];
 
-    await runCleanupOnUris(createContext(), [Uri.file(orderFile)], { renameAcrossWorkspace: true });
+    const result = await runCleanupOnUris(createContext(), [Uri.file(orderFile)], { renameAcrossWorkspace: true });
 
     expect(state.warningMessages).toEqual([
       'Code Janitor: rename 1 symbol(s) in 2 file(s) of the workspace to follow the .editorconfig naming rules?',
     ]);
+    // Renamed, so not a violation left in place.
+    expect(result.unresolved).toBe(0);
     expect(state.files.get(orderFile)).toContain('public int GetTotal() => 1;');
     expect(state.files.get(programFile)).toContain('new Lib.Order().GetTotal()');
   });
@@ -1444,6 +1541,35 @@ describe('workspace-wide rename of non-private symbols (renamePublicSymbolsAcros
     expect(state.files.get(orderFile)).toContain('getTotal');
     expect(state.files.get(programFile)).toBe(program);
     expect(result.unresolved).toBeGreaterThan(0);
+  });
+
+  it('reports a violation it cannot rename across the workspace once, with the reason', async () => {
+    const { orderFile, programFile } = setUp();
+    state.files.set(programFile, program.replace('private static int Main()', 'private static string Name => "getTotal";\n\n    private static int Main()'));
+    createOutputChannel(createContext());
+    state.configuration.set('codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace', true);
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(orderFile)], { renameAcrossWorkspace: true });
+
+    const reported = state.outputChannelLines.filter((line) => line.includes('rule not fixed') && line.includes("'getTotal'"));
+    expect(result.unresolved).toBe(1);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toContain('not renamed across the workspace because the name appears in a string');
+  });
+
+  it('reports the violations and counts a failure when VS Code rejects the workspace-wide rename', async () => {
+    const { orderFile, programFile } = setUp();
+    createOutputChannel(createContext());
+    state.configuration.set('codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace', true);
+    state.modalChoices = ['Rename'];
+    state.applyEditResult = false;
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(orderFile)], { renameAcrossWorkspace: true });
+
+    expect(result.failed).toBe(1);
+    expect(result.unresolved).toBe(1);
+    expect(state.files.get(programFile)).toBe(program);
+    expect(state.outputChannelLines.some((line) => line.includes('Cleanup: 1 .editorconfig rule violation(s) were not fixed.'))).toBe(true);
   });
 
   it('does not rename across the workspace while the setting is off, nor outside the batch commands', async () => {

@@ -1,7 +1,7 @@
 import { SourceModel, buildSourceModel } from '../naming/sourceModel';
 import { Node, TextEdit, applyEdits, parseCSharp, walk } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
-import { hasParseErrors } from './editorConfigSupport';
+import { hasModifier, hasParseErrors } from './editorConfigSupport';
 import { loadProjectFacts, targetFrameworksOf } from './editorConfigQualityRulesProject';
 import {
   DeclaredTypes,
@@ -11,7 +11,6 @@ import {
   containingTypeDeclaration,
   describeDiagnostic,
   frameworksSupport,
-  hasModifier,
   isGenericType,
   isInsideAttribute,
   isInsideLambda,

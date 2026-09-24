@@ -3,7 +3,12 @@ import * as path from 'node:path';
 import { STRING, classifyCSharp } from '../csharpScanner';
 import { loadEditorConfigProperties } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
-import { describeNamingViolation, findNamingViolations, NamingViolation } from '../transformations/editorConfigNaming';
+import {
+  describeNamingViolation,
+  findNamingViolations,
+  isWorkspaceRenameCandidate,
+  NamingViolation,
+} from '../transformations/editorConfigNaming';
 import { hasParseErrors, lineNumberAt } from '../transformations/editorConfigSupport';
 import { parseNamingRules } from './namingRules';
 import { invalidNewName } from './renamer';
@@ -41,6 +46,8 @@ export interface SymbolRename {
 export interface WorkspaceRenameIssue {
   readonly filePath: string;
   readonly detail: string;
+  /** The name of the symbol left in place. */
+  readonly symbol: string;
 }
 
 export interface WorkspaceRenamePlan {
@@ -151,7 +158,7 @@ class WorkspacePlanner {
       const project = projectOf(this.request.projects, target);
       const file = this.file(target);
       const props = loadEditorConfigProperties(target);
-      const candidates = findNamingViolations(file.model, parseNamingRules(props), props).filter(isCandidate);
+      const candidates = findNamingViolations(file.model, parseNamingRules(props), props).filter(isWorkspaceRenameCandidate);
       for (const violation of candidates) {
         if (!project) {
           this.report(file, violation, 'the file is not in a C# project of the workspace');
@@ -188,7 +195,7 @@ class WorkspacePlanner {
   }
 
   private report(file: SourceFile, violation: NamingViolation, reason: string): void {
-    this.issues.push({ filePath: file.path, detail: describeNamingViolation(violation, reason, OUTCOME) });
+    this.issues.push({ filePath: file.path, detail: describeNamingViolation(violation, reason, OUTCOME), symbol: violation.symbol.name });
   }
 
   /** Renames every declaration named like `first` in the scope, or reports why not. */
@@ -277,7 +284,7 @@ class WorkspacePlanner {
           !violation ||
           violation.newName !== first.violation.newName ||
           symbol.category !== first.violation.symbol.category ||
-          !isCandidate(violation)
+          !isWorkspaceRenameCandidate(violation)
         ) {
           const count = file.model.symbols.filter((candidate) => candidate.name === name).length + (file === first.file ? 0 : 1);
           refuse(`${count} declarations are named '${name}' (overloads or other symbols), including ${where}`);
@@ -538,12 +545,6 @@ class WorkspacePlanner {
 }
 
 /** Violations the in-file renamer leaves to this one: types and non-private members. */
-function isCandidate(violation: NamingViolation): boolean {
-  const symbol = violation.symbol;
-
-  return symbol.category === 'type' || (symbol.category === 'member' && symbol.accessibility !== 'private');
-}
-
 function lineOf(detail: string): number {
   return Number(/ line (\d+):/.exec(detail)?.[1] ?? 0);
 }

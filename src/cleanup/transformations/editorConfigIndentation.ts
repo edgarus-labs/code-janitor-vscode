@@ -1,7 +1,7 @@
 import { CODE, classifyCSharp } from '../csharpScanner';
-import { EditorConfigProperties, splitOptionSeverity } from '../editorconfig';
+import { EditorConfigProperties } from '../editorconfig';
 import { Node, TextEdit, applyEdits, parseCSharp } from '../parser';
-import { EditorConfigIssueReporter, describeIssue, isRecoveredNode, positiveInt, tabWidth } from './editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, isRecoveredNode, optionValue, positiveInt, tabWidth } from './editorConfigSupport';
 
 /**
  * Re-indents C# code the way Roslyn's formatter does for the `csharp_indent_*` options and
@@ -77,12 +77,6 @@ interface Line {
   readonly blank: boolean;
   /** Starts with a comment or `#region`/`#endregion`: indented like the code after it. */
   readonly trivia: boolean;
-}
-
-function optionValue(props: EditorConfigProperties, key: string): string | undefined {
-  const raw = props.get(key);
-
-  return raw === undefined ? undefined : splitOptionSeverity(raw).value.toLowerCase();
 }
 
 function readOptions(props: EditorConfigProperties): Options {

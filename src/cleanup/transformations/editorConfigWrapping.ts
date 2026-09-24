@@ -1,6 +1,6 @@
-import { EditorConfigProperties, splitOptionSeverity } from '../editorconfig';
+import { EditorConfigProperties } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
-import { isRecoveredNode, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
+import { isRecoveredNode, lineIndentAt, lineStartAt, newlineOf, optionValue } from './editorConfigSupport';
 
 /**
  * The C# formatting options that move code onto new lines, applied as Roslyn's formatter applies
@@ -11,12 +11,6 @@ import { isRecoveredNode, lineIndentAt, lineStartAt, newlineOf } from './editorC
  * gaps holding nothing but spaces: a comment keeps the code around it on one line. The new lines
  * get their final indentation from the indentation pass that follows.
  */
-
-function optionValue(props: EditorConfigProperties, key: string): string | undefined {
-  const raw = props.get(key);
-
-  return raw === undefined ? undefined : splitOptionSeverity(raw).value.toLowerCase();
-}
 
 export function applyWrapping(source: string, props: EditorConfigProperties): string {
   let current = source;

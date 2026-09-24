@@ -294,6 +294,10 @@ export const state = {
   willSaveHandlers: [] as ((event: WillSaveEvent) => void)[],
   outputChannelLines: [] as string[],
   readDirectoryCalls: 0,
+  /** Paths whose `workspace.fs.writeFile` fails. */
+  failingWrites: new Set<string>(),
+  /** What `workspace.applyEdit` returns; `false` applies nothing, as when VS Code rejects the edit. */
+  applyEditResult: true,
 };
 
 export function resetMock(): void {
@@ -322,6 +326,8 @@ export function resetMock(): void {
   state.openedDocuments = [];
   state.willSaveHandlers = [];
   state.outputChannelLines = [];
+  state.failingWrites = new Set();
+  state.applyEditResult = true;
   window.activeTextEditor = undefined;
 }
 
@@ -504,6 +510,10 @@ export const workspace = {
   },
 
   applyEdit(edit: WorkspaceEdit): Thenable<boolean> {
+    if (!state.applyEditResult) {
+      return Promise.resolve(false);
+    }
+
     for (const [key, edits] of edit.edits) {
       const document = state.documents.find((candidate) => candidate.uri.toString() === key);
       if (document) {
@@ -545,7 +555,17 @@ export const workspace = {
     },
 
     writeFile(uri: Uri, content: Uint8Array): Thenable<void> {
+      if (state.failingWrites.has(uri.fsPath)) {
+        return Promise.reject(new Error(`EACCES: permission denied, open '${uri.fsPath}'`));
+      }
+
       state.files.set(uri.fsPath, new TextDecoder().decode(content));
+
+      return Promise.resolve();
+    },
+
+    delete(uri: Uri): Thenable<void> {
+      state.files.delete(uri.fsPath);
 
       return Promise.resolve();
     },

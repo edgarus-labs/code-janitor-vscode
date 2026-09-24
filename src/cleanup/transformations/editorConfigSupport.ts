@@ -9,8 +9,11 @@ import { STRING } from '../csharpScanner';
 import { Node, parseCSharp, walk } from '../parser';
 import { memoizeBySource } from '../sourceCache';
 
-/** Receives one message per rule violation that cleanup found but could not fix safely. */
-export type EditorConfigIssueReporter = (issue: string) => void;
+/**
+ * Receives one message per rule violation that cleanup found but could not fix safely; `symbol`
+ * names a type or non-private member the naming rules would rename (see `EditorConfigIssue`).
+ */
+export type EditorConfigIssueReporter = (issue: string, symbol?: string) => void;
 
 /** A code-style option read as `option = value[:severity]`, with its diagnostic's effective severity. */
 export interface CodeStyleOption {
@@ -112,6 +115,13 @@ export function lineEndAt(source: string, index: number): number {
   }
 
   return newline > 0 && source[newline - 1] === '\r' ? newline - 1 : newline;
+}
+
+/** Start of the line after the one containing `index` (the end of the source on the last line). */
+export function nextLineStartAt(source: string, index: number): number {
+  const newline = source.indexOf('\n', index);
+
+  return newline < 0 ? source.length : newline + 1;
 }
 
 /** Leading whitespace of the line containing `index`. */
@@ -253,4 +263,19 @@ export function indentFollowingLines(text: string, indent: string, kinds: Uint8A
   }
 
   return result + text.slice(copied);
+}
+
+/** An option's value, lower-cased, ignoring a `:severity` suffix (formatting options carry none). */
+export function optionValue(props: EditorConfigProperties, key: string): string | undefined {
+  const raw = props.get(key);
+
+  return raw === undefined ? undefined : splitOptionSeverity(raw).value.toLowerCase();
+}
+
+export function modifiersOf(node: Node): Node[] {
+  return node.namedChildren.filter((child) => child.type === 'modifier');
+}
+
+export function hasModifier(node: Node, name: string): boolean {
+  return modifiersOf(node).some((modifier) => modifier.text === name);
 }

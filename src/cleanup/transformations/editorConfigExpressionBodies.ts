@@ -3,7 +3,7 @@ import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { hasComment } from './editorConfigStatementPreferences';
-import { describeIssue, hasParseErrors, lineIndentAt, newlineOf } from './editorConfigSupport';
+import { describeIssue, hasModifier, hasParseErrors, lineIndentAt, newlineOf } from './editorConfigSupport';
 import { storedDelegateType } from './typeFacts';
 
 /**
@@ -25,10 +25,6 @@ const PREFERENCES: Record<string, Preference> = {
 };
 
 const TASK_TYPE = /^(?:System\.Threading\.Tasks\.)?(?:Task|ValueTask)$/;
-
-function hasModifier(node: Node, name: string): boolean {
-  return node.namedChildren.some((child) => child.type === 'modifier' && child.text === name);
-}
 
 function accessorKeyword(accessor: Node): string | undefined {
   return accessor.children.find((child) => !child.isNamed && /^(?:get|set|init|add|remove)$/.test(child.type))?.type;

@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { XmlDocRunOptions } from '../cleanup/xmlDocumentation';
 import { CleanupSettings, HeaderPosition, HeaderUpdateMode, createDefaultSettings } from '../cleanup/types';
+import { logInfo } from '../logging';
 
 const REPOSITORY_CONFIG_NAMES = ['.codejanitor', '.code-janitor.json'];
 
@@ -102,7 +103,24 @@ export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
   };
 }
 
-/** Reads the optional repository policy file. Invalid JSON, unknown keys and wrong value types are ignored. */
+/**
+ * `.codejanitor` keys of the Visual Studio extension that VS Code does not honor: here the
+ * `.editorconfig` rules always apply, and only .NET SDK rules are fixed.
+ */
+const VISUAL_STUDIO_ONLY_KEYS: Readonly<Record<string, string>> = {
+  applyEditorConfigFormatting: '.editorconfig rules always apply',
+  applyEditorConfigNaming: '.editorconfig rules always apply',
+  applyEditorConfigCodeStyle: '.editorconfig rules always apply',
+  applyAnalyzerCodeFixes: 'fixes from third-party analyzers are never applied',
+};
+
+/** The ignored keys already logged in this session, as `<.codejanitor path>\n<key>`: settings are read on every save. */
+const reportedIgnoredKeys = new Set<string>();
+
+/**
+ * Reads the optional repository policy file. Invalid JSON, unknown keys and wrong value types are
+ * ignored; the Visual Studio-only keys are logged as ignored, once per session.
+ */
 export function readRepoCleanupOverrides(workspaceRoot?: string): Partial<CleanupSettings> {
   if (!workspaceRoot) {
     return {};
@@ -119,6 +137,14 @@ export function readRepoCleanupOverrides(workspaceRoot?: string): Partial<Cleanu
     const cleanup = file?.cleanup;
     if (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup)) {
       return {};
+    }
+
+    for (const [key, reason] of Object.entries(VISUAL_STUDIO_ONLY_KEYS)) {
+      const reported = `${configPath}\n${key}`;
+      if (key in cleanup && !reportedIgnoredKeys.has(reported)) {
+        reportedIgnoredKeys.add(reported);
+        logInfo(`'.codejanitor' key ${key} is ignored by VS Code: ${reason}.`);
+      }
     }
 
     const overrides: Partial<CleanupSettings> = {};

@@ -76,6 +76,17 @@ The repository file is loaded automatically. Explicit VS Code settings take prec
 so each developer can still adjust the policy locally. Invalid JSON, unknown properties and values
 with the wrong type are ignored.
 
+A `.codejanitor` written for the Visual Studio extension works here too, with two differences:
+
+- **`.editorconfig` switches:** `applyEditorConfigFormatting`, `applyEditorConfigNaming` and
+  `applyEditorConfigCodeStyle` have no effect, because in VS Code the `.editorconfig` rules always
+  apply.
+- **Third-party analyzers:** `applyAnalyzerCodeFixes` has no effect, because fixes from
+  third-party analyzers are never applied here.
+
+Each of these keys is listed in the **Code Janitor** output channel as ignored, once per session. The other way round, `renamePublicSymbolsAcrossWorkspace` exists only in VS Code,
+and the Visual Studio extension ignores it.
+
 You can create or synchronize this file without editing JSON by opening **Code Janitor: Open
 Settings** and using **Export .codejanitor** or **Import .codejanitor**. Export writes the current
 cleanup configuration to the repository root; import copies the repository values into VS Code's
@@ -384,8 +395,11 @@ does not show whether the analyzer is installed):
 Before the other cleanup steps, the types are moved with the same split as **Split Top-Level
 Types**: the type named like the file (or the first one) stays, each other type gets a file named
 after it (`Box{T}.cs` for generics) in the same folder, and new files are cleaned like any other
-file. This happens for every cleanup command and for cleanup on save (the preview does not split),
-and the summary counts the files created. Files are never renamed or overwritten: when a target
+file. This happens for every cleanup command (the preview does not split), and the summary counts
+the files created. A file and its new files are written together: when one of them cannot be
+written, none is (the new files already written are removed) and the file counts as failed.
+Cleanup on save only reports the types it would move: VS Code can drop the edits of a save, which
+would leave them both in the saved file and in the new files. Files are never renamed or overwritten: when a target
 file already exists, the file uses preprocessor directives, assembly attributes or several
 namespaces, or a type is partial or a struct, the type stays and the violation is reported. File
 names are compared up to the first dot, so `Form.Designer.cs` and `View.xaml.cs` match `Form` and

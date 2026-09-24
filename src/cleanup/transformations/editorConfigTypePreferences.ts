@@ -2,16 +2,12 @@ import { EditorConfigProperties } from '../editorconfig';
 import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { targetsAtLeast } from '../projectInfo';
-import { EditorConfigIssueReporter, describeIssue, hasParseErrors } from './editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, hasModifier, hasParseErrors } from './editorConfigSupport';
 
 const INSTANCE_TYPES = ['class_declaration', 'struct_declaration'];
 const OBJECT_TYPES: Record<string, true> = { object: true, Object: true, 'System.Object': true };
 const LOCK_OPTION = 'csharp_prefer_system_threading_lock';
 const PRIMARY_CONSTRUCTOR_OPTION = 'csharp_style_prefer_primary_constructors';
-
-function hasModifier(node: Node, name: string): boolean {
-  return node.namedChildren.some((child) => child.type === 'modifier' && child.text === name);
-}
 
 // ---------------------------------------------------------------------------------------------
 // IDE0330 csharp_prefer_system_threading_lock

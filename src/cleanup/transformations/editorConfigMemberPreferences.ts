@@ -3,7 +3,7 @@ import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { hasComment } from './editorConfigStatementPreferences';
-import { EditorConfigIssueReporter, describeIssue, hasParseErrors, lineEndAt, lineStartAt } from './editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, hasModifier, hasParseErrors, lineEndAt, lineStartAt, modifiersOf } from './editorConfigSupport';
 
 /**
  * Declaration-level preferences: modifier order, `readonly` structs, `static` local functions and
@@ -11,14 +11,6 @@ import { EditorConfigIssueReporter, describeIssue, hasParseErrors, lineEndAt, li
  * a namespace should match and unused parameters are reported, since fixing them changes code in
  * other files.
  */
-
-function modifiersOf(node: Node): Node[] {
-  return node.namedChildren.filter((child) => child.type === 'modifier');
-}
-
-function hasModifier(node: Node, name: string): boolean {
-  return modifiersOf(node).some((modifier) => modifier.text === name);
-}
 
 function edit(source: string, collect: (root: Node) => TextEdit[]): string {
   const tree = parseCSharp(source);

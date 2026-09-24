@@ -58,27 +58,41 @@ export function readOneTypePerFileRules(props: EditorConfigProperties): OneTypeP
 
 /**
  * Plans the split the rules require (`reservedFileNames`: the `.cs` files already in the file's
- * directory, which are never overwritten) and lists the violations left afterwards.
+ * directory, which are never overwritten) and lists the violations left afterwards. Without
+ * `moveTypes` (cleanup on save, which cannot create files safely) nothing is moved: the types the
+ * split would move are reported too.
  */
 export function planOneTypePerFile(
   source: string,
   filePath: string,
   rules: OneTypePerFileRules,
-  reservedFileNames: ReadonlySet<string>
+  reservedFileNames: ReadonlySet<string>,
+  moveTypes = true
 ): OneTypePerFileOutcome {
   const { severities } = rules;
   const movableKinds = severities.has('MA0048') ? ALL_KINDS : severities.has('SA1402') ? CLASS_ONLY : undefined;
   const plan = movableKinds
     ? createTopLevelTypeSplitPlan(source, filePath, reservedFileNames, { movableKinds, refuseFileNameCollisions: true })
     : createTopLevelTypeSplitPlan('', filePath);
-  const remaining = listTopLevelTypes(plan.hasChanges ? plan.updatedSource : source);
+  const remaining = listTopLevelTypes(plan.hasChanges && moveTypes ? plan.updatedSource : source);
+  const movable = new Set(
+    plan.hasChanges && !moveTypes ? plan.newFiles.map((planned) => path.basename(planned.filePath).toUpperCase()) : []
+  );
   // Like both analyzers, compare with the name up to the first dot (`Form.Designer.cs`, `View.xaml.cs`).
   const fileStem = path.basename(filePath).split('.')[0];
   const issues: string[] = [];
   const describe = (id: string, type: TopLevelTypeInfo, message: string) =>
     issues.push(`${id} (${severities.get(id)}) line ${type.line}: ${message}`);
   const notMoved = (id: string, type: TopLevelTypeInfo) =>
-    describe(id, type, `type '${type.name}' was not moved to its own file because ${whyNotMoved(type, plan)}.`);
+    describe(
+      id,
+      type,
+      `type '${type.name}' was not moved to its own file because ${
+        movable.has(type.fileName.toUpperCase())
+          ? 'cleanup on save does not create files (VS Code can drop the edits of a save, which would leave the type in two files); a cleanup command moves it'
+          : whyNotMoved(type, plan)
+      }.`
+    );
   const nameMismatch = (id: string, type: TopLevelTypeInfo) =>
     describe(id, type, `the file name does not match type '${type.name}' (expected '${type.fileName}'); files are not renamed.`);
 
@@ -103,7 +117,7 @@ export function planOneTypePerFile(
     nameMismatch('SA1649', remaining[0]);
   }
 
-  return { plan, issues };
+  return { plan: moveTypes ? plan : createTopLevelTypeSplitPlan('', filePath), issues };
 }
 
 /** `Box`, `Box{T}` (StyleCop) and ``Box`1`` (metadata) all name the generic type `Box<T>`. */

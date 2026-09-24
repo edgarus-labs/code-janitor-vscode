@@ -1,6 +1,7 @@
 import { STRING, classifyCSharp } from '../csharpScanner';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
+import { lineStartAt, nextLineStartAt } from './editorConfigSupport';
 
 const NAMESPACE_TYPES = ['namespace_declaration', 'file_scoped_namespace_declaration'];
 
@@ -86,8 +87,8 @@ export function moveUsingsOutside(source: string): string {
     }
 
     const edits: TextEdit[] = namespaceUsings.map((directive) => ({
-      start: lineStart(source, directive.startIndex),
-      end: lineEnd(source, directive.endIndex),
+      start: lineStartAt(source, directive.startIndex),
+      end: nextLineStartAt(source, directive.endIndex),
       text: '',
     }));
 
@@ -121,7 +122,7 @@ function directUsings(namespaceNode: Node): Node[] {
  */
 function insertionPoint(root: Node, topUsings: readonly Node[], source: string): number {
   if (topUsings.length > 0) {
-    return lineEnd(source, topUsings[topUsings.length - 1].endIndex);
+    return nextLineStartAt(source, topUsings[topUsings.length - 1].endIndex);
   }
 
   const firstToken = root.namedChildren.find((child) => child && child.type !== 'comment');
@@ -131,18 +132,6 @@ function insertionPoint(root: Node, topUsings: readonly Node[], source: string):
 
 function usingKey(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
-}
-
-function lineStart(source: string, index: number): number {
-  const newlineIndex = source.lastIndexOf('\n', Math.max(0, index - 1));
-
-  return newlineIndex < 0 ? 0 : newlineIndex + 1;
-}
-
-function lineEnd(source: string, index: number): number {
-  const newlineIndex = source.indexOf('\n', index);
-
-  return newlineIndex < 0 ? source.length : newlineIndex + 1;
 }
 
 /**

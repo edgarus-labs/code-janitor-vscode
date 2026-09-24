@@ -115,9 +115,12 @@ First release of the Visual Studio Code port.
   be proven safe from the syntax - names used as text (strings, XAML, Razor, JSON), NuGet package
   APIs, `InternalsVisibleTo`, virtual members, bases declared outside the workspace - are reported.
 - **One type per file from `.editorconfig`**: when `SA1402` (StyleCop) or `MA0048` (Meziantou) is
-  enforced with `dotnet_diagnostic.<ID>.severity`, cleanup - including cleanup on save - first
-  moves the extra top-level types of a file to their own files, named after each type, and cleans
-  them too; the summary counts the created files. `SA1649` and `MA0048` file-name mismatches, types
+  enforced with `dotnet_diagnostic.<ID>.severity`, the cleanup commands first move the extra
+  top-level types of a file to their own files, named after each type, and clean them too; the
+  summary counts the created files. A file and its new files are written all or nothing (new files
+  already written are removed when a later write fails, or when VS Code rejects the edit of the
+  open file). Cleanup on save reports these types instead of moving them, since VS Code can drop the
+  edits of a save. `SA1649` and `MA0048` file-name mismatches, types
   that cannot be moved safely (partial types, structs, files with preprocessor directives or
   several namespaces) and existing target files are reported instead; files are never renamed or
   overwritten.
@@ -160,9 +163,18 @@ First release of the Visual Studio Code port.
 
 ### Fixed
 
+- An open file whose edit VS Code rejects (or that is closed during cleanup) now counts as failed
+  instead of changed, in the cleanup commands, Split Top-Level Types and batch XML documentation.
+- Cleanup on save logs its failures in the Code Janitor output channel instead of ignoring them.
+- With the workspace-wide rename, a naming violation of a public symbol is reported once, with the
+  reason it was not renamed across the workspace, and not at all once it is renamed.
 - Removing the blank lines at the bottom of a file keeps its final newline whenever a final
   newline is ensured (always, unless `insert_final_newline = false`), instead of dropping it for
   the next step to add back. This also stops the preview from listing both steps as changes.
+- The `.codejanitor` keys of the Visual Studio extension that VS Code does not honor
+  (`applyEditorConfigFormatting`, `applyEditorConfigNaming`, `applyEditorConfigCodeStyle`,
+  `applyAnalyzerCodeFixes`) are no longer ignored silently. Each one is logged as ignored, with the
+  reason, once per session.
 - Less output noise:
   - Unsupported `.editorconfig` settings are listed once per cleanup run, with the number of files
     they affect, instead of once per file. For single-file cleanup, cleanup on save and the

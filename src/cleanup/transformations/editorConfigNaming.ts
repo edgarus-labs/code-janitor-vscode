@@ -5,6 +5,7 @@ import { planRename } from '../naming/renamer';
 import { buildSourceModel, DeclaredSymbol, SourceModel } from '../naming/sourceModel';
 import { Node } from '../syntax/node';
 import { SourceTransformation } from '../types';
+import { EditorConfigIssueReporter } from './editorConfigSupport';
 
 const NAMING_DIAGNOSTIC_ID = 'IDE1006';
 
@@ -25,10 +26,7 @@ export interface NamingViolation {
  * locals, local functions, parameters of private methods, local functions and lambdas, and type
  * parameters. Every violation left in place is passed to `report` with the reason.
  */
-export function createEditorConfigNamingConverter(
-  props: EditorConfigProperties,
-  report: (issue: string) => void
-): SourceTransformation {
+export function createEditorConfigNamingConverter(props: EditorConfigProperties, report: EditorConfigIssueReporter): SourceTransformation {
   const rules = parseNamingRules(props);
 
   return {
@@ -41,7 +39,7 @@ function applyNamingRules(
   source: string,
   rules: readonly NamingRule[],
   props: EditorConfigProperties,
-  report: (issue: string) => void
+  report: EditorConfigIssueReporter
 ): string {
   let current = source;
 
@@ -56,14 +54,14 @@ function applyNamingRules(
     const targetName = (symbol: DeclaredSymbol) => targets.get(symbol);
     const accepted: Footprint[] = [];
     const edits: TextEdit[] = [];
-    const unresolved: string[] = [];
+    const unresolved: { readonly violation: NamingViolation; readonly reason: string }[] = [];
 
     for (const violation of violations) {
       const plan = violation.rule.style.isCompliant(violation.newName)
         ? planRename(model, violation.symbol, violation.newName, targetName)
         : { ok: false as const, reason: 'no compliant name can be derived' };
       if (!plan.ok) {
-        unresolved.push(describeNamingViolation(violation, plan.reason));
+        unresolved.push({ violation, reason: plan.reason });
         continue;
       }
 
@@ -79,7 +77,7 @@ function applyNamingRules(
     }
 
     if (edits.length === 0) {
-      unresolved.forEach((issue) => report(issue));
+      unresolved.forEach(({ violation, reason }) => reportViolation(report, violation, reason));
 
       return current;
     }
@@ -88,7 +86,7 @@ function applyNamingRules(
   }
 
   for (const violation of findNamingViolations(buildSourceModel(current), rules, props)) {
-    report(describeNamingViolation(violation, 'the file needs more renames than one cleanup makes'));
+    reportViolation(report, violation, 'the file needs more renames than one cleanup makes');
   }
 
   return current;
@@ -128,6 +126,17 @@ export function findNamingViolations(model: SourceModel, rules: readonly NamingR
   }
 
   return violations;
+}
+
+function reportViolation(report: EditorConfigIssueReporter, violation: NamingViolation, reason: string): void {
+  report(describeNamingViolation(violation, reason), isWorkspaceRenameCandidate(violation) ? violation.symbol.name : undefined);
+}
+
+/** Types and non-private members: other files may use them, so only a workspace-wide rename fixes them. */
+export function isWorkspaceRenameCandidate(violation: NamingViolation): boolean {
+  const symbol = violation.symbol;
+
+  return symbol.category === 'type' || (symbol.category === 'member' && symbol.accessibility !== 'private');
 }
 
 /** Roslyn skips `_`, `_1`, ... (discards and discard-like names). */

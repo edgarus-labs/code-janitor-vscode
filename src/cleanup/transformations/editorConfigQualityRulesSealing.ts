@@ -1,6 +1,6 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
-import { hasParseErrors } from './editorConfigSupport';
+import { hasModifier, hasParseErrors } from './editorConfigSupport';
 import { loadProjectFacts } from './editorConfigQualityRulesProject';
 import {
   Suppressions,
@@ -8,7 +8,6 @@ import {
   attributeSimpleName,
   attributesOf,
   describeDiagnostic,
-  hasModifier,
   isRecordStruct,
   isRuleActive,
   readCodeQualityOption,

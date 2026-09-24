@@ -1,5 +1,6 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
+import { hasModifier } from './editorConfigSupport';
 
 const TYPE_DECLARATIONS = new Set([
   'class_declaration',
@@ -76,10 +77,6 @@ function directFields(typeDeclaration: Node): Node[] {
   return (body?.namedChildren ?? []).filter((child): child is Node => child?.type === 'field_declaration');
 }
 
-function hasModifier(node: Node, ...names: readonly string[]): boolean {
-  return node.namedChildren.some((child) => child?.type === 'modifier' && names.includes(child.text));
-}
-
 function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
   const declaration = field.namedChildren.find((child) => child?.type === 'variable_declaration');
   const declarators = declaration?.namedChildren.filter((child) => child?.type === 'variable_declarator') ?? [];
@@ -87,12 +84,12 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
     return false;
   }
 
-  if (hasModifier(field, 'readonly', 'const', 'volatile')) {
+  if (['readonly', 'const', 'volatile'].some((name) => hasModifier(field, name))) {
     return false;
   }
 
   // Writes to non-private fields cannot be ruled out from a single file.
-  if (hasModifier(field, 'public', 'internal', 'protected')) {
+  if (['public', 'internal', 'protected'].some((name) => hasModifier(field, name))) {
     return false;
   }
 

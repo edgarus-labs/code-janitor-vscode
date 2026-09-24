@@ -14,7 +14,7 @@ import {
   unparenthesized,
   withParentheses,
 } from './editorConfigPrecedence';
-import { EditorConfigIssueReporter, describeIssue, hasParseErrors } from './editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, hasParseErrors, lineStartAt } from './editorConfigSupport';
 import { NULLABLE_VALUE_TYPE, isNonNullableValueType, isPlainReferenceType, isVariable } from './typeFacts';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
 
@@ -1225,7 +1225,7 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
         args.length === parameters.length &&
         args.every((argument, index) => argument.text === parameters[index].name) &&
         (callee?.type === 'identifier' || callee?.type === 'member_access_expression');
-      const modifiers = /\b(?:async|static)\s*$/.test(source.slice(lineStartOf(source, lambda.startIndex), lambda.startIndex));
+      const modifiers = /\b(?:async|static)\s*$/.test(source.slice(lineStartAt(source, lambda.startIndex), lambda.startIndex));
       if (!forwards || modifiers || !callee || isInPossibleExpressionTree(lambda) || hasParseErrors(lambda)) {
         continue;
       }
@@ -1259,10 +1259,6 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
 
     return edits;
   };
-}
-
-function lineStartOf(source: string, index: number): number {
-  return source.lastIndexOf('\n', index - 1) + 1;
 }
 
 // ---------------------------------------------------------------------------------------------
