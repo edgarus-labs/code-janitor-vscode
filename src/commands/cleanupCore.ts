@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
+import { EditorConfigIssue, runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
 import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
 import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
@@ -74,8 +74,14 @@ export async function runCleanupOnUris(
   const targets = uris.filter(isSupportedFile);
   const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
   let unresolved = 0;
-  const report = (issue: string): void => {
-    unresolved++;
+  let unsupported = 0;
+  const report = (issue: EditorConfigIssue): void => {
+    if (issue.kind === 'unresolved') {
+      unresolved++;
+    } else {
+      unsupported++;
+    }
+
     logEditorConfigIssue(issue);
   };
 
@@ -94,12 +100,16 @@ export async function runCleanupOnUris(
     logInfo(`Cleanup: ${unresolved} .editorconfig rule violation(s) were not fixed.`);
   }
 
+  if (unsupported > 0) {
+    logInfo(`Cleanup: ${unsupported} .editorconfig setting(s) are not supported and were not applied.`);
+  }
+
   return { ...outcome, unresolved };
 }
 
-/** Logs one `.editorconfig` rule violation that cleanup found but could not fix safely. */
-export function logEditorConfigIssue(issue: string): void {
-  logInfo(`.editorconfig rule not fixed: ${issue}`);
+/** Logs a `.editorconfig` rule violation cleanup could not fix safely, or a setting it does not support. */
+export function logEditorConfigIssue(issue: EditorConfigIssue): void {
+  logInfo(`${issue.kind === 'unresolved' ? '.editorconfig rule not fixed' : '.editorconfig setting not supported'}: ${issue.message}`);
 }
 
 /** Removes XML documentation comments from every given C# file - never uses AI. */

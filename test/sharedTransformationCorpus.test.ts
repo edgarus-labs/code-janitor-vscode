@@ -88,7 +88,7 @@ suite('shared transformation corpus', () => {
 
     it(fixture.name, () => {
       const settings = applyFixtureSettings(fixture.settings ?? {});
-      const output = buildPipeline(input, settings, {}).run(input);
+      const output = buildPipeline(input, settings).run(input);
 
       for (const expected of fixture.mustContain ?? []) {
         expect(output, `expected output to contain: ${JSON.stringify(expected)}`).toContain(normalize(expected));

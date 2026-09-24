@@ -1,6 +1,7 @@
 import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity, splitOptionSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
+import { OPEN_BRACE_KINDS } from '../editorConfigRegistry';
 import { SourceTransformation } from '../types';
 import {
   EditorConfigIssueReporter,
@@ -12,13 +13,14 @@ import {
   tabWidth,
 } from './editorConfigSupport';
 import { removeTrailingWhitespace } from './text';
-import { usingDirectiveOrganizer } from './usingDirectiveOrganizer';
+import { sortUsingDirectives } from './usingDirectiveOrganizer';
 
 /**
  * Applies `.editorconfig` formatting. The core EditorConfig properties (`indent_style`,
- * `end_of_line`, `insert_final_newline`, `trim_trailing_whitespace`, `charset`) always apply. The
- * C# formatting options only apply while IDE0055 ("Fix formatting") is enforced, as in Roslyn,
- * where they have no severity of their own. String literals and comment text are never changed.
+ * `end_of_line`, `insert_final_newline`, `trim_trailing_whitespace`, `charset`) and the using
+ * order options always apply. The C# formatting options only apply while IDE0055 ("Fix
+ * formatting") is enforced, as in Roslyn, where they have no severity of their own. String
+ * literals and comment text are never changed.
  */
 export function createEditorConfigFormattingConverter(
   props: EditorConfigProperties,
@@ -34,19 +36,21 @@ export function createEditorConfigFormattingConverter(
       // A byte order mark would confuse the parser; formatting works on the text after it.
       const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
       let current = source.slice(bom.length);
-      // IDE0055 ("Fix formatting") gates every C# formatting option, as in Roslyn.
-      if (isEnforced(resolveDiagnosticSeverity(props, 'IDE0055'))) {
-        let formatted = applyUsingDirectiveOrder(current, props);
+      // IDE0055 ("Fix formatting") gates every C# formatting option, as in Roslyn. Using order has
+      // no diagnostic of its own and applies whenever it is set.
+      const enforced = isEnforced(resolveDiagnosticSeverity(props, 'IDE0055'));
+      let formatted = applyUsingDirectiveOrder(current, props);
+      if (enforced) {
         formatted = applyOpenBraceNewLines(formatted, props, report);
         formatted = applyNewLinesBeforeKeywords(formatted, props);
         formatted = applySpacing(formatted, props);
+      }
 
-        // Only whitespace and using order change; a result the parser reads worse is dropped.
-        if (formatted !== current && parseErrorCount(formatted) > parseErrorCount(current)) {
-          report('IDE0055: C# formatting discarded, the reformatted code could not be verified.');
-        } else {
-          current = formatted;
-        }
+      // Only whitespace and using order change; a result the parser reads worse is dropped.
+      if (formatted !== current && parseErrorCount(formatted) > parseErrorCount(current)) {
+        report('IDE0055: C# formatting discarded, the reformatted code could not be verified.');
+      } else {
+        current = formatted;
       }
 
       current = applyIndentStyle(current, props);
@@ -75,8 +79,9 @@ function optionValue(props: EditorConfigProperties, key: string): string | undef
 
 function applyUsingDirectiveOrder(source: string, props: EditorConfigProperties): string {
   let current = source;
+  // `false` only says how usings are ordered when they are sorted (the "Sort usings" setting).
   if (optionValue(props, 'dotnet_sort_system_directives_first') === 'true') {
-    current = usingDirectiveOrganizer.apply(current);
+    current = sortUsingDirectives(current, true);
   }
 
   if (optionValue(props, 'dotnet_separate_import_directive_groups') === 'true') {
@@ -140,21 +145,6 @@ function usingGroup(text: string): string {
 // ---------------------------------------------------------------------------------------------
 // csharp_new_line_before_open_brace
 // ---------------------------------------------------------------------------------------------
-
-const BRACE_KINDS = [
-  'accessors',
-  'anonymous_methods',
-  'anonymous_types',
-  'control_blocks',
-  'events',
-  'indexers',
-  'lambdas',
-  'local_functions',
-  'methods',
-  'object_collection_array_initializers',
-  'properties',
-  'types',
-];
 
 const CONTROL_BLOCK_OWNERS: Record<string, true> = {
   if_statement: true,
@@ -252,7 +242,7 @@ function applyOpenBraceNewLines(source: string, props: EditorConfigProperties, r
   }
 
   const wanted = new Set(
-    value === 'all' ? BRACE_KINDS : value === 'none' ? [] : value.split(',').map((kind) => kind.trim()).filter(Boolean)
+    value === 'all' ? OPEN_BRACE_KINDS : value === 'none' ? [] : value.split(',').map((kind) => kind.trim()).filter(Boolean)
   );
   const tree = parseCSharp(source);
 

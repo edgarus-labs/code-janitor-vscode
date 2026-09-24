@@ -111,7 +111,7 @@ const RULES: readonly Rule[] = [
     option: 'csharp_style_inlined_variable_declaration',
     apply: (source, { props }) =>
       isPreferred(props, 'csharp_style_inlined_variable_declaration', 'IDE0018')
-        ? inlineOutVariableDeclarations(source, { preserveScopeAndType: true })
+        ? inlineOutVariableDeclarations(source, { preserveScope: true, keepDeclaredType: true })
         : source,
   },
   { option: 'csharp_prefer_simple_using_statement', apply: applySimpleUsingStatementPreference },

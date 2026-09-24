@@ -28,7 +28,6 @@ describe('collectSettingSections', () => {
       'Cleaning: Update',
       'Cleaning: Modern C#',
       'Cleaning: File Header',
-      'Cleaning: .editorconfig (C#)',
       'Formatting',
       'AI: Provider',
       'AI: XML Documentation',

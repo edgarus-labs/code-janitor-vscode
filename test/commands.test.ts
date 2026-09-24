@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   Position,
@@ -96,7 +97,7 @@ describe('readCleanupSettings', () => {
   });
 
   it('loads cleanup policy from a .codejanitor file in the repository root', () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({ cleanup: { removeRegions: false, organizeUsings: true, insertBlankLinePadding: false } })
@@ -111,7 +112,7 @@ describe('readCleanupSettings', () => {
   });
 
   it('lets explicit VS Code cleanup settings override the repository policy', () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
     state.configuration.set('codeJanitor.cleanup.removeRegions', true);
 
@@ -121,7 +122,7 @@ describe('readCleanupSettings', () => {
 
 describe('repository settings commands', () => {
   it('exports cleanup settings as a .codejanitor file', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     state.configuration.set('codeJanitor.cleanup.removeRegions', false);
     state.configuration.set('codeJanitor.cleanup.organizeUsings', true);
 
@@ -136,7 +137,7 @@ describe('repository settings commands', () => {
   });
 
   it('imports repository settings into workspace settings', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false, organizeUsings: true } }));
 
     await importRepositorySettings(root);
@@ -155,7 +156,7 @@ describe('repository settings commands', () => {
   });
 
   it('exports with file header position and update mode', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     state.configuration.set('codeJanitor.cleanup.fileHeaderPosition', 'afterUsings');
     state.configuration.set('codeJanitor.cleanup.fileHeaderUpdateMode', 'replace');
 
@@ -169,7 +170,7 @@ describe('repository settings commands', () => {
   });
 
   it('exports grouped blank line padding setting', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     state.configuration.set('codeJanitor.cleanup.insertBlankLinePadding', false);
 
     await exportRepositorySettings(root);
@@ -182,7 +183,7 @@ describe('repository settings commands', () => {
   });
 
   it('exports grouped explicit access modifiers setting', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     state.configuration.set('codeJanitor.cleanup.insertExplicitAccessModifiers', false);
 
     await exportRepositorySettings(root);
@@ -195,7 +196,7 @@ describe('repository settings commands', () => {
   });
 
   it('omits grouped settings when not configured', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
 
     await exportRepositorySettings(root);
 
@@ -207,7 +208,7 @@ describe('repository settings commands', () => {
   });
 
   it('asks before overwriting an existing .codejanitor', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(path.join(root, '.codejanitor'), '{"cleanup":{}}');
     state.modalChoice = undefined; // dismiss
 
@@ -218,7 +219,7 @@ describe('repository settings commands', () => {
   });
 
   it('overwrites when the user confirms', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(path.join(root, '.codejanitor'), '{"cleanup":{}}');
     state.modalChoice = 'Overwrite';
 
@@ -241,7 +242,7 @@ describe('repository settings commands', () => {
   });
 
   it('reports when .codejanitor is not found for import', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
 
     await importRepositorySettings(root);
 
@@ -249,7 +250,7 @@ describe('repository settings commands', () => {
   });
 
   it('imports file header position and update mode', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({ cleanup: { fileHeaderPosition: 'afterUsings', fileHeaderUpdateMode: 'replace' } })
@@ -262,7 +263,7 @@ describe('repository settings commands', () => {
   });
 
   it('imports grouped settings when all values match', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({
@@ -304,7 +305,7 @@ describe('repository settings commands', () => {
   });
 
   it('does not import grouped settings when values differ', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({
@@ -540,14 +541,13 @@ describe('cleanup commands', () => {
     expect(document.getText()).not.toContain('   \n');
   });
 
-  it('applies .editorconfig code style and warns about violations it could not fix', async () => {
-    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+  it('applies .editorconfig code style without a setting and warns about violations it could not fix', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     try {
       fs.writeFileSync(
         path.join(root, '.editorconfig'),
         'root = true\n\n[*.cs]\ncsharp_style_var_elsewhere = true:warning\ncsharp_prefer_braces = true:warning\n'
       );
-      state.configuration.set('codeJanitor.cleanup.applyEditorConfigCodeStyle', true);
       const source = 'internal class A\n{\n    private void M(bool b)\n    {\n        Widget w = Create();\n        if (b) return;\n    }\n}\n';
       const document = new TextDocument(Uri.file(path.join(root, 'A.cs')), source, 'csharp');
       state.documents.push(document);
@@ -560,6 +560,20 @@ describe('cleanup commands', () => {
       expect(state.warningMessages).toEqual([
         'Code Janitor: cleanup complete - 1 file(s) changed, 1 .editorconfig rule violation(s) not fixed (see the Code Janitor output).',
       ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not count unsupported .editorconfig settings as violations', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    try {
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\nmax_line_length = 120\n');
+      state.files.set(path.join(root, 'A.cs'), 'internal class A\n{\n}\n');
+
+      const result = await runCleanupOnUris(createContext(), [Uri.file(path.join(root, 'A.cs'))]);
+
+      expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

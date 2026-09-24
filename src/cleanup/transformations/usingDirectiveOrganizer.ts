@@ -23,27 +23,30 @@ interface ParsedUsing {
  */
 export const usingDirectiveOrganizer: SourceTransformation = {
   name: 'Sort using directives',
-  apply(source: string): string {
-    if (!source) {
-      return source;
-    }
-
-    const tree = parseCSharp(source);
-
-    try {
-      const kinds = classifyCSharp(source);
-      const edits: TextEdit[] = [];
-
-      for (const container of usingContainers(tree.rootNode)) {
-        collectSortEdits(source, kinds, container, edits);
-      }
-
-      return applyEdits(source, edits);
-    } finally {
-      tree.delete();
-    }
-  },
+  apply: (source) => sortUsingDirectives(source, true),
 };
+
+/** Sorts using directives as {@link usingDirectiveOrganizer} does; `System` goes first only when `systemFirst`. */
+export function sortUsingDirectives(source: string, systemFirst: boolean): string {
+  if (!source) {
+    return source;
+  }
+
+  const tree = parseCSharp(source);
+
+  try {
+    const kinds = classifyCSharp(source);
+    const edits: TextEdit[] = [];
+
+    for (const container of usingContainers(tree.rootNode)) {
+      collectSortEdits(source, kinds, container, edits, systemFirst);
+    }
+
+    return applyEdits(source, edits);
+  } finally {
+    tree.delete();
+  }
+}
 
 /** Every node that can directly hold a using block: the file, and each namespace body. */
 function usingContainers(root: Node): Node[] {
@@ -57,7 +60,7 @@ function usingContainers(root: Node): Node[] {
   return containers;
 }
 
-function collectSortEdits(source: string, kinds: Uint8Array, container: Node, edits: TextEdit[]): void {
+function collectSortEdits(source: string, kinds: Uint8Array, container: Node, edits: TextEdit[], systemFirst: boolean): void {
   const children = container.namedChildren.filter((child): child is Node => Boolean(child));
   const usings = children.filter((child) => child.type === 'using_directive');
   if (usings.length < 2) {
@@ -79,7 +82,10 @@ function collectSortEdits(source: string, kinds: Uint8Array, container: Node, ed
   }
 
   const sorted = [...directives].sort(
-    (a, b) => groupRank(a) - groupRank(b) || systemRank(a) - systemRank(b) || compareOrdinal(sortName(a), sortName(b))
+    (a, b) =>
+      groupRank(a) - groupRank(b) ||
+      (systemFirst ? systemRank(a) - systemRank(b) : 0) ||
+      compareOrdinal(sortName(a), sortName(b))
   );
 
   if (sorted.every((directive, index) => directive.node.id === directives[index].node.id)) {

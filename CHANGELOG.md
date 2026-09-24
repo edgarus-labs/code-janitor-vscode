@@ -52,19 +52,23 @@ First release of the Visual Studio Code port.
   resolved as the EditorConfig specification defines: nested files up to `root = true`, section
   globs with `*`, `**`, `?`, `[...]`, `{a,b}` and `{n..m}` (relative to the `.editorconfig`
   directory when they contain `/`), later sections and nearer files winning, and `unset`.
-- **`.editorconfig` code style and formatting for C#** (settings
-  `codeJanitor.cleanup.applyEditorConfigCodeStyle` and `codeJanitor.cleanup.applyEditorConfigFormatting`,
-  also `.codejanitor` keys, both off by default): cleanup rewrites code to follow the
+- **`.editorconfig` as the source of truth for C#**: whenever an `.editorconfig` applies to a
+  file, cleanup applies its rules - no setting needed. Where a Code Janitor setting governs the same
+  thing (using placement, namespace style, `var`, readonly fields, `out` variable inlining, access
+  modifiers, file header, using order, trailing whitespace, byte order mark, final newline,
+  collection expressions, lambda bodies), the `.editorconfig` wins when it sets the option and
+  enforces it; the settings keep applying to everything else. Settings the `.editorconfig` contains
+  that cleanup does not implement are listed once per file in the Code Janitor output channel.
+- **`.editorconfig` code style and formatting for C#**: cleanup rewrites code to follow the
   `.editorconfig` rules - namespace declarations, accessibility modifiers, `var`, braces, `this.`
   qualification, using placement, file header template, readonly fields, inlined `out` variables,
   simple `using` statements, indentation style, line endings, final newline, trailing whitespace,
   charset, brace and keyword new lines, spacing and using order. Code-style rules apply only when
   their severity is `suggestion`, `warning` or `error`; C# formatting options only while `IDE0055`
-  is. They run after the other cleanup steps, change code only when the result is certain from the
+  is; the core EditorConfig properties and the using order options whenever they are set. They run after the other cleanup steps, change code only when the result is certain from the
   syntax, and list the violations they could not fix in the Code Janitor output channel and the
   cleanup summary. See the README for the supported options.
-- **`.editorconfig` naming rules for C#** (setting `codeJanitor.cleanup.applyEditorConfigNaming`,
-  also a `.codejanitor` key, off by default): cleanup renames symbols that violate the
+- **`.editorconfig` naming rules for C#**: cleanup renames symbols that violate the
   `dotnet_naming_rule`/`dotnet_naming_symbols`/`dotnet_naming_style` rules whose severity is
   `suggestion`, `warning` or `error`, choosing the same name as the Visual Studio naming fix and
   following Roslyn's rule ordering. It runs before the other `.editorconfig` categories and renames

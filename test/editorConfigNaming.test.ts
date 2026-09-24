@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
-import { runCleanup } from '../src/cleanup/runCleanup';
+import { EditorConfigIssue, runCleanup } from '../src/cleanup/runCleanup';
 import { createDefaultSettings } from '../src/cleanup/types';
 import { parseNamingRules } from '../src/cleanup/naming/namingRules';
 import { NamingStyle } from '../src/cleanup/naming/namingStyle';
@@ -411,26 +411,23 @@ dotnet_naming_style.t_prefix.capitalization = pascal_case
   });
 });
 
-describe('applyEditorConfigNaming in the cleanup pipeline', () => {
-  it('renames after the other cleanup steps only when enabled, reporting with the file path', () => {
+describe('naming rules in the cleanup pipeline', () => {
+  it('renames after the other cleanup steps, reporting with the file path', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-naming-'));
     try {
       fs.writeFileSync(path.join(root, '.editorconfig'), template);
       const filePath = path.join(root, 'Sample.cs');
       const source = 'public class Sample\n{\n    int m_Count;\n    public int Get(int Offset) => m_Count + Offset;\n}\n';
-      const issues: string[] = [];
+      const issues: EditorConfigIssue[] = [];
 
-      const enabled = runCleanup(source, filePath, { ...createDefaultSettings(), applyEditorConfigNaming: true }, undefined, (issue) =>
-        issues.push(issue)
-      );
-      const disabled = runCleanup(source, filePath, createDefaultSettings(), undefined, (issue) => issues.push(issue));
+      const output = runCleanup(source, filePath, createDefaultSettings(), undefined, (issue) => issues.push(issue));
 
-      expect(enabled).toContain('    private int _count;\n');
-      expect(enabled).toContain('public int Get(int Offset) => _count + Offset;');
-      expect(disabled).toContain('private int m_Count;');
+      expect(output).toContain('    private int _count;\n');
+      expect(output).toContain('public int Get(int Offset) => _count + Offset;');
       expect(issues).toHaveLength(1);
-      expect(issues[0].startsWith(`${filePath}: IDE1006 `)).toBe(true);
-      expect(issues[0]).toMatch(/parameter 'Offset' should be named 'offset'/);
+      expect(issues[0].kind).toBe('unresolved');
+      expect(issues[0].message.startsWith(`${filePath}: IDE1006 `)).toBe(true);
+      expect(issues[0].message).toMatch(/parameter 'Offset' should be named 'offset'/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

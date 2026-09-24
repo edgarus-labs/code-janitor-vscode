@@ -314,7 +314,10 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
   let unresolved = 0;
   const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings, disqualifiedTypeNames, (issue) => {
-    unresolved++;
+    if (issue.kind === 'unresolved') {
+      unresolved++;
+    }
+
     logEditorConfigIssue(issue);
   });
 

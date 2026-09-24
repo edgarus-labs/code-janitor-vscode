@@ -36,9 +36,15 @@ intended syntax. Document intentional differences from the Visual Studio impleme
 ### `.editorconfig`-driven categories
 
 `src/cleanup/editorconfig.ts` resolves the `.editorconfig` properties of a file and the effective
-severity of a diagnostic. The naming, code-style and formatting categories run at the end of
-`buildPipeline` (`runCleanup.ts`), in that order, after every other step, and only when their
-setting is on:
+severity of a diagnostic. `src/cleanup/editorConfigRegistry.ts` is the single registry of the
+settings cleanup applies and when each takes effect (always, while IDE0055 is enforced, or while
+the option's diagnostic is enforced); it lists the file's unsupported settings and tells
+`buildPipeline` which settings the `.editorconfig` decides. For those, the step of the conflicting
+Code Janitor setting is skipped or adjusted (the mapping is in the README). The naming, code-style
+and formatting categories run at the end of `buildPipeline` (`runCleanup.ts`), in that order,
+after every other step, whenever the file has `.editorconfig` properties. Issues reach the
+commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanup summary) and
+`unsupported` settings (logged only).
 
 - `transformations/editorConfigNaming.ts`: IDE1006. `naming/namingRules.ts` parses and orders
   the rules (Roslyn `EditorConfigNamingStyleParser`), `naming/namingStyle.ts` checks names and
@@ -50,8 +56,8 @@ setting is on:
   existing converters (file-scoped namespaces, explicit access modifiers, readonly fields, `out`
   variable inlining, using placement). Rule modules: `editorConfigQualification.ts` (`this.`),
   `editorConfigVarPreference.ts` (`var`), `editorConfigBraces.ts` (braces).
-- `transformations/editorConfigFormatting.ts`: core EditorConfig properties, and the C# formatting
-  options gated on IDE0055.
+- `transformations/editorConfigFormatting.ts`: core EditorConfig properties and using order, and the
+  C# formatting options gated on IDE0055.
 - `transformations/editorConfigSupport.ts`: option/severity reading, indentation and line helpers,
   and parse-error detection shared by the rules.
 

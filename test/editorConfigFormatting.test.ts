@@ -245,9 +245,12 @@ describe('using directive options', () => {
     );
   });
 
-  it('does not reorder usings while IDE0055 is not enforced', () => {
-    const source = lines('using Contoso.Data;', 'using System;', '', 'class Sample { }');
+  it('sorts usings for dotnet_sort_system_directives_first = true without IDE0055, which does not cover using order', () => {
+    const source = lines('using Contoso.Data;', 'using System;', 'using Alpha;', '', 'class Sample { }');
 
-    expect(format(source, 'dotnet_sort_system_directives_first = true').output).toBe(source);
+    expect(format(source, 'dotnet_sort_system_directives_first = true').output).toBe(
+      lines('using System;', 'using Alpha;', 'using Contoso.Data;', '', 'class Sample { }')
+    );
+    expect(format(source, 'dotnet_sort_system_directives_first = false').output).toBe(source);
   });
 });

@@ -80,19 +80,43 @@ workspace settings so they can be reviewed or adjusted in the settings panel.
 
 ## .editorconfig rules (C#)
 
-Code Janitor can make `.editorconfig` the source of truth for C# code: the rules your team sets
-there are applied to the code during cleanup. Each category is off by default and has its own
-setting (and `.codejanitor` key of the same name):
+`.editorconfig` is the source of truth for C# code: whenever an `.editorconfig` applies to a file
+(any `.editorconfig` from the file's folder up to the one with `root = true`, with nested files and
+section globs), cleanup rewrites the code to follow its naming rules, code-style preferences and
+formatting options. There is no setting to turn this on; without an `.editorconfig` cleanup
+behaves as configured by the Code Janitor settings alone. The `.editorconfig` rules run after
+every other cleanup step (naming first, formatting last), for every cleanup command and for
+cleanup on save.
 
-| Setting | `.codejanitor` key | Applies |
+When a Code Janitor setting and an `.editorconfig` setting govern the same thing, the
+`.editorconfig` wins as long as it sets the option with a supported value and, where a severity
+applies, the rule is enforced. Code Janitor settings keep applying to everything the
+`.editorconfig` does not decide:
+
+| Code Janitor setting | Overridden by | Effect when the `.editorconfig` decides |
 | --- | --- | --- |
-| `codeJanitor.cleanup.applyEditorConfigNaming` | `applyEditorConfigNaming` | Naming rules (renames symbols) |
-| `codeJanitor.cleanup.applyEditorConfigCodeStyle` | `applyEditorConfigCodeStyle` | C# code-style preferences |
-| `codeJanitor.cleanup.applyEditorConfigFormatting` | `applyEditorConfigFormatting` | EditorConfig and C# formatting options |
+| Move usings outside namespace | `csharp_using_directive_placement` | Usings are placed as the option says (only provably safe moves). |
+| Convert to file-scoped namespace | `csharp_style_namespace_declarations` | The namespace style of the option. |
+| Convert to `var` when apparent | `csharp_style_var_*` | The `var` preferences decide. |
+| Make fields readonly | `dotnet_style_readonly_field` | `readonly` only for `true`. |
+| Inline `out` variable declarations | `csharp_style_inlined_variable_declaration`; `csharp_style_var_*` = `false` | Inlining only for `true`; with explicit types preferred, `out T x` instead of `out var x`. |
+| Insert explicit access modifiers | `dotnet_style_require_accessibility_modifiers` | Modifiers are added or removed as the option says. |
+| File header | `file_header_template` (with IDE0073 enforced) | The template is used. |
+| Sort usings | `dotnet_sort_system_directives_first` | `false` sorts alphabetically without putting `System` first. |
+| Remove end-of-line whitespace | `trim_trailing_whitespace` | Trailing whitespace is removed only for `true`. |
+| Remove byte order mark | `charset` | `utf-8` removes it, `utf-8-bom` keeps it. |
+| (final newline, always added) | `insert_final_newline` | Added for `true`, removed for `false`. |
+| Convert to collection expressions | `dotnet_style_prefer_collection_expression` = `false`/`never` | No conversion. |
+| Simplify single-statement lambdas | `csharp_style_expression_bodied_lambdas` other than `true` | No conversion. |
 
-These categories run after every other cleanup step (naming first, formatting last), for every cleanup command
-and for cleanup on save. Rules come from every `.editorconfig` that applies to the file, including
-nested files, section globs and `root = true`.
+The other settings (regions, blank lines and padding, sealing, `nameof`, string interpolation,
+pattern-matching null checks, CA1869, accessor and single-line method layout, comment formatting)
+have no `.editorconfig` counterpart and always apply as configured.
+
+Settings in the `.editorconfig` that cleanup does not implement are never ignored silently: each
+one that would take effect (an enforced rule, or an EditorConfig property without a severity) is
+listed once per file in the **Code Janitor** output channel as not supported. Rules at `silent` or
+`none` require nothing and are not listed, nor are Visual Basic options.
 
 - **Severity.** A code-style rule is applied only when its diagnostic is `suggestion`, `warning` or
   `error` - set with `option = value:severity`, a naming rule's `severity`,
@@ -120,12 +144,12 @@ Supported code-style options:
 
 Formatting: `indent_style` (with `tab_width`/`indent_size`), `end_of_line`, `insert_final_newline`,
 `trim_trailing_whitespace` and `charset` (`utf-8` removes a byte order mark, `utf-8-bom` keeps
-one) always apply. As in Visual Studio, the C# formatting options have no severity of their own
-and apply only while `IDE0055` is `suggestion`, `warning` or `error`:
-`csharp_new_line_before_open_brace`, `csharp_new_line_before_else`, `csharp_new_line_before_catch`,
-`csharp_new_line_before_finally`, `csharp_space_after_cast`,
-`csharp_space_after_keywords_in_control_flow_statements`, `dotnet_sort_system_directives_first`
-and `dotnet_separate_import_directive_groups`.
+one) always apply, as do `dotnet_sort_system_directives_first = true` (sorts usings, `System`
+first) and `dotnet_separate_import_directive_groups = true`, which have no diagnostic of their own.
+As in Visual Studio, the C# formatting options have no severity of their own and apply only while
+`IDE0055` is `suggestion`, `warning` or `error`: `csharp_new_line_before_open_brace`,
+`csharp_new_line_before_else`, `csharp_new_line_before_catch`, `csharp_new_line_before_finally`,
+`csharp_space_after_cast` and `csharp_space_after_keywords_in_control_flow_statements`.
 
 Not supported: `csharp_style_pattern_matching_over_as_with_null_check` (IDE0019),
 `dotnet_style_prefer_is_null_check_over_reference_equality_method` (IDE0041),

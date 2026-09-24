@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { EditorConfigCSharpOptions } from './types';
 
 export type EditorConfigSeverity = 'none' | 'silent' | 'suggestion' | 'warning' | 'error';
 
@@ -15,31 +14,6 @@ export interface EditorConfigFile {
   /** Directory containing the `.editorconfig` file; section globs are relative to it. */
   readonly directory: string;
   readonly text: string;
-}
-
-/**
- * Reads `.editorconfig` files from the file's directory upwards (stopping at `root = true`) and
- * folds the settings the cleanup pipeline cares about into a single options object.
- */
-export function loadCSharpOptions(filePath: string): EditorConfigCSharpOptions {
-  const options: EditorConfigCSharpOptions = {};
-  if (!filePath || !filePath.trim()) {
-    return options;
-  }
-
-  applyProperties(loadEditorConfigProperties(filePath), options);
-
-  return options;
-}
-
-/** Applies a single `.editorconfig` text, located next to `filePath`, onto `options`. */
-export function applyText(editorConfigText: string, filePath: string, options: EditorConfigCSharpOptions): void {
-  if (!editorConfigText || !editorConfigText.trim() || !options || !filePath || !filePath.trim()) {
-    return;
-  }
-
-  const directory = path.dirname(path.resolve(filePath));
-  applyProperties(resolveEditorConfigProperties([{ directory, text: editorConfigText }], filePath), options);
 }
 
 /**
@@ -563,61 +537,4 @@ function tryReadFile(filePath: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function applyProperties(props: EditorConfigProperties, options: EditorConfigCSharpOptions): void {
-  for (const [key, value] of props.entries) {
-    applySetting(options, key, value);
-  }
-}
-
-function applySetting(options: EditorConfigCSharpOptions, key: string, value: string): void {
-  switch (key) {
-    case 'trim_trailing_whitespace':
-      options.trimTrailingWhitespace = tryParseBool(value);
-      break;
-
-    case 'dotnet_sort_system_directives_first':
-      options.sortSystemDirectivesFirst = tryParseBool(value);
-      break;
-
-    case 'dotnet_separate_import_directive_groups':
-      options.separateImportDirectiveGroups = tryParseBool(value);
-      break;
-
-    case 'insert_final_newline':
-      options.insertFinalNewline = tryParseBool(value);
-      break;
-
-    case 'indent_style':
-      options.indentStyle = value;
-      break;
-
-    case 'indent_size':
-      options.indentSize = tryParseInt(value);
-      break;
-
-    case 'tab_width':
-      options.tabWidth = tryParseInt(value);
-      break;
-  }
-}
-
-function tryParseBool(value: string): boolean | undefined {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'true') {
-    return true;
-  }
-
-  if (normalized === 'false') {
-    return false;
-  }
-
-  return undefined;
-}
-
-function tryParseInt(value: string): number | undefined {
-  const parsed = Number.parseInt(value.trim(), 10);
-
-  return Number.isNaN(parsed) ? undefined : parsed;
 }

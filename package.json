@@ -601,32 +601,8 @@
         }
       },
       {
-        "title": "Cleaning: .editorconfig (C#)",
-        "order": 9,
-        "properties": {
-          "codeJanitor.cleanup.applyEditorConfigNaming": {
-            "type": "boolean",
-            "default": false,
-            "order": 1,
-            "markdownDescription": "Rename C# symbols to follow the `.editorconfig` naming rules (`dotnet_naming_rule`, `dotnet_naming_symbols`, `dotnet_naming_style`), producing the same names as the Visual Studio naming fix. Only rules whose severity is `suggestion`, `warning` or `error` are applied. Only renames provably safe within the file are made: private members, locals, local functions, lambda parameters, parameters of private methods and type parameters, with every reference in the file updated. Public or protected symbols, members of partial types and code the cleanup cannot fully analyze are logged to the Code Janitor output channel instead. Runs after the other cleanup steps."
-          },
-          "codeJanitor.cleanup.applyEditorConfigCodeStyle": {
-            "type": "boolean",
-            "default": false,
-            "order": 2,
-            "markdownDescription": "Rewrite C# code to follow the code-style preferences in `.editorconfig` (namespace declarations, accessibility modifiers, `var`, braces, `this.` qualification, using placement, file header, readonly fields, inlined `out` variables, simple `using` statements). Only rules whose severity is `suggestion`, `warning` or `error` are applied; violations that cannot be fixed safely are logged to the Code Janitor output channel. Runs after the other cleanup steps."
-          },
-          "codeJanitor.cleanup.applyEditorConfigFormatting": {
-            "type": "boolean",
-            "default": false,
-            "order": 3,
-            "markdownDescription": "Apply `.editorconfig` formatting to C# files: `indent_style`, `end_of_line`, `insert_final_newline`, `trim_trailing_whitespace` and `charset` always, and the C# formatting options (brace and keyword new lines, spacing, using order) while `IDE0055` is `suggestion`, `warning` or `error`. String literals and comments are never changed. Runs last."
-          }
-        }
-      },
-      {
         "title": "Formatting",
-        "order": 10,
+        "order": 9,
         "properties": {
           "codeJanitor.cleanup.formatComments": {
             "type": "boolean",
@@ -637,7 +613,7 @@
       },
       {
         "title": "AI: Provider",
-        "order": 11,
+        "order": 10,
         "properties": {
           "codeJanitor.ai.provider": {
             "type": "string",
@@ -699,7 +675,7 @@
       },
       {
         "title": "AI: XML Documentation",
-        "order": 12,
+        "order": 11,
         "properties": {
           "codeJanitor.ai.xmlDoc.maxMembersPerFile": {
             "type": "number",
@@ -759,7 +735,7 @@
       },
       {
         "title": "AI: Unit Tests",
-        "order": 13,
+        "order": 12,
         "properties": {
           "codeJanitor.ai.tests.framework": {
             "type": "string",

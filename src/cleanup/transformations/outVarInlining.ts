@@ -26,12 +26,14 @@ const NESTED_SCOPES: Record<string, true> = {
 
 export interface OutVariableInliningOptions {
   /**
-   * Only inline when the inlined declaration keeps the variable's scope and type: the next
-   * statement is an expression, declaration, `return` or `if` (condition only) statement, the
-   * argument is not inside a nested lambda/local function/query/block, nothing but whitespace
-   * separates the two statements, and the declared type is kept (`out int x`, never `out var x`).
+   * Only inline when the inlined declaration keeps the variable's scope: the next statement is an
+   * expression, declaration, `return` or `if` (condition only) statement, the argument is not
+   * inside a nested lambda/local function/query/block, and nothing but whitespace separates the
+   * two statements.
    */
-  readonly preserveScopeAndType?: boolean;
+  readonly preserveScope?: boolean;
+  /** Write the declared type (`out int x`) instead of `out var x`. */
+  readonly keepDeclaredType?: boolean;
 }
 
 /**
@@ -55,7 +57,7 @@ export function inlineOutVariableDeclarations(source: string, options: OutVariab
     const edits: TextEdit[] = [];
 
     for (const block of findAll(tree.rootNode, 'block')) {
-      collectBlockEdits(source, block, edits, options.preserveScopeAndType === true);
+      collectBlockEdits(source, block, edits, options);
     }
 
     return applyEdits(source, edits);
@@ -64,7 +66,7 @@ export function inlineOutVariableDeclarations(source: string, options: OutVariab
   }
 }
 
-function collectBlockEdits(source: string, block: Node, edits: TextEdit[], preserveScopeAndType: boolean): void {
+function collectBlockEdits(source: string, block: Node, edits: TextEdit[], options: OutVariableInliningOptions): void {
   const statements = blockStatements(block);
 
   for (let i = 0; i < statements.length - 1; i++) {
@@ -84,7 +86,7 @@ function collectBlockEdits(source: string, block: Node, edits: TextEdit[], prese
     }
 
     if (
-      preserveScopeAndType &&
+      options.preserveScope === true &&
       (declaration.hasModifiers ||
         source.slice(statements[i].endIndex, next.startIndex).trim() !== '' ||
         !keepsScope(next, outArgument.expression))
@@ -96,7 +98,7 @@ function collectBlockEdits(source: string, block: Node, edits: TextEdit[], prese
     edits.push({
       start: outArgument.expression.startIndex,
       end: outArgument.expression.endIndex,
-      text: `${preserveScopeAndType ? declaration.type : 'var'} ${declaration.name}`,
+      text: `${options.keepDeclaredType === true ? declaration.type : 'var'} ${declaration.name}`,
     });
 
     // The merged statement is no longer a declaration, so the following pair starts after it.
