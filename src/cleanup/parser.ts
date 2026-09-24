@@ -1,3 +1,4 @@
+import { memoizeBySource } from './sourceCache';
 import { Node, Tree } from './syntax/node';
 import { parseCSharpSource } from './syntax/parser';
 
@@ -8,26 +9,41 @@ import { parseCSharpSource } from './syntax/parser';
 
 export { Node, Tree };
 
-export function parseCSharp(source: string): Tree {
-  return parseCSharpSource(source);
-}
+/**
+ * The syntax tree of `source`. Trees are shared: the same text returns the same tree, so callers
+ * must not modify it (see `sourceCache.ts`).
+ */
+export const parseCSharp: (source: string) => Tree = memoizeBySource(parseCSharpSource);
 
-/** Depth-first walk over every named node of the tree. */
-export function* walk(node: Node): Generator<Node> {
-  yield node;
-
-  for (const child of node.namedChildren) {
-    yield* walk(child);
+/** Every named node of the tree under `node` (included), depth first, parents before children. */
+export function walk(node: Node): Node[] {
+  const nodes: Node[] = [];
+  const pending: Node[] = [node];
+  while (pending.length > 0) {
+    const current = pending.pop() as Node;
+    nodes.push(current);
+    const children = current.namedChildren;
+    for (let i = children.length - 1; i >= 0; i--) {
+      pending.push(children[i]);
+    }
   }
+
+  return nodes;
 }
 
 export function findAll(root: Node, type: string | readonly string[]): Node[] {
   const types = typeof type === 'string' ? [type] : type;
   const matches: Node[] = [];
+  const pending: Node[] = [root];
+  while (pending.length > 0) {
+    const current = pending.pop() as Node;
+    if (types.includes(current.type)) {
+      matches.push(current);
+    }
 
-  for (const node of walk(root)) {
-    if (types.includes(node.type)) {
-      matches.push(node);
+    const children = current.namedChildren;
+    for (let i = children.length - 1; i >= 0; i--) {
+      pending.push(children[i]);
     }
   }
 

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { memoizeBySource } from './sourceCache';
 
 export type EditorConfigSeverity = 'none' | 'silent' | 'suggestion' | 'warning' | 'error';
 
@@ -196,7 +197,13 @@ const sectionPattern = /^\s*\[((?:[^#;]|\\#|\\;)+)\]\s*(?:[#;].*)?$/;
 const propertyPattern = /^\s*([\w.\-]+)\s*[=:]\s*(.*?)\s*(?:[#;].*)?$/;
 const commentPattern = /^\s*[#;]/;
 
-function parseEditorConfig(text: string): ParsedEditorConfig {
+/**
+ * The sections of one `.editorconfig` text, with their compiled globs. The files are read for every
+ * cleaned file (so edits apply at once), but the same text is parsed only once.
+ */
+const parseEditorConfig: (text: string) => ParsedEditorConfig = memoizeBySource(parseEditorConfigText, 16);
+
+function parseEditorConfigText(text: string): ParsedEditorConfig {
   const sections: ParsedSection[] = [];
   let isRoot = false;
   let current: ParsedSection | undefined;

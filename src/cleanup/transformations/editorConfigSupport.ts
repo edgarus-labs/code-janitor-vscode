@@ -7,6 +7,7 @@ import {
 } from '../editorconfig';
 import { STRING } from '../csharpScanner';
 import { Node, parseCSharp, walk } from '../parser';
+import { memoizeBySource } from '../sourceCache';
 
 /** Receives one message per rule violation that cleanup found but could not fix safely. */
 export type EditorConfigIssueReporter = (issue: string) => void;
@@ -126,11 +127,10 @@ export function lineIndentAt(source: string, index: number): string {
 
 /** One-based line number of `index`. */
 export function lineNumberAt(source: string, index: number): number {
+  const end = Math.min(index, source.length);
   let line = 1;
-  for (let i = 0; i < index && i < source.length; i++) {
-    if (source[i] === '\n') {
-      line++;
-    }
+  for (let newline = source.indexOf('\n'); newline >= 0 && newline < end; newline = source.indexOf('\n', newline + 1)) {
+    line++;
   }
 
   return line;
@@ -193,22 +193,16 @@ export function hasParseErrors(node: Node): boolean {
  * Number of places where the parser recovered from syntax it does not understand. A rewrite whose
  * result has more of them than its input is discarded: it may have broken the code.
  */
-export function parseErrorCount(source: string): number {
-  const tree = parseCSharp(source);
-
-  try {
-    let count = 0;
-    for (const node of walk(tree.rootNode)) {
-      if (isRecoveredNode(node)) {
-        count++;
-      }
+export const parseErrorCount: (source: string) => number = memoizeBySource((source) => {
+  let count = 0;
+  for (const node of walk(parseCSharp(source).rootNode)) {
+    if (isRecoveredNode(node)) {
+      count++;
     }
-
-    return count;
-  } finally {
-    tree.delete();
   }
-}
+
+  return count;
+});
 
 export function isRecoveredNode(node: Node): boolean {
   if (node.type === 'incomplete_declaration') {

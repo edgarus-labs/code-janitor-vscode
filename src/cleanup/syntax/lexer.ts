@@ -7,6 +7,8 @@
  * identifiers get grammar names (`identifier`, `string_literal`, `null_literal`).
  */
 
+import { memoizeBySource } from '../sourceCache';
+
 export interface Token {
   readonly type: string;
   readonly start: number;
@@ -67,7 +69,10 @@ const PREPROC_NAMES = new Set([
   'line', 'error', 'warning',
 ]);
 
-export function lex(source: string): LexResult {
+/** The tokens and trivia of `source`. Shared for the same text: callers must not modify them. */
+export const lex: (source: string) => LexResult = memoizeBySource(lexSource);
+
+function lexSource(source: string): LexResult {
   const tokens: Token[] = [];
   const trivia: Token[] = [];
   const length = source.length;

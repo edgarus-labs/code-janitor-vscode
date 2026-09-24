@@ -1,4 +1,5 @@
 import { parseCSharp } from '../parser';
+import { memoizeBySource } from '../sourceCache';
 import { lex } from '../syntax/lexer';
 import { Node } from '../syntax/node';
 import { NamingAccessibility, NamingModifier, NamingSymbolKind, NamingSymbolTraits } from './namingRules';
@@ -198,13 +199,14 @@ const TYPE_ROLE: OccurrenceRole = { kind: 'type' };
 const SKIP_ROLE: OccurrenceRole = { kind: 'skip' };
 const UNKNOWN_ROLE: OccurrenceRole = { kind: 'unknown' };
 
-export function buildSourceModel(source: string): SourceModel {
+/** The model of `source`. Shared for the same text (see `sourceCache.ts`): callers must not modify it. */
+export const buildSourceModel: (source: string) => SourceModel = memoizeBySource((source) => {
   const root = parseCSharp(source).rootNode;
   const builder = new ModelBuilder(source);
   builder.visit(root);
 
   return builder.finish(root);
-}
+});
 
 /** Identifier text without the verbatim `@`. */
 export function identifierName(text: string): string {
