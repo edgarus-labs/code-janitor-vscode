@@ -98,6 +98,10 @@ export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
       cfg.get<string>('cleanup.fileHeaderUpdateMode', base.fileHeaderUpdateMode === HeaderUpdateMode.Replace ? 'replace' : 'insert') === 'replace'
         ? HeaderUpdateMode.Replace
         : HeaderUpdateMode.Insert,
+
+    applyEditorConfigNaming: cfg.get('cleanup.applyEditorConfigNaming', base.applyEditorConfigNaming),
+    applyEditorConfigCodeStyle: cfg.get('cleanup.applyEditorConfigCodeStyle', base.applyEditorConfigCodeStyle),
+    applyEditorConfigFormatting: cfg.get('cleanup.applyEditorConfigFormatting', base.applyEditorConfigFormatting),
   };
 }
 

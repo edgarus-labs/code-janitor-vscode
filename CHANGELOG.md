@@ -48,7 +48,31 @@ First release of the Visual Studio Code port.
 - **`CodeJanitor: Open Settings`** - a settings panel showing every setting on one grouped page,
   with a User/Workspace scope switch, modified markers and a reset button. The form is generated
   from the extension manifest.
-- **`.editorconfig` support** for indentation, trailing whitespace, final newline and using order.
+- **`.editorconfig` support** for indentation, trailing whitespace, final newline and using order,
+  resolved as the EditorConfig specification defines: nested files up to `root = true`, section
+  globs with `*`, `**`, `?`, `[...]`, `{a,b}` and `{n..m}` (relative to the `.editorconfig`
+  directory when they contain `/`), later sections and nearer files winning, and `unset`.
+- **`.editorconfig` code style and formatting for C#** (settings
+  `codeJanitor.cleanup.applyEditorConfigCodeStyle` and `codeJanitor.cleanup.applyEditorConfigFormatting`,
+  also `.codejanitor` keys, both off by default): cleanup rewrites code to follow the
+  `.editorconfig` rules - namespace declarations, accessibility modifiers, `var`, braces, `this.`
+  qualification, using placement, file header template, readonly fields, inlined `out` variables,
+  simple `using` statements, indentation style, line endings, final newline, trailing whitespace,
+  charset, brace and keyword new lines, spacing and using order. Code-style rules apply only when
+  their severity is `suggestion`, `warning` or `error`; C# formatting options only while `IDE0055`
+  is. They run after the other cleanup steps, change code only when the result is certain from the
+  syntax, and list the violations they could not fix in the Code Janitor output channel and the
+  cleanup summary. See the README for the supported options.
+- **`.editorconfig` naming rules for C#** (setting `codeJanitor.cleanup.applyEditorConfigNaming`,
+  also a `.codejanitor` key, off by default): cleanup renames symbols that violate the
+  `dotnet_naming_rule`/`dotnet_naming_symbols`/`dotnet_naming_style` rules whose severity is
+  `suggestion`, `warning` or `error`, choosing the same name as the Visual Studio naming fix and
+  following Roslyn's rule ordering. It runs before the other `.editorconfig` categories and renames
+  only what the file fully contains: private members, locals, local functions, lambda parameters,
+  parameters of private methods and constructors (with their named arguments and XML
+  documentation) and type parameters. Public symbols, members of partial types and names whose
+  references cannot be resolved from the syntax are listed in the Code Janitor output channel and
+  the cleanup summary instead.
 - Optional layout-only cleanup for files that are not C#.
 - **Explorer context menu**: a `Code Janitor` submenu holding every batch action for a file, a
   folder (recursively) or a multi-selection - `Cleanup Selected Files`, generating and removing XML
@@ -81,6 +105,8 @@ First release of the Visual Studio Code port.
   `!= null` inside a lambda that may be compiled to an expression tree (e.g. an EF Core
   `IQueryable<T>.Where(x => x.Foo != null)`), which used to produce code that fails to compile
   (CS8122: an expression tree may not contain an `is` pattern-matching operator).
+- Explicit access modifiers: types nested in an interface get `public` (their default) instead of
+  `private`, and C# 11 file-local types (`file class C`) no longer get `internal` added.
 - `CodeJanitor: Cleanup Active File` now cleans a brand-new, unsaved C# file: file-type detection
   used to look only at the `.cs` extension, which an untitled document does not have yet, and
   silently skipped it even though its language mode was C#.

@@ -62,7 +62,7 @@ export function createExplicitAccessModifierConverter(settings: AccessSettings):
 }
 
 function accessModifierFor(node: Node, settings: AccessSettings): string | undefined {
-  if (hasAnyModifier(node, ACCESS_MODIFIERS)) {
+  if (hasAnyModifier(node, ACCESS_MODIFIERS) || isFileLocalType(node)) {
     return undefined;
   }
 
@@ -211,6 +211,27 @@ function isInNonInterfaceType(node: Node): boolean {
   return owner !== undefined && owner.type !== 'interface_declaration';
 }
 
+/** Nested types default to `private`, except in interfaces where every member is `public`. */
 function defaultAccessFor(node: Node): string {
-  return declaringType(node) !== undefined ? 'private' : 'internal';
+  const owner = declaringType(node);
+  if (!owner) {
+    return 'internal';
+  }
+
+  return owner.type === 'interface_declaration' ? 'public' : 'private';
+}
+
+/**
+ * `file class C` (C# 11) has no access modifier and must not get one. The parser does not know the
+ * `file` modifier and leaves it behind as an unterminated field declaration in front of the type.
+ */
+function isFileLocalType(node: Node): boolean {
+  const previous = node.previousNamedSibling;
+
+  return (
+    TYPE_DECLARATIONS.has(node.type) &&
+    previous?.type === 'field_declaration' &&
+    /^file\b/.test(previous.text) &&
+    !previous.text.trimEnd().endsWith(';')
+  );
 }

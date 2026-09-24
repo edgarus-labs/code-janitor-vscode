@@ -70,20 +70,36 @@ async function runBatch(
 export async function runCleanupOnUris(
   _context: vscode.ExtensionContext,
   uris: vscode.Uri[]
-): Promise<{ changed: number; failed: number }> {
+): Promise<{ changed: number; failed: number; unresolved: number }> {
   const targets = uris.filter(isSupportedFile);
   const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
+  let unresolved = 0;
+  const report = (issue: string): void => {
+    unresolved++;
+    logEditorConfigIssue(issue);
+  };
 
-  return runBatch(
+  const outcome = await runBatch(
     targets,
     (content, uri, disqualifiedTypeNames) =>
       isCSharp(uri)
-        ? runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames)
+        ? runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames, report)
         : runLayoutCleanup(content, uri.fsPath, settings),
     'Cleanup',
     'Code Janitor: no files to clean up.',
     true
   );
+
+  if (unresolved > 0) {
+    logInfo(`Cleanup: ${unresolved} .editorconfig rule violation(s) were not fixed.`);
+  }
+
+  return { ...outcome, unresolved };
+}
+
+/** Logs one `.editorconfig` rule violation that cleanup found but could not fix safely. */
+export function logEditorConfigIssue(issue: string): void {
+  logInfo(`.editorconfig rule not fixed: ${issue}`);
 }
 
 /** Removes XML documentation comments from every given C# file - never uses AI. */
@@ -173,12 +189,15 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
       }
 
       for (const newFile of plan.newFiles) {
-        const cleaned = runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames);
+        const cleaned = runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames, logEditorConfigIssue);
         await vscode.workspace.fs.writeFile(vscode.Uri.file(newFile.filePath), Buffer.from(cleaned, 'utf8'));
         createdFiles++;
       }
 
-      await writeFileContent(file, runCleanup(plan.updatedSource, file.uri.fsPath, settings, disqualifiedTypeNames));
+      await writeFileContent(
+        file,
+        runCleanup(plan.updatedSource, file.uri.fsPath, settings, disqualifiedTypeNames, logEditorConfigIssue)
+      );
       changedOriginals++;
     } catch (err) {
       failed++;

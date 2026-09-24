@@ -1,5 +1,6 @@
+import * as path from 'node:path';
 import { EditorConfigCSharpOptions } from './types';
-import { loadCSharpOptions } from './editorconfig';
+import { EditorConfigProperties, loadCSharpOptions, loadEditorConfigProperties } from './editorconfig';
 import { SourceTransformationPipeline, delegateTransformation } from './pipeline';
 import { CleanupSettings, SourceTransformation } from './types';
 import { updateAccessorsToBothBeSingleLineOrMultiLineConverter } from './transformations/accessorFormat';
@@ -48,6 +49,19 @@ import {
 } from './transformations/text';
 import { usingDirectiveOrganizer } from './transformations/usingDirectiveOrganizer';
 import { varWhenApparentConverter } from './transformations/varWhenApparent';
+import { createEditorConfigNamingConverter } from './transformations/editorConfigNaming';
+import { createEditorConfigCodeStyleConverter } from './transformations/editorConfigCodeStyle';
+import { createEditorConfigFormattingConverter } from './transformations/editorConfigFormatting';
+import { EditorConfigIssueReporter } from './transformations/editorConfigSupport';
+
+/** The `.editorconfig` properties of the file being cleaned, for the `.editorconfig`-driven categories. */
+export interface EditorConfigRules {
+  readonly properties: EditorConfigProperties;
+  /** Receives each violation a category found but could not fix safely. */
+  readonly report: EditorConfigIssueReporter;
+  /** File name (with extension) of the file being cleaned. */
+  readonly fileName?: string;
+}
 
 /**
  * Builds and runs the cleanup pipeline for a single C# file, mirroring the converter set, the
@@ -57,32 +71,55 @@ export function runCleanup(
   source: string,
   filePath: string,
   settings: CleanupSettings,
-  externalDisqualifiedTypeNames?: ReadonlySet<string>
+  externalDisqualifiedTypeNames?: ReadonlySet<string>,
+  report?: EditorConfigIssueReporter
 ): string {
   if (!source) {
     return source;
   }
 
-  return getCleanupPipeline(source, filePath, settings, externalDisqualifiedTypeNames).run(source);
+  return getCleanupPipeline(source, filePath, settings, externalDisqualifiedTypeNames, report).run(source);
 }
 
+/**
+ * `report` receives the violations the `.editorconfig` categories could not fix, each prefixed
+ * with `filePath`.
+ */
 export function getCleanupPipeline(
   source: string,
   filePath: string,
   settings: CleanupSettings,
-  externalDisqualifiedTypeNames?: ReadonlySet<string>
+  externalDisqualifiedTypeNames?: ReadonlySet<string>,
+  report?: EditorConfigIssueReporter
 ): SourceTransformationPipeline {
   const editorConfig = loadCSharpOptions(filePath);
+  const usesEditorConfigRules =
+    settings.applyEditorConfigNaming || settings.applyEditorConfigCodeStyle || settings.applyEditorConfigFormatting;
+  const rules: EditorConfigRules | undefined = usesEditorConfigRules
+    ? {
+        properties: loadEditorConfigProperties(filePath),
+        report: (issue) => report?.(`${filePath}: ${issue}`),
+        fileName: filePath ? path.basename(filePath) : undefined,
+      }
+    : undefined;
 
-  return buildPipeline(source, settings, editorConfig, externalDisqualifiedTypeNames);
+  return buildPipeline(source, settings, editorConfig, externalDisqualifiedTypeNames, rules);
 }
 
 export function buildPipeline(
   source: string,
   settings: CleanupSettings,
   editorConfig: EditorConfigCSharpOptions,
-  externalDisqualifiedTypeNames?: ReadonlySet<string>
+  externalDisqualifiedTypeNames?: ReadonlySet<string>,
+  rules?: EditorConfigRules
 ): SourceTransformationPipeline {
+  // `.editorconfig` is the source of truth: with `charset = utf-8-bom` a byte order mark the file
+  // had is restored after the other steps (which need it removed to parse the code).
+  const restoreByteOrderMark =
+    settings.applyEditorConfigFormatting &&
+    source.startsWith('\uFEFF') &&
+    rules?.properties.get('charset')?.toLowerCase() === 'utf-8-bom';
+
   const transformations: (SourceTransformation | undefined)[] = [
     settings.removeRegions ? regionDirectiveRemover : undefined,
     settings.removeByteOrderMark ? byteOrderMarkConverter : undefined,
@@ -146,6 +183,22 @@ export function buildPipeline(
       : undefined,
     settings.removeMultipleConsecutiveBlankLines ? normalizeBlankLinesConverter : undefined,
     editorConfig.insertFinalNewline !== false ? ensureFinalNewlineConverter : undefined,
+    // The `.editorconfig` categories run after every other step, in this order: naming, code
+    // style, formatting (last, so it formats code the other categories created).
+    settings.applyEditorConfigNaming && rules
+      ? createEditorConfigNamingConverter(rules.properties, rules.report)
+      : undefined,
+    settings.applyEditorConfigCodeStyle && rules
+      ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, { fileName: rules.fileName })
+      : undefined,
+    settings.applyEditorConfigFormatting && rules
+      ? createEditorConfigFormattingConverter(rules.properties, rules.report)
+      : undefined,
+    restoreByteOrderMark
+      ? delegateTransformation('Keep byte order mark (charset = utf-8-bom)', (text) =>
+          text.startsWith('\uFEFF') ? text : `\uFEFF${text}`
+        )
+      : undefined,
   ];
 
   return new SourceTransformationPipeline(transformations);

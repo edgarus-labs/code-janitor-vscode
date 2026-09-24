@@ -20,6 +20,8 @@ views, member reorganization and third-party IDE integrations are outside this p
 - `src/cleanup/`: cleanup settings, ordered transformations, lexical scanning and EditorConfig support.
 - `src/cleanup/syntax/`: C# tokenizer, syntax node model and recursive-descent parser.
 - `src/cleanup/transformations/`: cleanup rules expressed as source-text edits.
+- `src/cleanup/naming/`: `.editorconfig` naming rules - Roslyn naming style/rule ports, the
+  syntactic symbol and scope model, and the safe in-file renamer.
 - `src/ai/`: GitHub Copilot and custom endpoint clients.
 - `src/commands/`: commands, settings integration and cleanup-on-save.
 - `src/extension.ts`: extension activation.
@@ -30,6 +32,40 @@ The parser supports the transformations implemented here; it is not a replacemen
 compiler or semantic model. Text edits preserve surrounding source formatting. When changing a
 transformation, test comments, literals, preprocessor directives and line endings as well as the
 intended syntax. Document intentional differences from the Visual Studio implementation.
+
+### `.editorconfig`-driven categories
+
+`src/cleanup/editorconfig.ts` resolves the `.editorconfig` properties of a file and the effective
+severity of a diagnostic. The naming, code-style and formatting categories run at the end of
+`buildPipeline` (`runCleanup.ts`), in that order, after every other step, and only when their
+setting is on:
+
+- `transformations/editorConfigNaming.ts`: IDE1006. `naming/namingRules.ts` parses and orders
+  the rules (Roslyn `EditorConfigNamingStyleParser`), `naming/namingStyle.ts` checks names and
+  derives the fixed name (Roslyn `NamingStyle`), `naming/sourceModel.ts` collects declarations,
+  scopes and every identifier occurrence with its role, and `naming/renamer.ts` plans a rename
+  that is refused unless every occurrence in the symbol's scope is understood. Violations are
+  fixed in passes over the re-parsed text until none can be fixed; the rest are reported.
+- `transformations/editorConfigCodeStyle.ts`: code-style rules in a fixed order, reusing the
+  existing converters (file-scoped namespaces, explicit access modifiers, readonly fields, `out`
+  variable inlining, using placement). Rule modules: `editorConfigQualification.ts` (`this.`),
+  `editorConfigVarPreference.ts` (`var`), `editorConfigBraces.ts` (braces).
+- `transformations/editorConfigFormatting.ts`: core EditorConfig properties, and the C# formatting
+  options gated on IDE0055.
+- `transformations/editorConfigSupport.ts`: option/severity reading, indentation and line helpers,
+  and parse-error detection shared by the rules.
+
+Differences from the Visual Studio implementation, which applies Roslyn's code fixes: rules are
+implemented natively on the syntax tree, a subset of options is supported (see the README), and a
+rewrite happens only when it is certain from syntax. Otherwise the violation is passed to the
+pipeline's reporter, which logs it to the output channel and counts it in the cleanup summary.
+Members the parser only partially understood (`hasParseErrors`) are skipped, and a rule whose result
+parses worse than its input is discarded. Reported line numbers refer to the text at that point of
+the cleanup, after earlier steps.
+
+The Visual Studio naming fix renames a symbol across the solution; here a symbol is renamed only
+when all its references are in the file and each one is identified from the syntax (so types,
+non-private members and members of partial types are always reported, never renamed).
 
 ## Local development
 

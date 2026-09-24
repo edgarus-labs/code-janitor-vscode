@@ -385,7 +385,7 @@ describe('cleanup path filters', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Form.Designer.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
     expect(state.files.get('/w/Form.Designer.cs')).toBe(UNCLEAN);
   });
 });
@@ -413,7 +413,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.cs')]);
 
-    expect(result).toEqual({ changed: 1, failed: 0 });
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0 });
     expect(state.files.get('/w/a.cs')).not.toContain('   \n');
   });
 
@@ -432,7 +432,7 @@ describe('runCleanupOnUris', () => {
   it('reports nothing to do when every file is filtered out', async () => {
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.md')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
     expect(state.informationMessages).toContain('Code Janitor: no files to clean up.');
   });
 
@@ -451,13 +451,13 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
   });
 
   it('skips files that cannot be read', async () => {
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/missing.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
   });
 
   it('leaves a base class unsealed when its only subclass lives in a same-directory sibling file outside the batch', async () => {
@@ -467,7 +467,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
     expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
   });
 
@@ -479,7 +479,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
     expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
   });
 
@@ -490,7 +490,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Widget.cs')]);
 
-    expect(result).toEqual({ changed: 1, failed: 0 });
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0 });
     expect(state.files.get('/w/Widget.cs')).toBe('internal sealed class Widget\n{\n}\n');
   });
 });
@@ -538,6 +538,31 @@ describe('cleanup commands', () => {
     await run('codeJanitor.cleanupActiveFile');
 
     expect(document.getText()).not.toContain('   \n');
+  });
+
+  it('applies .editorconfig code style and warns about violations it could not fix', async () => {
+    const root = fs.mkdtempSync(path.join(process.env.TEMP ?? process.cwd(), 'codejanitor-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, '.editorconfig'),
+        'root = true\n\n[*.cs]\ncsharp_style_var_elsewhere = true:warning\ncsharp_prefer_braces = true:warning\n'
+      );
+      state.configuration.set('codeJanitor.cleanup.applyEditorConfigCodeStyle', true);
+      const source = 'internal class A\n{\n    private void M(bool b)\n    {\n        Widget w = Create();\n        if (b) return;\n    }\n}\n';
+      const document = new TextDocument(Uri.file(path.join(root, 'A.cs')), source, 'csharp');
+      state.documents.push(document);
+      window.activeTextEditor = new TextEditor(document);
+      registerCleanupCommands(createContext());
+
+      await run('codeJanitor.cleanupActiveFile');
+
+      expect(document.getText()).toContain('        if (b)\n        {\n            return;\n        }\n');
+      expect(state.warningMessages).toEqual([
+        'Code Janitor: cleanup complete - 1 file(s) changed, 1 .editorconfig rule violation(s) not fixed (see the Code Janitor output).',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('does not propose sealing a class in the preview when a same-directory sibling subclasses it', async () => {

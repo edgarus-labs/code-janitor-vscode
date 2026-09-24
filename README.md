@@ -78,6 +78,89 @@ Settings** and using **Export .codejanitor** or **Import .codejanitor**. Export 
 cleanup configuration to the repository root; import copies the repository values into VS Code's
 workspace settings so they can be reviewed or adjusted in the settings panel.
 
+## .editorconfig rules (C#)
+
+Code Janitor can make `.editorconfig` the source of truth for C# code: the rules your team sets
+there are applied to the code during cleanup. Each category is off by default and has its own
+setting (and `.codejanitor` key of the same name):
+
+| Setting | `.codejanitor` key | Applies |
+| --- | --- | --- |
+| `codeJanitor.cleanup.applyEditorConfigNaming` | `applyEditorConfigNaming` | Naming rules (renames symbols) |
+| `codeJanitor.cleanup.applyEditorConfigCodeStyle` | `applyEditorConfigCodeStyle` | C# code-style preferences |
+| `codeJanitor.cleanup.applyEditorConfigFormatting` | `applyEditorConfigFormatting` | EditorConfig and C# formatting options |
+
+These categories run after every other cleanup step (naming first, formatting last), for every cleanup command
+and for cleanup on save. Rules come from every `.editorconfig` that applies to the file, including
+nested files, section globs and `root = true`.
+
+- **Severity.** A code-style rule is applied only when its diagnostic is `suggestion`, `warning` or
+  `error` - set with `option = value:severity`, a naming rule's `severity`,
+  `dotnet_diagnostic.<ID>.severity`, `dotnet_analyzer_diagnostic.category-Style.severity` or
+  `dotnet_analyzer_diagnostic.severity`. `silent`, `none` and rules without a severity are left alone.
+- **Safety.** There is no compiler or semantic model involved, so code is rewritten only where the
+  result is certain from the syntax. Violations that cannot be fixed safely are left unchanged and
+  listed in the **Code Janitor** output channel; batch cleanup counts them in its summary and
+  finishes with a warning. String literals and comment text are never changed.
+
+Supported code-style options:
+
+| Option | Diagnostic | Behavior |
+| --- | --- | --- |
+| `csharp_style_namespace_declarations` | IDE0160, IDE0161 | Converts the file's only namespace to file-scoped or block-scoped. |
+| `dotnet_style_require_accessibility_modifiers` | IDE0040 | `always`/`for_non_interface_members` add the default modifier, `omit_if_default` removes it. Partial types and (for `always`) interface members are reported. |
+| `csharp_style_var_for_built_in_types`, `csharp_style_var_when_type_is_apparent`, `csharp_style_var_elsewhere` | IDE0007, IDE0008 | Local declarations only. The type must follow from the initializer (literal, `new T()`, `(T)x`, `x as T`, `default(T)`, `new T[n]`); other declarations are reported. |
+| `csharp_prefer_braces` | IDE0011 | `true` and `when_multiline` add braces; `false` never removes them. |
+| `dotnet_style_qualification_for_field`, `_property`, `_method`, `_event` | IDE0003, IDE0009 | Adds or removes `this.` for members declared in the same type in the file, unless a local, parameter or type parameter of the same name exists in the member. `this.` on other members is reported. |
+| `csharp_using_directive_placement` | IDE0065 | `outside_namespace` moves usings whose name starts with `global::`, `System`, `Microsoft` or the namespace's first segment; other usings, and `inside_namespace`, are reported. |
+| `csharp_style_inlined_variable_declaration` | IDE0018 | Inlines `T x;` into the following `out x` as `out T x` when the variable keeps its scope. |
+| `file_header_template` | IDE0073 | Inserts or replaces the leading `//` header; `{fileName}` is supported. |
+| `dotnet_style_readonly_field` | IDE0044 | Adds `readonly` to private fields assigned only in constructors. |
+| `csharp_prefer_simple_using_statement` | IDE0063 | Converts a `using (...) { }` that ends its block. |
+
+Formatting: `indent_style` (with `tab_width`/`indent_size`), `end_of_line`, `insert_final_newline`,
+`trim_trailing_whitespace` and `charset` (`utf-8` removes a byte order mark, `utf-8-bom` keeps
+one) always apply. As in Visual Studio, the C# formatting options have no severity of their own
+and apply only while `IDE0055` is `suggestion`, `warning` or `error`:
+`csharp_new_line_before_open_brace`, `csharp_new_line_before_else`, `csharp_new_line_before_catch`,
+`csharp_new_line_before_finally`, `csharp_space_after_cast`,
+`csharp_space_after_keywords_in_control_flow_statements`, `dotnet_sort_system_directives_first`
+and `dotnet_separate_import_directive_groups`.
+
+Not supported: `csharp_style_pattern_matching_over_as_with_null_check` (IDE0019),
+`dotnet_style_prefer_is_null_check_over_reference_equality_method` (IDE0041),
+`csharp_indent_case_contents`, `csharp_indent_switch_labels`, re-indenting code to a different
+`indent_size`, moving usings into a namespace, adding a byte order mark, renaming symbols other
+files may reference, and other code-style and formatting options. Unlike the Visual Studio
+extension, fixes from third-party analyzers are not applied.
+
+### Naming rules
+
+`dotnet_naming_rule`, `dotnet_naming_symbols` and `dotnet_naming_style` entries (IDE1006) are
+read as Roslyn reads them: all symbol kinds (including `local_function`, `type_parameter` and
+`*`), accessibilities (including `local`, `private_protected` and `protected_internal`),
+`required_modifiers` (`abstract`, `async`, `const`, `readonly`, `static`), the five
+capitalizations, `required_prefix`, `required_suffix` and `word_separator`. Rules are ordered by
+specificity (modifiers, then accessibilities, then symbol kinds), then by name, and the first rule
+matching a symbol decides, even when the name already complies with it. The new name is the one
+the Visual Studio naming fix proposes (so `m_count` and `count` become `_count` under a
+`_camelCase` style).
+
+Renames are made only when every reference is in the same file and can be identified from the
+syntax: private members (explicitly or by default) of non-partial types, locals, local functions,
+parameters of lambdas, local functions and private methods or constructors (including named
+arguments and `<param>`/`<paramref>` documentation), and type parameters. References through
+`this.`, the type name, `nameof`, interpolated strings, `<see cref>` and parameters or locals
+declared with the containing type are updated; strings and comments are not. Everything else is
+reported instead of renamed, for example:
+
+- types, namespaces and non-private members or their parameters, which other files may use;
+- members of partial types, overrides, explicit interface implementations and `extern` members;
+- a new name that is already used where it would change what another reference means;
+- a member read through an expression whose type is not evident (`GetOther().field`);
+- names used in `switch` sections, switch expressions, patterns, deconstruction or code the
+  cleanup parser cannot fully structure, and variables declared inside expressions (`out var`).
+
 ## AI features (optional)
 
 Generating XML documentation, explaining code, reviewing it, refactoring it, generating unit

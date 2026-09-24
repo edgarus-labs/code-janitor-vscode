@@ -4,6 +4,7 @@ import {
   expandToCSharpFiles,
   expandToCleanableFiles,
   isSupportedFile,
+  logEditorConfigIssue,
   runCleanupOnUris,
   runFixNamespaceOnUris,
   runFormatCommentsOnUris,
@@ -279,7 +280,7 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
 
 async function runWithProgress(
   title: string,
-  action: () => Promise<{ changed: number; failed: number }>,
+  action: () => Promise<{ changed: number; failed: number; unresolved?: number }>,
   doneLabel = 'cleanup complete'
 ): Promise<void> {
   const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, action);
@@ -287,6 +288,13 @@ async function runWithProgress(
   const parts = [`${result.changed} file(s) changed`];
   if (result.failed > 0) {
     parts.push(`${result.failed} failed`);
+  }
+
+  if (result.unresolved) {
+    parts.push(`${result.unresolved} .editorconfig rule violation(s) not fixed (see the Code Janitor output)`);
+    void vscode.window.showWarningMessage(`Code Janitor: ${doneLabel} - ${parts.join(', ')}.`);
+
+    return;
   }
 
   void vscode.window.showInformationMessage(`Code Janitor: ${doneLabel} - ${parts.join(', ')}.`);
@@ -304,11 +312,19 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   const root = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
   const settings = readCleanupSettings(root);
   const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
-  const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings, disqualifiedTypeNames);
+  let unresolved = 0;
+  const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings, disqualifiedTypeNames, (issue) => {
+    unresolved++;
+    logEditorConfigIssue(issue);
+  });
 
   const preview = pipeline.preview(content);
   if (!preview.hasChanges) {
-    void vscode.window.showInformationMessage('Code Janitor: file is already clean (no changes).');
+    void (unresolved > 0
+      ? vscode.window.showWarningMessage(
+          `Code Janitor: no changes, but ${unresolved} .editorconfig rule violation(s) could not be fixed (see the Code Janitor output).`
+        )
+      : vscode.window.showInformationMessage('Code Janitor: file is already clean (no changes).'));
 
     return;
   }
@@ -322,7 +338,7 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   logInfo(
     `Preview cleanup for ${document.fileName}: ${changedSteps.length} rule(s) would make changes (${changedSteps.join(
       ', '
-    )}).`
+    )})${unresolved > 0 ? `; ${unresolved} .editorconfig rule violation(s) could not be fixed` : ''}.`
   );
 
   const fileName = document.fileName.split(/[\\/]/).pop() ?? 'file';

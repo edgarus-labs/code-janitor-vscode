@@ -113,6 +113,11 @@ export interface CleanupSettings {
   fileHeaderCSharp: string;
   fileHeaderPosition: HeaderPosition;
   fileHeaderUpdateMode: HeaderUpdateMode;
+
+  /** `.editorconfig`-driven C# cleanup categories; they run after every other cleanup step. */
+  applyEditorConfigNaming: boolean;
+  applyEditorConfigCodeStyle: boolean;
+  applyEditorConfigFormatting: boolean;
 }
 
 /** Defaults mirroring `Settings.settings` of the source extension. */
@@ -197,5 +202,9 @@ export function createDefaultSettings(): CleanupSettings {
     fileHeaderCSharp: '',
     fileHeaderPosition: HeaderPosition.DocumentStart,
     fileHeaderUpdateMode: HeaderUpdateMode.Insert,
+
+    applyEditorConfigNaming: false,
+    applyEditorConfigCodeStyle: false,
+    applyEditorConfigFormatting: false,
   };
 }

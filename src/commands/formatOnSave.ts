@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { runCleanup } from '../cleanup/runCleanup';
-import { discoverDisqualifiedTypeNamesForFile, isPathCleanable } from './cleanupCore';
+import { discoverDisqualifiedTypeNamesForFile, isPathCleanable, logEditorConfigIssue } from './cleanupCore';
 import { readCleanupSettings } from './settings';
 
 /**
@@ -36,7 +36,8 @@ async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscod
       content,
       document.uri.fsPath,
       readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath),
-      disqualifiedTypeNames
+      disqualifiedTypeNames,
+      logEditorConfigIssue
     );
     if (output === content) {
       return [];
