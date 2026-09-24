@@ -63,7 +63,12 @@ First release of the Visual Studio Code port.
   `.editorconfig` rules - namespace declarations, accessibility modifiers, `var`, braces, `this.`
   qualification, using placement, file header template, readonly fields, inlined `out` variables,
   simple `using` statements, indentation style, line endings, final newline, trailing whitespace,
-  charset, brace and keyword new lines, spacing and using order. Code-style rules apply only when
+  charset, brace and keyword new lines, spacing and using order; also target-typed `new()`
+  (IDE0090), `default` literals (IDE0034), index and range operators (IDE0056, IDE0057), `throw`
+  expressions (IDE0016), `is null` over `is object` (IDE0150), tuple swaps (IDE0180), local
+  functions over lambdas (IDE0039), tuple deconstruction (IDE0042), UTF-8 string literals (IDE0230),
+  `System.Threading.Lock` on .NET 9+ (IDE0330), implicitly typed lambdas (IDE0350), unbound generic
+  types in `nameof` (IDE0340), with primary constructors (IDE0290) reported only. Code-style rules apply only when
   their severity is `suggestion`, `warning` or `error`; C# formatting options only while `IDE0055`
   is; the core EditorConfig properties and the using order options whenever they are set. They run after the other cleanup steps, change code only when the result is certain from the
   syntax, and list the violations they could not fix in the Code Janitor output channel and the
@@ -77,6 +82,13 @@ First release of the Visual Studio Code port.
   documentation) and type parameters. Public symbols, members of partial types and names whose
   references cannot be resolved from the syntax are listed in the Code Janitor output channel and
   the cleanup summary instead.
+- **One type per file from `.editorconfig`**: when `SA1402` (StyleCop) or `MA0048` (Meziantou) is
+  enforced with `dotnet_diagnostic.<ID>.severity`, cleanup - including cleanup on save - first
+  moves the extra top-level types of a file to their own files, named after each type, and cleans
+  them too; the summary counts the created files. `SA1649` and `MA0048` file-name mismatches, types
+  that cannot be moved safely (partial types, structs, files with preprocessor directives or
+  several namespaces) and existing target files are reported instead; files are never renamed or
+  overwritten.
 - Optional layout-only cleanup for files that are not C#.
 - **Explorer context menu**: a `Code Janitor` submenu holding every batch action for a file, a
   folder (recursively) or a multi-selection - `Cleanup Selected Files`, generating and removing XML

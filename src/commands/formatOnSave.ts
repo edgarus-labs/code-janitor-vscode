@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import { runCleanup } from '../cleanup/runCleanup';
-import { discoverDisqualifiedTypeNamesForFile, isPathCleanable, logEditorConfigIssue } from './cleanupCore';
+import {
+  discoverDisqualifiedTypeNamesForFile,
+  isPathCleanable,
+  logEditorConfigIssue,
+  splitTypesForEditorConfig,
+} from './cleanupCore';
 import { readCleanupSettings } from './settings';
 
 /**
@@ -31,14 +36,17 @@ async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscod
   const content = document.getText();
 
   try {
-    const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
-    const output = runCleanup(
-      content,
-      document.uri.fsPath,
-      readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath),
-      disqualifiedTypeNames,
-      logEditorConfigIssue
-    );
+    const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath);
+    // One type per file (.editorconfig): the types moved out are written to their new files first.
+    const split = await splitTypesForEditorConfig({ uri: document.uri, content, isOpen: true }, logEditorConfigIssue);
+    const input = split?.content ?? content;
+    const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, input);
+    for (const created of split?.createdFiles ?? []) {
+      const cleaned = runCleanup(created.content, created.uri.fsPath, settings, disqualifiedTypeNames, logEditorConfigIssue);
+      await vscode.workspace.fs.writeFile(created.uri, Buffer.from(cleaned, 'utf8'));
+    }
+
+    const output = runCleanup(input, document.uri.fsPath, settings, disqualifiedTypeNames, logEditorConfigIssue);
     if (output === content) {
       return [];
     }

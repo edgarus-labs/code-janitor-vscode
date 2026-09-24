@@ -46,6 +46,10 @@ after every other step, whenever the file has `.editorconfig` properties. Issues
 commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanup summary) and
 `unsupported` settings (logged only).
 
+- `oneTypePerFile.ts`: `SA1402`/`MA0048`/`SA1649` (explicit `dotnet_diagnostic` severity only).
+  Not a pipeline step: it creates files, so `commands/cleanupCore.ts` (`splitTypesForEditorConfig`)
+  runs it before the pipeline in batch cleanup and cleanup on save, using `topLevelTypeSplit.ts`
+  with `movableKinds` and `refuseFileNameCollisions`, and cleans the created files like the rest.
 - `transformations/editorConfigNaming.ts`: IDE1006. `naming/namingRules.ts` parses and orders
   the rules (Roslyn `EditorConfigNamingStyleParser`), `naming/namingStyle.ts` checks names and
   derives the fixed name (Roslyn `NamingStyle`), `naming/sourceModel.ts` collects declarations,
@@ -55,7 +59,12 @@ commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanu
 - `transformations/editorConfigCodeStyle.ts`: code-style rules in a fixed order, reusing the
   existing converters (file-scoped namespaces, explicit access modifiers, readonly fields, `out`
   variable inlining, using placement). Rule modules: `editorConfigQualification.ts` (`this.`),
-  `editorConfigVarPreference.ts` (`var`), `editorConfigBraces.ts` (braces).
+  `editorConfigVarPreference.ts` (`var`), `editorConfigBraces.ts` (braces),
+  `editorConfigExpressionPreferences.ts` (target-typed `new`, `default`, index/range, `is null`,
+  `nameof`, UTF-8 literals, implicit lambdas), `editorConfigStatementPreferences.ts` (`throw`
+  expressions, tuple swap, local functions, deconstruction) and `editorConfigTypePreferences.ts`
+  (`System.Threading.Lock`, primary constructors). `projectInfo.ts` reads the target frameworks of
+  the nearest `.csproj` for rules that depend on them.
 - `transformations/editorConfigFormatting.ts`: core EditorConfig properties and using order, and the
   C# formatting options gated on IDE0055.
 - `transformations/editorConfigSupport.ts`: option/severity reading, indentation and line helpers,

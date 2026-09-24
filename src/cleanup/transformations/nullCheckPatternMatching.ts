@@ -82,7 +82,9 @@ export const nullCheckPatternMatchingConverter: SourceTransformation = {
 };
 
 /**
- * True when converting `node` (a `==`/`!=` null check) to `is`/`is not` could break compilation
+ * True when `node` may end up in an expression tree (`Expression<TDelegate>`), where newer syntax -
+ * `is` patterns (CS8122), index/range access, `throw` expressions, UTF-8 literals - does not
+ * compile. For a `==`/`!=` null check, converting it to `is`/`is not` could break compilation
  * with CS8122. A lambda can only convert to `Expression<TDelegate>` when it has an expression body
  * (`=> expr`, never `=> { ... }` - CS0834) and is not `async` (CS1989); those two hard compiler
  * restrictions make every block-bodied or async lambda structurally incapable of becoming an
@@ -94,7 +96,7 @@ export const nullCheckPatternMatchingConverter: SourceTransformation = {
  * simplification is negligible, the cost of a broken build is not. Only the nearest enclosing
  * lambda/query-clause/declaration matters - ancestors further out have no bearing on `node`.
  */
-function isInPossibleExpressionTree(node: Node): boolean {
+export function isInPossibleExpressionTree(node: Node): boolean {
   for (let current = node.parent; current; current = current.parent) {
     if (QUERY_CLAUSE_TYPES[current.type] === true) {
       return true;

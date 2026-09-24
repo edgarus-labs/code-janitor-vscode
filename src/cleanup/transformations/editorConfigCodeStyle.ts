@@ -19,6 +19,9 @@ import {
   parseErrorCount,
   readCodeStyleOption,
 } from './editorConfigSupport';
+import { EXPRESSION_PREFERENCES, applyExpressionPreference } from './editorConfigExpressionPreferences';
+import { STATEMENT_PREFERENCES, applyStatementPreference } from './editorConfigStatementPreferences';
+import { applySystemThreadingLock, reportPrimaryConstructors } from './editorConfigTypePreferences';
 import { applyVarPreferences } from './editorConfigVarPreference';
 import { createExplicitAccessModifierConverter } from './explicitAccessModifier';
 import { moveUsingsOutside } from './namespaceScope';
@@ -28,6 +31,8 @@ import { readonlyFieldConverter } from './readonlyFieldAndSingleLineMethods';
 export interface EditorConfigCodeStyleOptions {
   /** File name used for `{fileName}` in `file_header_template`. */
   readonly fileName?: string;
+  /** Target frameworks of the file's project, when known (see `projectInfo.ts`). */
+  readonly targetFrameworks?: readonly string[];
 }
 
 interface RuleContext {
@@ -36,6 +41,7 @@ interface RuleContext {
   /** One indentation level for code the rules create or re-indent. */
   readonly indent: string;
   readonly fileName?: string;
+  readonly targetFrameworks?: readonly string[];
 }
 
 interface Rule {
@@ -64,7 +70,7 @@ export function createEditorConfigCodeStyleConverter(
       // A byte order mark would confuse the parser; the rules work on the text after it.
       const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
       const text = source.slice(bom.length);
-      const context: RuleContext = { props, report, indent: indentUnit(props, text), fileName: options.fileName };
+      const context: RuleContext = { props, report, indent: indentUnit(props, text), fileName: options.fileName, targetFrameworks: options.targetFrameworks };
 
       let current = text;
       let errors: number | undefined;
@@ -115,6 +121,23 @@ const RULES: readonly Rule[] = [
         : source,
   },
   { option: 'csharp_prefer_simple_using_statement', apply: applySimpleUsingStatementPreference },
+  ...STATEMENT_PREFERENCES.map(
+    (rule): Rule => ({ option: rule.option, apply: (source, { props }) => applyStatementPreference(rule, source, props) })
+  ),
+  ...EXPRESSION_PREFERENCES.map(
+    (rule): Rule => ({
+      option: rule.option,
+      apply: (source, { props, report }) => applyExpressionPreference(rule, source, props, report),
+    })
+  ),
+  {
+    option: 'csharp_prefer_system_threading_lock',
+    apply: (source, { props, report, targetFrameworks }) => applySystemThreadingLock(source, props, report, targetFrameworks),
+  },
+  {
+    option: 'csharp_style_prefer_primary_constructors',
+    apply: (source, { props, report }) => reportPrimaryConstructors(source, props, report),
+  },
   {
     option: 'csharp_prefer_braces',
     apply: (source, { props, report, indent }) => applyBracePreference(source, props, report, indent),

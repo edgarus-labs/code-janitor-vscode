@@ -1,5 +1,5 @@
 import { EditorConfigProperties, isEnforced, parseSeverity, resolveDiagnosticSeverity, splitOptionSeverity } from './editorconfig';
-import { positiveInt, readCodeStyleOption } from './transformations/editorConfigSupport';
+import { positiveInt } from './transformations/editorConfigSupport';
 
 /**
  * The single registry of `.editorconfig` settings that cleanup applies to C# files, with the
@@ -116,6 +116,83 @@ const SUPPORTED_SETTINGS: Record<string, SupportedSetting> = {
   dotnet_style_readonly_field: { gate: codeStyle('IDE0044'), accepts: isBoolean },
   csharp_prefer_simple_using_statement: { gate: codeStyle('IDE0063'), accepts: isBoolean },
   file_header_template: { gate: { kind: 'diagnostic', diagnosticId: 'IDE0073' } },
+  csharp_style_implicit_object_creation_when_type_is_apparent: { gate: codeStyle('IDE0090'), accepts: isBoolean },
+  csharp_prefer_simple_default_expression: { gate: codeStyle('IDE0034'), accepts: isBoolean },
+  csharp_style_prefer_index_operator: { gate: codeStyle('IDE0056'), accepts: isBoolean },
+  csharp_style_prefer_range_operator: { gate: codeStyle('IDE0057'), accepts: isBoolean },
+  csharp_style_throw_expression: { gate: codeStyle('IDE0016'), accepts: isBoolean },
+  csharp_style_prefer_null_check_over_type_check: { gate: codeStyle('IDE0150'), accepts: isBoolean },
+  csharp_style_prefer_tuple_swap: { gate: codeStyle('IDE0180'), accepts: isBoolean },
+  csharp_style_prefer_local_over_anonymous_function: { gate: codeStyle('IDE0039'), accepts: isBoolean },
+  csharp_style_deconstructed_variable_declaration: { gate: codeStyle('IDE0042'), accepts: isBoolean },
+  csharp_style_prefer_utf8_string_literals: { gate: codeStyle('IDE0230'), accepts: isBoolean },
+  csharp_prefer_system_threading_lock: { gate: codeStyle('IDE0330'), accepts: isBoolean },
+  csharp_style_prefer_implicitly_typed_lambda_expression: { gate: codeStyle('IDE0350'), accepts: isBoolean },
+  csharp_style_prefer_unbound_generic_type_in_nameof: { gate: codeStyle('IDE0340'), accepts: isBoolean },
+  csharp_style_prefer_primary_constructors: { gate: codeStyle('IDE0290'), accepts: isBoolean },
+};
+
+/**
+ * The diagnostic of every other known code-style option, so that `dotnet_diagnostic.<ID>.severity`
+ * decides whether it is enforced, as in Roslyn. Options with several diagnostics use the main one.
+ */
+const OTHER_CODE_STYLE_OPTIONS: Record<string, Gate> = {
+  dotnet_style_predefined_type_for_locals_parameters_members: codeStyle('IDE0049'),
+  dotnet_style_predefined_type_for_member_access: codeStyle('IDE0049'),
+  dotnet_style_parentheses_in_arithmetic_binary_operators: codeStyleBy('always_for_clarity', 'IDE0048', 'IDE0047'),
+  dotnet_style_parentheses_in_other_binary_operators: codeStyleBy('always_for_clarity', 'IDE0048', 'IDE0047'),
+  dotnet_style_parentheses_in_other_operators: codeStyleBy('always_for_clarity', 'IDE0048', 'IDE0047'),
+  dotnet_style_parentheses_in_relational_binary_operators: codeStyleBy('always_for_clarity', 'IDE0048', 'IDE0047'),
+  dotnet_style_object_initializer: codeStyle('IDE0017'),
+  dotnet_style_collection_initializer: codeStyle('IDE0028'),
+  dotnet_style_prefer_collection_expression: codeStyle('IDE0300'),
+  dotnet_style_explicit_tuple_names: codeStyle('IDE0033'),
+  dotnet_style_prefer_inferred_tuple_names: codeStyle('IDE0037'),
+  dotnet_style_prefer_inferred_anonymous_type_member_names: codeStyle('IDE0037'),
+  dotnet_style_prefer_auto_properties: codeStyle('IDE0032'),
+  dotnet_style_prefer_is_null_check_over_reference_equality_method: codeStyle('IDE0041'),
+  dotnet_style_prefer_conditional_expression_over_assignment: codeStyle('IDE0045'),
+  dotnet_style_prefer_conditional_expression_over_return: codeStyle('IDE0046'),
+  dotnet_style_prefer_compound_assignment: codeStyle('IDE0054'),
+  dotnet_style_prefer_simplified_boolean_expressions: codeStyle('IDE0075'),
+  dotnet_style_prefer_simplified_interpolation: codeStyle('IDE0071'),
+  dotnet_style_coalesce_expression: codeStyle('IDE0029'),
+  dotnet_style_null_propagation: codeStyle('IDE0031'),
+  dotnet_style_namespace_match_folder: codeStyle('IDE0130'),
+  dotnet_style_prefer_foreach_explicit_cast_in_source: codeStyle('IDE0220'),
+  dotnet_code_quality_unused_parameters: codeStyle('IDE0060'),
+  dotnet_remove_unnecessary_suppression_exclusions: codeStyle('IDE0079'),
+  dotnet_style_allow_multiple_blank_lines_experimental: codeStyle('IDE2000'),
+  dotnet_style_allow_statement_immediately_after_block_experimental: codeStyle('IDE2003'),
+  csharp_style_expression_bodied_methods: codeStyle('IDE0022'),
+  csharp_style_expression_bodied_constructors: codeStyle('IDE0021'),
+  csharp_style_expression_bodied_operators: codeStyle('IDE0023'),
+  csharp_style_expression_bodied_properties: codeStyle('IDE0025'),
+  csharp_style_expression_bodied_indexers: codeStyle('IDE0026'),
+  csharp_style_expression_bodied_accessors: codeStyle('IDE0027'),
+  csharp_style_expression_bodied_lambdas: codeStyle('IDE0053'),
+  csharp_style_expression_bodied_local_functions: codeStyle('IDE0061'),
+  csharp_style_pattern_matching_over_is_with_cast_check: codeStyle('IDE0020'),
+  csharp_style_pattern_matching_over_as_with_null_check: codeStyle('IDE0019'),
+  csharp_style_prefer_switch_expression: codeStyle('IDE0066'),
+  csharp_style_prefer_pattern_matching: codeStyle('IDE0078'),
+  csharp_style_prefer_not_pattern: codeStyle('IDE0083'),
+  csharp_style_prefer_extended_property_pattern: codeStyle('IDE0170'),
+  csharp_style_conditional_delegate_call: codeStyle('IDE1005'),
+  csharp_prefer_static_local_function: codeStyle('IDE0062'),
+  csharp_prefer_static_anonymous_function: codeStyle('IDE0320'),
+  csharp_style_prefer_readonly_struct: codeStyle('IDE0250'),
+  csharp_style_prefer_readonly_struct_member: codeStyle('IDE0251'),
+  csharp_style_prefer_method_group_conversion: codeStyle('IDE0200'),
+  csharp_style_prefer_top_level_statements: codeStyleBy('true', 'IDE0210', 'IDE0211'),
+  csharp_style_unused_value_assignment_preference: codeStyle('IDE0059'),
+  csharp_style_unused_value_expression_statement_preference: codeStyle('IDE0058'),
+  csharp_preferred_modifier_order: codeStyle('IDE0036'),
+  csharp_style_allow_embedded_statements_on_same_line_experimental: codeStyle('IDE2001'),
+  csharp_style_allow_blank_lines_between_consecutive_braces_experimental: codeStyle('IDE2002'),
+  csharp_style_allow_blank_line_after_colon_in_constructor_initializer_experimental: codeStyle('IDE2004'),
+  csharp_style_allow_blank_line_after_token_in_conditional_expression_experimental: codeStyle('IDE2005'),
+  csharp_style_allow_blank_line_after_token_in_arrow_expression_clause_experimental: codeStyle('IDE2006'),
 };
 
 /** Parts of the naming rule, symbol and style specifications the naming rules read. */
@@ -125,8 +202,23 @@ const NAMING_KEY = new RegExp(
     '|style\\.[^.]+\\.(?:capitalization|required_prefix|required_suffix|word_separator))$'
 );
 
+/**
+ * Third-party analyzer diagnostics cleanup honors (one type per file, file name matches type name),
+ * with the analyzer category their bulk severity uses. See `oneTypePerFile.ts`.
+ */
+export const FILE_ORGANIZATION_DIAGNOSTICS: Readonly<Record<string, string>> = {
+  SA1402: 'Maintainability',
+  SA1649: 'Documentation',
+  MA0048: 'Design',
+};
+
 /** Diagnostics whose severity cleanup reads: the ones a supported setting is gated on. */
-const SUPPORTED_DIAGNOSTIC_IDS = new Set([FORMATTING_DIAGNOSTIC_ID, NAMING_DIAGNOSTIC_ID, ...gateDiagnosticIds()]);
+const SUPPORTED_DIAGNOSTIC_IDS = new Set([
+  FORMATTING_DIAGNOSTIC_ID,
+  NAMING_DIAGNOSTIC_ID,
+  ...gateDiagnosticIds(),
+  ...Object.keys(FILE_ORGANIZATION_DIAGNOSTICS),
+]);
 
 /** Bulk severities cleanup honors for the diagnostics above. */
 const SUPPORTED_BULK_SEVERITY_KEYS = new Set(['dotnet_analyzer_diagnostic.severity', 'dotnet_analyzer_diagnostic.category-style.severity']);
@@ -235,6 +327,11 @@ function isRequiredButNotApplied(props: EditorConfigProperties, key: string, raw
     return isEnforced(resolveDiagnosticSeverity(props, FORMATTING_DIAGNOSTIC_ID));
   }
 
+  const knownGate = OTHER_CODE_STYLE_OPTIONS[key];
+  if (knownGate) {
+    return isGateOpen(props, knownGate, raw);
+  }
+
   if (CODE_STYLE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
     // The diagnostic of an unsupported option is unknown: its own severity or a bulk severity decides.
     return isEnforced(resolveDiagnosticSeverity(props, '', splitOptionSeverity(raw).severity));
@@ -243,9 +340,16 @@ function isRequiredButNotApplied(props: EditorConfigProperties, key: string, raw
   return true;
 }
 
-/** An unsupported code-style option's value when it is enforced (used to keep settings from violating it). */
-export function enforcedCodeStyleValue(props: EditorConfigProperties, key: string, diagnosticId: string): string | undefined {
-  const option = readCodeStyleOption(props, key, diagnosticId);
+/**
+ * The lower-cased value of any known code-style option (supported or not) while its diagnostic is
+ * enforced. Used to keep Code Janitor settings from violating options cleanup does not apply.
+ */
+export function enforcedOptionValue(props: EditorConfigProperties, key: string): string | undefined {
+  const gate = SUPPORTED_SETTINGS[key]?.gate ?? OTHER_CODE_STYLE_OPTIONS[key];
+  const raw = props.get(key);
+  if (!gate || raw === undefined || !isGateOpen(props, gate, raw)) {
+    return undefined;
+  }
 
-  return option?.enforced ? option.value : undefined;
+  return gate.kind === 'codeStyle' ? splitOptionSeverity(raw).value.toLowerCase() : raw.trim().toLowerCase();
 }

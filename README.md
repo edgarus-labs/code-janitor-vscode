@@ -141,6 +141,26 @@ Supported code-style options:
 | `file_header_template` | IDE0073 | Inserts or replaces the leading `//` header; `{fileName}` is supported. |
 | `dotnet_style_readonly_field` | IDE0044 | Adds `readonly` to private fields assigned only in constructors. |
 | `csharp_prefer_simple_using_statement` | IDE0063 | Converts a `using (...) { }` that ends its block. |
+| `csharp_style_implicit_object_creation_when_type_is_apparent` | IDE0090 | `new T(...)` becomes `new(...)` in variable, field, property and parameter declarations whose declared type is `T`. |
+| `csharp_prefer_simple_default_expression` | IDE0034 | `default(T)` becomes `default` where `T` is the declared type of the variable or parameter, or the return type of the (non-async) method returning it. |
+| `csharp_style_prefer_index_operator` | IDE0056 | `x[x.Length - n]`/`x[x.Count - n]` becomes `x[^n]` for simple receivers. |
+| `csharp_style_prefer_range_operator` | IDE0057 | `Substring`/`Slice` calls become ranges (`s[a..]`, `s[..n]`, `s[a..b]`, `s[a..^n]`) when the receiver is declared as `string`, `Span<T>`, `ReadOnlySpan<T>`, `Memory<T>` or `ReadOnlyMemory<T>` in the member or type; other `Substring` calls are reported. |
+| `csharp_style_throw_expression` | IDE0016 | `if (x == null) throw e; y = x;` becomes `y = x ?? throw e;` for a local or parameter `x`. |
+| `csharp_style_prefer_null_check_over_type_check` | IDE0150 | `x is object` becomes `x is not null`, `x is not object` becomes `x is null`. |
+| `csharp_style_prefer_tuple_swap` | IDE0180 | `var t = a; a = b; b = t;` becomes `(a, b) = (b, a);` when `t` is used nowhere else. |
+| `csharp_style_prefer_local_over_anonymous_function` | IDE0039 | A `Func<...>`/`Action<...>` local initialized with a lambda becomes a local function when the variable is only called. |
+| `csharp_style_deconstructed_variable_declaration` | IDE0042 | A local of a named tuple (`var p = (x: 1, y: 2)`, `(int x, int y) p = ...`) used only through its element names is deconstructed, when the names are free in the member. |
+| `csharp_style_prefer_utf8_string_literals` | IDE0230 | `new byte[] { ... }` of printable ASCII becomes `"..."u8.ToArray()` (`"..."u8` for a `ReadOnlySpan<byte>`), except in attributes. |
+| `csharp_prefer_system_threading_lock` | IDE0330 | A private readonly `object` field used only in `lock` statements becomes `System.Threading.Lock`, when the nearest `.csproj` targets only .NET 9 or later; otherwise it is reported. |
+| `csharp_style_prefer_implicitly_typed_lambda_expression` | IDE0350 | Removes lambda parameter types that the declared `Func`/`Action` type gives; other explicitly typed lambdas are reported. |
+| `csharp_style_prefer_unbound_generic_type_in_nameof` | IDE0340 | `nameof(List<int>)` becomes `nameof(List<>)`. |
+| `csharp_style_prefer_primary_constructors` | IDE0290 | Reported only: `true` lists classes and structs whose only constructor just assigns its parameters, `false` lists those declared with a primary constructor. |
+
+Rewrites of index/range access, `is` patterns, `throw` expressions and UTF-8 literals are never
+made inside a lambda that could become an expression tree. For `false`, the options from IDE0090
+to IDE0340 change nothing (Roslyn reports nothing for them either). Every option cleanup reads is gated by its own
+diagnostic, so `dotnet_diagnostic.<ID>.severity` also turns a single rule on or off; this applies
+to the unsupported-settings list too.
 
 Formatting: `indent_style` (with `tab_width`/`indent_size`), `end_of_line`, `insert_final_newline`,
 `trim_trailing_whitespace` and `charset` (`utf-8` removes a byte order mark, `utf-8-bom` keeps
@@ -184,6 +204,28 @@ reported instead of renamed, for example:
 - a member read through an expression whose type is not evident (`GetOther().field`);
 - names used in `switch` sections, switch expressions, patterns, deconstruction or code the
   cleanup parser cannot fully structure, and variables declared inside expressions (`out var`).
+
+### One type per file
+
+Roslyn has no rule for this, so cleanup follows the analyzer rules a repository enforces with an
+explicit `dotnet_diagnostic.<ID>.severity` of `suggestion`, `warning` or `error` (a bulk severity
+does not show whether the analyzer is installed):
+
+| Rule | Cleanup |
+| --- | --- |
+| `SA1402` (StyleCop) | Moves every class but one to its own file; other kinds may stay, as with StyleCop's default `topLevelTypes`. |
+| `MA0048` (Meziantou) | Moves every type not named like the file to its own file. |
+| `SA1649` (StyleCop) | Reports a first type not named like the file. |
+
+Before the other cleanup steps, the types are moved with the same split as **Split Top-Level
+Types**: the type named like the file (or the first one) stays, each other type gets a file named
+after it (`Box{T}.cs` for generics) in the same folder, and new files are cleaned like any other
+file. This happens for every cleanup command and for cleanup on save (the preview does not split),
+and the summary counts the files created. Files are never renamed or overwritten: when a target
+file already exists, the file uses preprocessor directives, assembly attributes or several
+namespaces, or a type is partial or a struct, the type stays and the violation is reported. File
+names are compared up to the first dot, so `Form.Designer.cs` and `View.xaml.cs` match `Form` and
+`View`.
 
 ## AI features (optional)
 

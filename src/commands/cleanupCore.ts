@@ -1,6 +1,8 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { EditorConfigIssue, runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
+import { loadEditorConfigProperties } from '../cleanup/editorconfig';
+import { planOneTypePerFile, readOneTypePerFileRules } from '../cleanup/oneTypePerFile';
+import { EditorConfigIssue, EditorConfigIssueListener, runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
 import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
 import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
@@ -21,7 +23,23 @@ interface CleanupResult {
   output: string;
   changed: boolean;
   isOpen: boolean;
+  /** A file the one-type-per-file split created: always written, counted as created. */
+  created?: boolean;
   error?: string;
+}
+
+/** A file a pre-cleanup step reshaped before cleanup: its new content and the files it split off. */
+interface PreCleanupResult {
+  readonly content: string;
+  readonly createdFiles: readonly CollectedFile[];
+}
+
+type PreCleanup = (file: CollectedFile) => Promise<PreCleanupResult | undefined>;
+
+interface BatchOutcome {
+  changed: number;
+  failed: number;
+  created: number;
 }
 
 /**
@@ -34,26 +52,46 @@ async function runBatch(
   transform: (content: string, uri: vscode.Uri, disqualifiedTypeNames: ReadonlySet<string>) => string,
   label: string,
   emptyMessage: string,
-  discoverSealingSafety = false
-): Promise<{ changed: number; failed: number }> {
+  discoverSealingSafety = false,
+  preCleanup?: PreCleanup
+): Promise<BatchOutcome> {
   if (targets.length === 0) {
     void vscode.window.showInformationMessage(emptyMessage);
 
-    return { changed: 0, failed: 0 };
+    return { changed: 0, failed: 0, created: 0 };
   }
 
   logInfo(`${label}: starting on ${targets.length} file(s).`);
 
   const collected = await collectFiles(targets);
+  // Each entry is transformed from `input`; `original` is what is on disk or in the editor now.
+  const work: { file: CollectedFile; input: string; created: boolean; failed?: string }[] = [];
+  for (const file of collected) {
+    try {
+      const pre = await preCleanup?.(file);
+      work.push({ file, input: pre?.content ?? file.content, created: false });
+      for (const createdFile of pre?.createdFiles ?? []) {
+        work.push({ file: createdFile, input: createdFile.content, created: true });
+      }
+    } catch (err) {
+      logError(`${label} of ${file.uri.fsPath}`, err);
+      work.push({ file, input: file.content, created: false, failed: (err as Error).message });
+    }
+  }
+
   const disqualifiedTypeNames = discoverSealingSafety
-    ? await discoverBatchDisqualifiedTypeNames(collected)
+    ? await discoverBatchDisqualifiedTypeNames(work.map(({ file, input }) => ({ ...file, content: input })))
     : new Set<string>();
 
-  const results: CleanupResult[] = collected.map((file) => {
-    try {
-      const output = transform(file.content, file.uri, disqualifiedTypeNames);
+  const results: CleanupResult[] = work.map(({ file, input, created, failed }) => {
+    if (failed) {
+      return { uri: file.uri, output: file.content, changed: false, isOpen: file.isOpen, error: failed };
+    }
 
-      return { uri: file.uri, output, changed: output !== file.content, isOpen: file.isOpen };
+    try {
+      const output = transform(input, file.uri, disqualifiedTypeNames);
+
+      return { uri: file.uri, output, changed: created || output !== file.content, isOpen: file.isOpen, created };
     } catch (err) {
       logError(`${label} of ${file.uri.fsPath}`, err);
 
@@ -62,7 +100,10 @@ async function runBatch(
   });
 
   const outcome = await applyResults(results);
-  logInfo(`${label}: finished - ${outcome.changed} changed, ${outcome.failed} failed.`);
+  logInfo(
+    `${label}: finished - ${outcome.changed} changed, ${outcome.failed} failed` +
+      (outcome.created > 0 ? `, ${outcome.created} file(s) created by splitting types.` : '.')
+  );
 
   return outcome;
 }
@@ -70,7 +111,7 @@ async function runBatch(
 export async function runCleanupOnUris(
   _context: vscode.ExtensionContext,
   uris: vscode.Uri[]
-): Promise<{ changed: number; failed: number; unresolved: number }> {
+): Promise<{ changed: number; failed: number; unresolved: number; created: number }> {
   const targets = uris.filter(isSupportedFile);
   const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
   let unresolved = 0;
@@ -93,7 +134,8 @@ export async function runCleanupOnUris(
         : runLayoutCleanup(content, uri.fsPath, settings),
     'Cleanup',
     'Code Janitor: no files to clean up.',
-    true
+    true,
+    (file) => splitTypesForEditorConfig(file, report)
   );
 
   if (unresolved > 0) {
@@ -105,6 +147,46 @@ export async function runCleanupOnUris(
   }
 
   return { ...outcome, unresolved };
+}
+
+/**
+ * The one-type-per-file pre-cleanup step (`SA1402`/`MA0048`/`SA1649` enforced in `.editorconfig`):
+ * the file's content without the types moved out, and the new files holding them, which are
+ * cleaned and written like the file itself. Violations it cannot fix go to `onIssue`. `undefined`
+ * when the file is not C# or nothing is split.
+ */
+export async function splitTypesForEditorConfig(
+  file: CollectedFile,
+  onIssue: EditorConfigIssueListener
+): Promise<PreCleanupResult | undefined> {
+  if (!isCSharp(file.uri)) {
+    return undefined;
+  }
+
+  const rules = readOneTypePerFileRules(loadEditorConfigProperties(file.uri.fsPath));
+  if (!rules) {
+    return undefined;
+  }
+
+  const outcome = planOneTypePerFile(file.content, file.uri.fsPath, rules, await siblingCSharpFileNames(file.uri));
+  for (const message of outcome.issues) {
+    onIssue({ kind: 'unresolved', message: `${file.uri.fsPath}: ${message}` });
+  }
+
+  if (!outcome.plan.hasChanges) {
+    return undefined;
+  }
+
+  logInfo(`One type per file (.editorconfig): ${file.uri.fsPath} split into ${outcome.plan.newFiles.length} new file(s).`);
+
+  return {
+    content: outcome.plan.updatedSource,
+    createdFiles: outcome.plan.newFiles.map((planned) => ({
+      uri: vscode.Uri.file(planned.filePath),
+      content: planned.content,
+      isOpen: false,
+    })),
+  };
 }
 
 /** Logs a `.editorconfig` rule violation cleanup could not fix safely, or a setting it does not support. */
@@ -167,8 +249,8 @@ export async function runFixNamespaceOnUris(uris: vscode.Uri[]): Promise<{ chang
 /**
  * Splits every given C# file that declares more than one eligible top-level type into one file
  * per type, applying the cleanup pipeline to both the updated original and each created file. This
- * is an explicit, manual operation - unlike ordinary cleanup it creates files, so it is never part
- * of cleanup-on-save or workspace-wide cleanup.
+ * explicit command splits whatever the `.editorconfig` says; ordinary cleanup (including on save)
+ * only splits when the `.editorconfig` enforces one type per file ({@link splitTypesForEditorConfig}).
  */
 export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{ changed: number; failed: number }> {
   const targets = uris.filter((uri) => isCSharp(uri) && isPathCleanable(uri));
@@ -377,10 +459,11 @@ export async function collectFiles(uris: vscode.Uri[]): Promise<CollectedFile[]>
   return collected;
 }
 
-async function applyResults(results: readonly CleanupResult[]): Promise<{ changed: number; failed: number }> {
+async function applyResults(results: readonly CleanupResult[]): Promise<BatchOutcome> {
   const edit = new vscode.WorkspaceEdit();
   let changed = 0;
   let failed = 0;
+  let created = 0;
 
   for (const result of results) {
     if (result.error) {
@@ -393,7 +476,11 @@ async function applyResults(results: readonly CleanupResult[]): Promise<{ change
       continue;
     }
 
-    changed++;
+    if (result.created) {
+      created++;
+    } else {
+      changed++;
+    }
 
     if (result.isOpen) {
       const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === result.uri.toString());
@@ -410,7 +497,7 @@ async function applyResults(results: readonly CleanupResult[]): Promise<{ change
     await vscode.workspace.applyEdit(edit);
   }
 
-  return { changed, failed };
+  return { changed, failed, created };
 }
 
 /** Writes one file's new content back - a `WorkspaceEdit` for an open document, a disk write otherwise. */

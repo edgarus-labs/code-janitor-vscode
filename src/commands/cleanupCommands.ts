@@ -280,12 +280,16 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
 
 async function runWithProgress(
   title: string,
-  action: () => Promise<{ changed: number; failed: number; unresolved?: number }>,
+  action: () => Promise<{ changed: number; failed: number; unresolved?: number; created?: number }>,
   doneLabel = 'cleanup complete'
 ): Promise<void> {
   const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, action);
 
   const parts = [`${result.changed} file(s) changed`];
+  if (result.created) {
+    parts.push(`${result.created} file(s) created (one type per file)`);
+  }
+
   if (result.failed > 0) {
     parts.push(`${result.failed} failed`);
   }

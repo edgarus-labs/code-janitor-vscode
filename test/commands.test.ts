@@ -386,7 +386,7 @@ describe('cleanup path filters', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Form.Designer.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0, created: 0 });
     expect(state.files.get('/w/Form.Designer.cs')).toBe(UNCLEAN);
   });
 });
@@ -414,7 +414,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.cs')]);
 
-    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 0 });
     expect(state.files.get('/w/a.cs')).not.toContain('   \n');
   });
 
@@ -433,7 +433,7 @@ describe('runCleanupOnUris', () => {
   it('reports nothing to do when every file is filtered out', async () => {
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.md')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0, created: 0 });
     expect(state.informationMessages).toContain('Code Janitor: no files to clean up.');
   });
 
@@ -452,13 +452,13 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0, created: 0 });
   });
 
   it('skips files that cannot be read', async () => {
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/missing.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0, created: 0 });
   });
 
   it('leaves a base class unsealed when its only subclass lives in a same-directory sibling file outside the batch', async () => {
@@ -468,7 +468,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0, created: 0 });
     expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
   });
 
@@ -480,7 +480,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Animal.cs')]);
 
-    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0, created: 0 });
     expect(state.files.get('/w/Animal.cs')).toBe('internal class Animal\n{\n}\n');
   });
 
@@ -491,7 +491,7 @@ describe('runCleanupOnUris', () => {
 
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Widget.cs')]);
 
-    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0 });
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 0 });
     expect(state.files.get('/w/Widget.cs')).toBe('internal sealed class Widget\n{\n}\n');
   });
 });
@@ -565,6 +565,69 @@ describe('cleanup commands', () => {
     }
   });
 
+  it('moves extra types to their own files when .editorconfig enforces one type per file', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    try {
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+      const filePath = path.join(root, 'Foo.cs');
+      state.files.set(filePath, 'namespace Demo;\n\ninternal class Foo\n{\n}\n\ninternal class Bar\n{\n    int x;   \n}\n');
+
+      const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)]);
+
+      expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 1 });
+      expect(state.files.get(filePath)).toBe('namespace Demo;\n\ninternal class Foo\n{\n}\n');
+      // The new file is cleaned like any other file.
+      expect(state.files.get(path.join(root, 'Bar.cs'))).toBe('namespace Demo;\n\ninternal class Bar\n{\n    private int x;\n}\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the file whole and reports the violation when a target file already exists', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    try {
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.MA0048.severity = error\n');
+      const filePath = path.join(root, 'Foo.cs');
+      const source = 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n';
+      state.files.set(filePath, source);
+      state.files.set(path.join(root, 'Bar.cs'), '// someone else\n');
+
+      const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)]);
+
+      expect(result).toEqual({ changed: 0, failed: 0, unresolved: 1, created: 0 });
+      expect(state.files.get(filePath)).toBe(source);
+      expect(state.files.get(path.join(root, 'Bar.cs'))).toBe('// someone else\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('splits on save too, writing the new file and removing the type from the saved document', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    try {
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+      state.configuration.set('codeJanitor.cleanup.onSave', true);
+      registerFormatOnSave(createContext());
+      const filePath = path.join(root, 'Foo.cs');
+      let captured: Promise<TextEdit[]> | undefined;
+      for (const handler of state.willSaveHandlers) {
+        handler({
+          document: new TextDocument(Uri.file(filePath), 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n', 'csharp'),
+          waitUntil: (edits) => {
+            captured = edits as Promise<TextEdit[]>;
+          },
+        });
+      }
+
+      const edits = await captured!;
+
+      expect(edits[0].newText).toBe('internal class Foo\n{\n}\n');
+      expect(state.files.get(path.join(root, 'Bar.cs'))).toBe('internal class Bar\n{\n}\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not count unsupported .editorconfig settings as violations', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
     try {
@@ -573,7 +636,7 @@ describe('cleanup commands', () => {
 
       const result = await runCleanupOnUris(createContext(), [Uri.file(path.join(root, 'A.cs'))]);
 
-      expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0 });
+      expect(result).toEqual({ changed: 0, failed: 0, unresolved: 0, created: 0 });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

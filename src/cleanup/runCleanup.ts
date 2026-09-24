@@ -1,7 +1,8 @@
 import * as path from 'node:path';
 import { EditorConfigProperties, loadEditorConfigProperties } from './editorconfig';
-import { effectiveEditorConfigValue, enforcedCodeStyleValue, unsupportedEditorConfigSettings } from './editorConfigRegistry';
+import { effectiveEditorConfigValue, enforcedOptionValue, unsupportedEditorConfigSettings } from './editorConfigRegistry';
 import { SourceTransformationPipeline, delegateTransformation } from './pipeline';
+import { findTargetFrameworks } from './projectInfo';
 import { CleanupSettings, SourceTransformation } from './types';
 import { updateAccessorsToBothBeSingleLineOrMultiLineConverter } from './transformations/accessorFormat';
 import { createBlankLinePaddingConverter } from './transformations/blankLinePadding';
@@ -61,6 +62,8 @@ export interface EditorConfigRules {
   readonly report: EditorConfigIssueReporter;
   /** File name (with extension) of the file being cleaned. */
   readonly fileName?: string;
+  /** Target frameworks of the file's project, when a rule needs them and they are known. */
+  readonly targetFrameworks?: readonly string[];
 }
 
 /**
@@ -114,6 +117,11 @@ export function getCleanupPipeline(
     properties,
     report: (message) => onIssue?.({ kind: 'unresolved', message: `${filePath}: ${message}` }),
     fileName: filePath ? path.basename(filePath) : undefined,
+    // Only IDE0330 (System.Threading.Lock needs .NET 9) reads the project file.
+    targetFrameworks:
+      effectiveEditorConfigValue(properties, 'csharp_prefer_system_threading_lock') === 'true'
+        ? findTargetFrameworks(filePath)
+        : undefined,
   };
 
   return buildPipeline(source, settings, rules, externalDisqualifiedTypeNames);
@@ -134,13 +142,12 @@ export function buildPipeline(
 ): SourceTransformationPipeline {
   const props = rules?.properties;
   const decides = (key: string): boolean => props !== undefined && effectiveEditorConfigValue(props, key) !== undefined;
-  const enforced = (key: string, diagnosticId: string): string | undefined =>
-    props && enforcedCodeStyleValue(props, key, diagnosticId);
+  const enforced = (key: string): string | undefined => props && enforcedOptionValue(props, key);
 
   const varStyleKeys = ['csharp_style_var_for_built_in_types', 'csharp_style_var_when_type_is_apparent', 'csharp_style_var_elsewhere'];
   const explicitTypesPreferred = props !== undefined && varStyleKeys.some((key) => effectiveEditorConfigValue(props, key) === 'false');
-  const collectionExpressions = enforced('dotnet_style_prefer_collection_expression', 'IDE0028');
-  const expressionBodiedLambdas = enforced('csharp_style_expression_bodied_lambdas', 'IDE0053');
+  const collectionExpressions = enforced('dotnet_style_prefer_collection_expression');
+  const expressionBodiedLambdas = enforced('csharp_style_expression_bodied_lambdas');
 
   // With `charset` set, the byte order mark is decided by the `.editorconfig` rules: the steps work
   // on the text without it, and it is put back for the formatting rules, which apply `charset`.
@@ -237,7 +244,10 @@ export function buildPipeline(
     // (last, so it formats code the other rules created).
     hasEditorConfig && rules ? createEditorConfigNamingConverter(rules.properties, rules.report) : undefined,
     hasEditorConfig && rules
-      ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, { fileName: rules.fileName })
+      ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, {
+          fileName: rules.fileName,
+          targetFrameworks: rules.targetFrameworks,
+        })
       : undefined,
     restoreByteOrderMark
       ? delegateTransformation('Restore byte order mark for charset', (text) => `\uFEFF${text}`)
