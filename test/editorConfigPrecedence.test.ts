@@ -201,7 +201,7 @@ describe('.editorconfig precedence over the cleanup settings', () => {
   it('reports unsupported settings once each and separately from violations', () => {
     const source = lines('internal class Sample', '{', '    private Widget widget = Create();', '}');
     const editorConfig = [
-      'csharp_style_expression_bodied_methods = true:warning',
+      'csharp_style_prefer_switch_expression = true:warning',
       'max_line_length = 120',
       'dotnet_diagnostic.CA1822.severity = warning',
       'csharp_style_expression_bodied_properties = true',
@@ -212,7 +212,7 @@ describe('.editorconfig precedence over the cleanup settings', () => {
     const { issues } = clean(source, editorConfig);
 
     expect(issues).toEqual([
-      { kind: 'unsupported', message: `${filePath}: "csharp_style_expression_bodied_methods = true:warning" is not supported and was not applied.` },
+      { kind: 'unsupported', message: `${filePath}: "csharp_style_prefer_switch_expression = true:warning" is not supported and was not applied.` },
       { kind: 'unsupported', message: `${filePath}: "max_line_length = 120" is not supported and was not applied.` },
       { kind: 'unsupported', message: `${filePath}: "dotnet_diagnostic.ca1822.severity = warning" is not supported and was not applied.` },
     ]);
@@ -258,15 +258,15 @@ describe('unsupportedEditorConfigSettings', () => {
   });
 
   it('reports unsupported formatting options only while IDE0055 is enforced', () => {
-    expect(unsupported('csharp_indent_case_contents = true')).toEqual([]);
-    expect(unsupported('csharp_indent_case_contents = true\ndotnet_diagnostic.IDE0055.severity = warning')).toEqual([
-      '"csharp_indent_case_contents = true" is not supported and was not applied.',
+    expect(unsupported('csharp_space_around_unknown = true')).toEqual([]);
+    expect(unsupported('csharp_space_around_unknown = true\ndotnet_diagnostic.IDE0055.severity = warning')).toEqual([
+      '"csharp_space_around_unknown = true" is not supported and was not applied.',
     ]);
   });
 
   it('treats the Style category severity as enforcing unsupported code-style options', () => {
     expect(
-      unsupported('csharp_style_expression_bodied_methods = true\ndotnet_analyzer_diagnostic.category-Style.severity = warning')
-    ).toEqual(['"csharp_style_expression_bodied_methods = true" is not supported and was not applied.']);
+      unsupported('csharp_style_prefer_switch_expression = true\ndotnet_analyzer_diagnostic.category-Style.severity = warning')
+    ).toEqual(['"csharp_style_prefer_switch_expression = true" is not supported and was not applied.']);
   });
 });

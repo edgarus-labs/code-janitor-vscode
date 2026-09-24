@@ -84,7 +84,7 @@ function isExplicitType(type: Node | undefined): type is Node {
 }
 
 /** An expression evaluated without side effects worth keeping twice: `x`, `this.x`, `a.b.c`. */
-function isSimpleReceiver(node: Node): boolean {
+export function isSimpleReceiver(node: Node): boolean {
   if (node.type === 'identifier' || node.type === 'this_expression') {
     return true;
   }
@@ -137,7 +137,7 @@ function plainArguments(list: Node | null): Node[] | undefined {
  * declares that name exactly once, with an explicit type. Any other kind of declaration (pattern,
  * lambda parameter, query variable, `var`) makes the type unknown.
  */
-function declaredTypeText(identifier: Node): string | undefined {
+export function declaredTypeText(identifier: Node): string | undefined {
   const name = identifier.text;
   let member: Node | undefined;
   let type: Node | undefined;
@@ -209,6 +209,37 @@ function declaredTypeText(identifier: Node): string | undefined {
   }
 
   return type?.text.replace(/\s+/g, '');
+}
+
+/** The declared type of `x` or `this.x`, when the file declares it exactly once with a type. */
+export function subjectTypeText(subject: Node): string | undefined {
+  if (subject.type === 'identifier') {
+    return declaredTypeText(subject);
+  }
+
+  const name = subject.childForFieldName('name');
+  if (subject.type !== 'member_access_expression' || subject.childForFieldName('expression')?.type !== 'this_expression' || name?.type !== 'identifier') {
+    return undefined;
+  }
+
+  let owner: Node | null = subject.parent;
+  while (owner && owner.type !== 'declaration_list') {
+    owner = owner.parent;
+  }
+
+  const types: string[] = [];
+  for (const member of owner?.namedChildren ?? []) {
+    if (member.type === 'field_declaration') {
+      const declaration = member.namedChildren.find((child) => child.type === 'variable_declaration');
+      if (declaration?.namedChildren.some((d) => d.type === 'variable_declarator' && d.childForFieldName('name')?.text === name.text)) {
+        types.push(declaration.childForFieldName('type')?.text ?? '');
+      }
+    } else if (member.childForFieldName('name')?.text === name.text) {
+      types.push(member.type === 'property_declaration' ? member.childForFieldName('type')?.text ?? '' : '');
+    }
+  }
+
+  return types.length === 1 && types[0] ? types[0].replace(/\s+/g, '') : undefined;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -531,7 +562,7 @@ function utf8StringLiterals(_source: string, root: Node): TextEdit[] {
   return edits;
 }
 
-function hasAncestor(node: Node, type: string): boolean {
+export function hasAncestor(node: Node, type: string): boolean {
   for (let current = node.parent; current; current = current.parent) {
     if (current.type === type) {
       return true;

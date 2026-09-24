@@ -1,8 +1,9 @@
 import { EditorConfigProperties } from '../editorconfig';
-import { effectiveEditorConfigValue } from '../editorConfigRegistry';
+import { effectiveEditorConfigValue, enforcedOptionValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
-import { hasParseErrors } from './editorConfigSupport';
-import { delegateParameterTypes } from './editorConfigExpressionPreferences';
+import { UNARY, precedenceOf, unparenthesized, withParentheses } from './editorConfigPrecedence';
+import { hasParseErrors, lineIndentAt, newlineOf } from './editorConfigSupport';
+import { delegateParameterTypes, subjectTypeText } from './editorConfigExpressionPreferences';
 
 /**
  * Statement-level code-style preferences. A group of statements is rewritten only when every
@@ -10,7 +11,14 @@ import { delegateParameterTypes } from './editorConfigExpressionPreferences';
  * ways the rewrite keeps meaning.
  */
 
-type StatementRule = (source: string, block: Node, statements: readonly Node[], edits: TextEdit[]) => void;
+interface StatementContext {
+  readonly props: EditorConfigProperties;
+  /** One indentation level for code the rule creates. */
+  readonly indent: string;
+}
+
+/** Collects the edits for the statements of one block. */
+type StatementRule = (source: string, block: Node, statements: readonly Node[], edits: TextEdit[], context: StatementContext) => void;
 
 interface PreferenceRule {
   readonly option: string;
@@ -22,41 +30,58 @@ export const STATEMENT_PREFERENCES: readonly PreferenceRule[] = [
   { option: 'csharp_style_prefer_tuple_swap', apply: tupleSwaps },
   { option: 'csharp_style_prefer_local_over_anonymous_function', apply: localFunctions },
   { option: 'csharp_style_deconstructed_variable_declaration', apply: deconstructions },
+  { option: 'dotnet_style_prefer_conditional_expression_over_assignment', apply: conditionalAssignments },
+  { option: 'dotnet_style_prefer_conditional_expression_over_return', apply: conditionalReturns },
+  { option: 'dotnet_style_object_initializer', apply: objectInitializers },
+  { option: 'dotnet_style_collection_initializer', apply: collectionInitializers },
 ];
 
-/** Applies one preference when its option is `true` and enforced. */
-export function applyStatementPreference(rule: PreferenceRule, source: string, props: EditorConfigProperties): string {
+/** Rewrites of one rule in a row: an `if`/`return` chain folds one statement per rewrite. */
+const MAX_REWRITES = 16;
+
+/** Applies one preference when its option is `true` and enforced, again while it changes the code. */
+export function applyStatementPreference(rule: PreferenceRule, source: string, props: EditorConfigProperties, indent: string): string {
   if (effectiveEditorConfigValue(props, rule.option) !== 'true') {
     return source;
   }
 
-  const tree = parseCSharp(source);
-
-  try {
-    const edits: TextEdit[] = [];
-    for (const block of findAll(tree.rootNode, 'block')) {
-      const statements = block.namedChildren.filter((child) => child.type !== 'comment' && !child.type.startsWith('preproc'));
-      rule.apply(source, block, statements, edits);
+  let current = source;
+  for (let rewrite = 0; rewrite < MAX_REWRITES; rewrite++) {
+    const tree = parseCSharp(current);
+    let edits: TextEdit[];
+    try {
+      edits = [];
+      for (const block of findAll(tree.rootNode, 'block')) {
+        const statements = block.namedChildren.filter((child) => child.type !== 'comment' && !child.type.startsWith('preproc'));
+        rule.apply(current, block, statements, edits, { props, indent });
+      }
+    } finally {
+      tree.delete();
     }
 
-    return applyEdits(source, edits);
-  } finally {
-    tree.delete();
+    const next = applyEdits(current, edits);
+    if (next === current) {
+      break;
+    }
+
+    current = next;
   }
+
+  return current;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------------------------
 
-function hasComment(source: string, start: number, end: number): boolean {
+export function hasComment(source: string, start: number, end: number): boolean {
   const text = source.slice(start, end);
 
   return text.includes('//') || text.includes('/*') || /^\s*#/m.test(text);
 }
 
 /** The single declarator of a modifier-free local declaration. */
-function singleLocal(statement: Node | undefined): { type: Node; declarator: Node; name: string; value?: Node } | undefined {
+export function singleLocal(statement: Node | undefined): { type: Node; declarator: Node; name: string; value?: Node } | undefined {
   if (statement?.type !== 'local_declaration_statement' || statement.namedChildren.some((child) => child.type === 'modifier')) {
     return undefined;
   }
@@ -75,7 +100,7 @@ function singleLocal(statement: Node | undefined): { type: Node; declarator: Nod
 }
 
 /** `left = right` as an expression statement with the plain assignment operator. */
-function simpleAssignment(statement: Node | undefined): { left: Node; right: Node } | undefined {
+export function simpleAssignment(statement: Node | undefined): { left: Node; right: Node } | undefined {
   const assignment = statement?.type === 'expression_statement' ? statement.namedChildren[0] : undefined;
   const left = assignment?.childForFieldName('left');
   const right = assignment?.childForFieldName('right');
@@ -85,7 +110,7 @@ function simpleAssignment(statement: Node | undefined): { left: Node; right: Nod
     : undefined;
 }
 
-function isSimpleTarget(node: Node): boolean {
+export function isSimpleTarget(node: Node): boolean {
   if (node.type === 'identifier' || node.type === 'this_expression') {
     return true;
   }
@@ -96,11 +121,11 @@ function isSimpleTarget(node: Node): boolean {
 }
 
 /** Identifier occurrences named `name` inside `scope`, other than `except`. */
-function occurrences(scope: Node, name: string, except: readonly Node[] = []): Node[] {
+export function occurrences(scope: Node, name: string, except: readonly Node[] = []): Node[] {
   return scope.descendantsOfType('identifier').filter((node) => node.text === name && !except.includes(node));
 }
 
-function isNameOfMemberAccess(identifier: Node): boolean {
+export function isNameOfMemberAccess(identifier: Node): boolean {
   return identifier.parent?.type === 'member_access_expression' && identifier.parent.childForFieldName('name') === identifier;
 }
 
@@ -341,7 +366,7 @@ interface TupleElement {
 }
 
 /** The elements of a tuple literal (`(x: 1, 2)`) or tuple type (`(int x, int)`). */
-function tupleElements(tuple: Node): TupleElement[] | undefined {
+export function tupleElements(tuple: Node): TupleElement[] | undefined {
   const elements: TupleElement[] = [];
   let parts: Node[] = [];
   const flush = (): boolean => {
@@ -373,7 +398,7 @@ function tupleElements(tuple: Node): TupleElement[] | undefined {
   return flush() && elements.length > 1 ? elements : undefined;
 }
 
-function enclosingMember(node: Node): Node {
+export function enclosingMember(node: Node): Node {
   let member = node;
   for (let current: Node | null = node; current; current = current.parent) {
     member = current;
@@ -383,4 +408,300 @@ function enclosingMember(node: Node): Node {
   }
 
   return member;
+}
+
+// ---------------------------------------------------------------------------------------------
+// IDE0045 / IDE0046 dotnet_style_prefer_conditional_expression_over_assignment / _over_return
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Types for which `c ? a : b` converts to the target exactly as `a` and `b` do on their own: the
+ * conditional's natural type widens integers losslessly, and `bool`/`string` have no conversions
+ * to choose from. (Floating point could round through `float`, small integers and `object`
+ * change type or boxing, so they are left alone.)
+ */
+const CONDITIONAL_TARGET_TYPES = /^(?:bool|Boolean|int|Int32|long|Int64|decimal|Decimal|string|String)\??$/;
+
+/** The only statement of `node`: the statement itself or the single statement of a block. */
+function soleStatement(node: Node | undefined): Node | undefined {
+  return node?.type === 'block' ? (node.namedChildCount === 1 ? node.namedChildren[0] : undefined) : node;
+}
+
+/** `if (c) <then> else <else>` with both branches present and no `else if`. */
+function ifElse(statement: Node): { condition: Node; whenTrue: Node; whenFalse?: Node } | undefined {
+  const [condition, whenTrue, whenFalse] = statement.namedChildren;
+  const branch = soleStatement(whenTrue);
+  const other = whenFalse ? soleStatement(whenFalse) : undefined;
+  if (statement.type !== 'if_statement' || !condition || !branch || (whenFalse && (!other || other.type === 'if_statement')) || statement.namedChildCount > 3) {
+    return undefined;
+  }
+
+  return { condition, whenTrue: branch, whenFalse: other };
+}
+
+const BOOLEAN_TARGET = /^(?:bool|Boolean)$/;
+
+/**
+ * `c ? a : b`, parenthesizing parts that would otherwise bind differently, or `undefined` when a
+ * branch is a conditional itself: nested conditionals read worse than the statements. For a
+ * `bool` target, `true`/`false` branches give `c`, `!c`, `c || b`, `c && a` (and negated forms)
+ * instead: the condition of an `if` and the values of a `bool` target are `bool`.
+ */
+function conditionalText(condition: Node, whenTrue: Node, whenFalse: Node, targetType: string): string | undefined {
+  if (whenTrue.type === 'conditional_expression' || whenFalse.type === 'conditional_expression') {
+    return undefined;
+  }
+
+  const literal = (node: Node): string | undefined => (unparenthesized(node).type === 'boolean_literal' ? unparenthesized(node).text : undefined);
+  const [t, f] = [literal(whenTrue), literal(whenFalse)];
+  if (BOOLEAN_TARGET.test(targetType) && (t !== undefined || f !== undefined)) {
+    const plain = (node: Node, level: number): string => withParentheses(node.text, precedenceOf(node), level);
+    const negated = `!${plain(condition, UNARY)}`;
+    if (t !== undefined && f !== undefined) {
+      return t === f ? undefined : t === 'true' ? condition.text : negated;
+    }
+
+    // c ? true : b -> c || b;  c ? false : b -> !c && b;  c ? a : false -> c && a;  c ? a : true -> !c || a
+    const other = t !== undefined ? whenFalse : whenTrue;
+    const or = (t ?? f) === 'true';
+    const negate = t !== undefined ? t === 'false' : f === 'true';
+    const level = or ? 3 : 4;
+
+    return `${negate ? negated : plain(condition, level)} ${or ? '||' : '&&'} ${plain(other, level + 1)}`;
+  }
+
+  const part = (node: Node, level: number): string => withParentheses(node.text, precedenceOf(node), level);
+
+  return `${part(condition, 2)} ? ${part(whenTrue, 1)} : ${part(whenFalse, 1)}`;
+}
+
+/**
+ * `if (c) x = a; else x = b;` becomes `x = c ? a : b;`, and `T x; if (c) x = a; else x = b;`
+ * becomes `T x = c ? a : b;`, when the type of `x` is one the conditional cannot change.
+ */
+function conditionalAssignments(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+  statements.forEach((statement, index) => {
+    const parts = ifElse(statement);
+    const first = simpleAssignment(parts?.whenTrue);
+    const second = simpleAssignment(parts?.whenFalse);
+    if (!parts || !first || !second || !isSimpleTarget(first.left) || first.left.text.replace(/\s+/g, '') !== second.left.text.replace(/\s+/g, '')) {
+      return;
+    }
+
+    const declaration = singleLocal(statements[index - 1]);
+    const declares = declaration !== undefined && !declaration.value && first.left.type === 'identifier' && declaration.name === first.left.text;
+    const type = (declares ? declaration.type.text : subjectTypeText(first.left) ?? '').replace(/\s+/g, '');
+    const text = conditionalText(parts.condition, first.right, second.right, type);
+    if (
+      text === undefined ||
+      text.includes('\n') ||
+      !CONDITIONAL_TARGET_TYPES.test(type) ||
+      hasParseErrors(statement) ||
+      hasComment(source, statement.startIndex, statement.endIndex)
+    ) {
+      return;
+    }
+
+    if (declares) {
+      edits.push({ start: declaration.declarator.endIndex, end: statement.endIndex, text: ` = ${text};` });
+    } else {
+      edits.push({ start: statement.startIndex, end: statement.endIndex, text: `${first.left.text} = ${text};` });
+    }
+  });
+}
+
+/** The declared return type of the member or local function `node` returns from. */
+function returnType(node: Node): string | undefined {
+  for (let current = node.parent; current; current = current.parent) {
+    if (current.type === 'lambda_expression' || current.type === 'anonymous_method_expression' || current.type === 'accessor_declaration') {
+      return undefined;
+    }
+
+    if (current.type === 'method_declaration' || current.type === 'local_function_statement' || current.type === 'operator_declaration') {
+      const type = current.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '';
+      const isAsync = current.namedChildren.some((child) => child.type === 'modifier' && child.text === 'async');
+
+      return isAsync ? /^(?:System\.Threading\.Tasks\.)?(?:Task|ValueTask)<(.+)>$/.exec(type)?.[1] : type;
+    }
+  }
+
+  return undefined;
+}
+
+function returnedValue(statement: Node | undefined): Node | undefined {
+  return statement?.type === 'return_statement' && statement.namedChildCount === 1 ? statement.namedChildren[0] : undefined;
+}
+
+/**
+ * `if (c) return a; else return b;` and `if (c) return a; return b;` become `return c ? a : b;`
+ * when the return type is one the conditional cannot change.
+ */
+function conditionalReturns(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+  for (let i = 0; i < statements.length; i++) {
+    const parts = ifElse(statements[i]);
+    const first = returnedValue(parts?.whenTrue);
+    const next = parts && !parts.whenFalse ? statements[i + 1] : undefined;
+    const second = returnedValue(parts?.whenFalse ?? next);
+    const type = parts ? returnType(statements[i]) ?? '' : '';
+    if (!parts || !first || !second || !CONDITIONAL_TARGET_TYPES.test(type)) {
+      continue;
+    }
+
+    const end = (next ?? statements[i]).endIndex;
+    const text = conditionalText(parts.condition, first, second, type);
+    if (text === undefined || text.includes('\n') || hasParseErrors(statements[i]) || (next && hasParseErrors(next)) || hasComment(source, statements[i].startIndex, end)) {
+      continue;
+    }
+
+    edits.push({ start: statements[i].startIndex, end, text: `return ${text};` });
+    i += next ? 1 : 0;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// IDE0017 / IDE0028 dotnet_style_object_initializer / dotnet_style_collection_initializer
+// ---------------------------------------------------------------------------------------------
+
+/** `var x = new T(...);` without an initializer. */
+function createdLocal(statement: Node | undefined): { name: string; creation: Node } | undefined {
+  const local = singleLocal(statement);
+  const creation = local?.value;
+  const isCreation = creation?.type === 'object_creation_expression' || creation?.type === 'implicit_object_creation_expression';
+  if (!local || !creation || !isCreation || creation.namedChildren.some((child) => child.type === 'initializer_expression')) {
+    return undefined;
+  }
+
+  return { name: local.name, creation };
+}
+
+/** Replaces the creation of `local` and the statements after it with an initializer of `elements`. */
+function initializerEdit(source: string, local: { creation: Node }, statements: readonly Node[], elements: readonly string[], indent: string): TextEdit {
+  const newline = newlineOf(source);
+  const lineIndent = lineIndentAt(source, statements[0].startIndex);
+  const body = elements.map((element) => `${lineIndent}${indent}${element}`).join(`,${newline}`);
+
+  return {
+    start: local.creation.endIndex,
+    end: statements[statements.length - 1].endIndex,
+    text: `${newline}${lineIndent}{${newline}${body}${newline}${lineIndent}};`,
+  };
+}
+
+/**
+ * `var c = new C(); c.A = 1; c.B = 2;` becomes `var c = new C { A = 1, B = 2 };` for the
+ * assignments right after the creation that do not use `c` themselves.
+ */
+function objectInitializers(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { indent }: StatementContext): void {
+  for (let i = 0; i < statements.length; i++) {
+    const local = createdLocal(statements[i]);
+    if (!local) {
+      continue;
+    }
+
+    const members: string[] = [];
+    let j = i + 1;
+    for (; j < statements.length; j++) {
+      const assignment = simpleAssignment(statements[j]);
+      const target = assignment?.left.type === 'member_access_expression' ? assignment.left : undefined;
+      const member = target?.childForFieldName('name');
+      const valid =
+        assignment &&
+        target?.childForFieldName('expression')?.text === local.name &&
+        member?.type === 'identifier' &&
+        !members.includes(member.text) &&
+        occurrences(assignment.right, local.name).length === 0 &&
+        !assignment.right.text.includes('\n') &&
+        !hasParseErrors(statements[j]);
+      if (!valid) {
+        break;
+      }
+
+      members.push(member!.text);
+    }
+
+    const group = statements.slice(i, j);
+    if (members.length === 0 || hasComment(source, statements[i].startIndex, group[group.length - 1].endIndex) || hasParseErrors(statements[i])) {
+      continue;
+    }
+
+    const elements = group.slice(1).map((statement) => {
+      const assignment = simpleAssignment(statement)!;
+
+      return `${assignment.left.childForFieldName('name')!.text} = ${assignment.right.text}`;
+    });
+    edits.push(initializerEdit(source, local, group, elements, indent));
+    i = j - 1;
+  }
+}
+
+/** Collections whose `Add` a collection initializer calls: `Add(item)`, or `Add(key, value)` for dictionaries. */
+const COLLECTION_TYPES: Record<string, 1 | 2> = {
+  List: 1,
+  HashSet: 1,
+  SortedSet: 1,
+  Collection: 1,
+  ObservableCollection: 1,
+  Dictionary: 2,
+  SortedDictionary: 2,
+  SortedList: 2,
+};
+
+/**
+ * `var list = new List<int>(); list.Add(1); list.Add(2);` becomes `var list = new List<int> { 1, 2 };`
+ * for the well-known collection types (a type of the same name declared in the file is skipped).
+ * With collection expressions preferred, only `var` locals are changed: an explicitly typed local
+ * would take a collection expression instead.
+ */
+function collectionInitializers(source: string, block: Node, statements: readonly Node[], edits: TextEdit[], { props, indent }: StatementContext): void {
+  let fileRoot: Node = block;
+  while (fileRoot.parent) {
+    fileRoot = fileRoot.parent;
+  }
+
+  const collectionExpressions = enforcedOptionValue(props, 'dotnet_style_prefer_collection_expression');
+  const explicitTypeAllowed = collectionExpressions === undefined || collectionExpressions === 'false' || collectionExpressions === 'never';
+
+  for (let i = 0; i < statements.length; i++) {
+    const local = createdLocal(statements[i]);
+    const type = local?.creation.childForFieldName('type');
+    if (!explicitTypeAllowed && singleLocal(statements[i])?.type.type !== 'implicit_type') {
+      continue;
+    }
+
+    const name = (type?.type === 'generic_name' ? type.namedChildren[0]?.text : undefined) ?? '';
+    const arity = COLLECTION_TYPES[name];
+    const declaredInFile = fileRoot.descendantsOfType(['class_declaration', 'struct_declaration', 'record_declaration']).some((declaration) => declaration.childForFieldName('name')?.text === name);
+    if (!local || !arity || declaredInFile) {
+      continue;
+    }
+
+    const elements: string[] = [];
+    let j = i + 1;
+    for (; j < statements.length; j++) {
+      const call = statements[j].type === 'expression_statement' ? statements[j].namedChildren[0] : undefined;
+      const callee = call?.type === 'invocation_expression' ? call.childForFieldName('function') : null;
+      const args = call?.childForFieldName('arguments')?.namedChildren ?? [];
+      const values = args.map((argument) => (argument.namedChildCount === 1 && argument.children.length === 1 ? argument.namedChildren[0] : undefined));
+      const valid =
+        callee?.type === 'member_access_expression' &&
+        callee.childForFieldName('expression')?.text === local.name &&
+        callee.childForFieldName('name')?.text === 'Add' &&
+        values.length === arity &&
+        values.every((value) => value !== undefined && occurrences(value, local.name).length === 0 && !value.text.includes('\n')) &&
+        !hasParseErrors(statements[j]);
+      if (!valid) {
+        break;
+      }
+
+      elements.push(arity === 1 ? values[0]!.text : `{ ${values.map((value) => value!.text).join(', ')} }`);
+    }
+
+    const group = statements.slice(i, j);
+    if (elements.length === 0 || hasComment(source, statements[i].startIndex, group[group.length - 1].endIndex) || hasParseErrors(statements[i])) {
+      continue;
+    }
+
+    edits.push(initializerEdit(source, local, group, elements, indent));
+    i = j - 1;
+  }
 }

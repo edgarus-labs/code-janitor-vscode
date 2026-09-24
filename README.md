@@ -155,10 +155,33 @@ Supported code-style options:
 | `csharp_style_prefer_implicitly_typed_lambda_expression` | IDE0350 | Removes lambda parameter types that the declared `Func`/`Action` type gives; other explicitly typed lambdas are reported. |
 | `csharp_style_prefer_unbound_generic_type_in_nameof` | IDE0340 | `nameof(List<int>)` becomes `nameof(List<>)`. |
 | `csharp_style_prefer_primary_constructors` | IDE0290 | Reported only: `true` lists classes and structs whose only constructor just assigns its parameters, `false` lists those declared with a primary constructor. |
+| `dotnet_style_parentheses_in_arithmetic_binary_operators`, `_relational_binary_operators`, `_other_binary_operators`, `_other_operators` | IDE0047, IDE0048 | `always_for_clarity` adds parentheses around an operator of another precedence in the same group (`a + (b * c)`); `never_if_unnecessary` removes parentheses that group nothing (around primary expressions, whole initializers, returns and arguments, and inner operators that bind tighter). |
+| `dotnet_style_predefined_type_for_locals_parameters_members`, `_for_member_access` | IDE0049 | `Int32`/`System.String` become `int`/`string` in type positions and member access (`string.Empty`); bare names only with `using System;` and when the file declares no symbol of that name. `false` is not supported. |
+| `dotnet_style_prefer_compound_assignment` | IDE0054, IDE0074 | `x = x + y` becomes `x += y` (`x = x ?? y` becomes `x ??= y`) for a side-effect-free `x`. |
+| `dotnet_style_prefer_simplified_boolean_expressions` | IDE0075 | `c ? true : false` becomes `c`, `c ? false : true` becomes `!c`, and `c ? true : y` / `c ? y : false` become `c \|\| y` / `c && y` when both sides are provably `bool`. |
+| `dotnet_style_coalesce_expression` | IDE0029, IDE0030 | `x != null ? x : y` becomes `x ?? y` when `x` is declared as `string`, `object`, an array or an interface or base-less class of the file without `operator ==`; `x.HasValue ? x.Value : y` becomes `x ?? y` for nullable built-in value types. |
+| `dotnet_style_null_propagation` | IDE0031 | `x != null ? x.Y : null` becomes `x?.Y` under the same type condition (any type for `x is not null`). |
+| `csharp_style_conditional_delegate_call` | IDE1005 | `if (h != null) h(args);` becomes `h?.Invoke(args);`. |
+| `dotnet_style_prefer_is_null_check_over_reference_equality_method` | IDE0041 | `ReferenceEquals(x, null)` becomes `x is null` (`!` gives `x is not null`) unless the file declares its own `ReferenceEquals`. |
+| `csharp_style_prefer_not_pattern` | IDE0083 | `!(x is T)` becomes `x is not T` for type and constant patterns without a designation. |
+| `csharp_style_prefer_pattern_matching` | IDE0078 | `x == 1 \|\| x == 2` becomes `x is 1 or 2`, `x >= 0 && x <= 9` becomes `x is >= 0 and <= 9`, for a value declared as `int`, `long`, `float`, `double`, `decimal`, `char`, `string` or `bool` compared with literals of its type. |
+| `dotnet_style_prefer_inferred_tuple_names`, `dotnet_style_prefer_inferred_anonymous_type_member_names` | IDE0037 | `(x: x, y)` becomes `(x, y)` and `new { X = p.X }` becomes `new { p.X }` when C# infers the same, unique name. |
+| `dotnet_style_prefer_conditional_expression_over_assignment`, `_over_return` | IDE0045, IDE0046 | `if (c) x = a; else x = b;` becomes `x = c ? a : b;` (a preceding `T x;` takes the initializer), `if (c) return a; [else] return b;` becomes `return c ? a : b;`, when the type is `bool`, `int`, `long`, `decimal` or `string` (for other types the conditional could change a value's type) and the result fits on one line. |
+| `dotnet_style_object_initializer`, `dotnet_style_collection_initializer` | IDE0017, IDE0028 | Member assignments (`c.A = 1;`) and `Add` calls on `List`, `HashSet`, `SortedSet`, `Collection`, `ObservableCollection`, `Dictionary`, `SortedDictionary`, `SortedList` right after `var c = new T(...);` move into an initializer, as long as they do not use `c`. |
+| `dotnet_style_prefer_auto_properties` | IDE0032 | A property that only returns (and sets) a private field used nowhere else becomes an auto property, with the field initializer; a field used elsewhere is reported. |
+| `csharp_style_expression_bodied_methods`, `_constructors`, `_operators`, `_properties`, `_indexers`, `_accessors`, `_local_functions` | IDE0021 – IDE0027, IDE0061 | `true` turns a body holding a single `return`, expression or `throw` statement into `=> ...;`, `false` does the reverse, `when_on_single_line` only for one-line expressions. Lambdas are not changed. |
+| `csharp_style_prefer_readonly_struct` | IDE0250 | Adds `readonly` to non-partial structs with only `readonly` instance fields, no settable auto property or field-like event, that never assign `this` outside a constructor. |
+| `csharp_prefer_static_local_function` | IDE0062 | Adds `static` to local functions that use no `this`, instance member, local or parameter of the enclosing code (types with a base class are skipped: inherited members are unknown). |
+| `csharp_preferred_modifier_order` | IDE0036 | Reorders modifiers to the listed order (`partial` stays last); declarations with a modifier outside the list are left alone. |
+| `dotnet_style_namespace_match_folder` | IDE0130 | Reported only: a namespace other than the project's `RootNamespace` (or project file name) plus the file's folders. |
+| `dotnet_code_quality_unused_parameters` | IDE0060 | Reported only: parameters a method, constructor or local function never uses (overrides, virtual, abstract, partial, event handlers, methods that only throw, and public methods of types with a base list are skipped). |
 
-Rewrites of index/range access, `is` patterns, `throw` expressions and UTF-8 literals are never
-made inside a lambda that could become an expression tree. For `false`, the options from IDE0090
-to IDE0340 change nothing (Roslyn reports nothing for them either). Every option cleanup reads is gated by its own
+Rewrites of index/range access, `is` patterns, `?.`, `throw` expressions and UTF-8 literals are
+never made inside a lambda that could become an expression tree. For `false`, the boolean options
+change nothing (Roslyn reports nothing for them either), except the expression-bodied member
+options, which then use block bodies. The rules run in passes until a pass changes nothing, since
+one rewrite can let another apply (an `if`/`return` chain folds into one `return`); the
+violations are reported for the final code. Every option cleanup reads is gated by its own
 diagnostic, so `dotnet_diagnostic.<ID>.severity` also turns a single rule on or off; this applies
 to the unsupported-settings list too.
 
@@ -169,14 +192,29 @@ first) and `dotnet_separate_import_directive_groups = true`, which have no diagn
 As in Visual Studio, the C# formatting options have no severity of their own and apply only while
 `IDE0055` is `suggestion`, `warning` or `error`: `csharp_new_line_before_open_brace`,
 `csharp_new_line_before_else`, `csharp_new_line_before_catch`, `csharp_new_line_before_finally`,
-`csharp_space_after_cast` and `csharp_space_after_keywords_in_control_flow_statements`.
+`csharp_new_line_before_members_in_object_initializers`,
+`csharp_new_line_before_members_in_anonymous_types`,
+`csharp_new_line_between_query_expression_clauses`, `csharp_preserve_single_line_blocks`,
+`csharp_preserve_single_line_statements`, every `csharp_space_*` option, and `csharp_indent_*`
+(`block_contents`, `braces`, `case_contents`, `case_contents_when_block`, `labels`,
+`switch_labels`). While `IDE0055` is enforced, code is also re-indented to `indent_size`/`indent_style`.
+The result matches Roslyn's formatter: the options that only split constructs already written
+over several lines do the same here, `dotnet_style_operator_placement_when_wrapping` moves no
+operator (Roslyn's formatter never does), and the contents of multi-line collection initializers
+keep their layout. Formatting works token by token and never changes strings (including the code
+inside interpolations), comments or preprocessor directives; lines the parser cannot fully read
+keep their spacing, and their relative indentation (logged to the output channel).
 
-Not supported: `csharp_style_pattern_matching_over_as_with_null_check` (IDE0019),
-`dotnet_style_prefer_is_null_check_over_reference_equality_method` (IDE0041),
-`csharp_indent_case_contents`, `csharp_indent_switch_labels`, re-indenting code to a different
-`indent_size`, moving usings into a namespace, adding a byte order mark, renaming symbols other
-files may reference, and other code-style and formatting options. Unlike the Visual Studio
-extension, fixes from third-party analyzers are not applied.
+Not supported (reported when enforced): `csharp_style_pattern_matching_over_as_with_null_check`
+(IDE0019), `csharp_style_pattern_matching_over_is_with_cast_check` (IDE0020),
+`csharp_style_prefer_switch_expression` (IDE0066), `csharp_style_prefer_extended_property_pattern`
+(IDE0170), `csharp_style_prefer_method_group_conversion` (IDE0200),
+`csharp_style_prefer_readonly_struct_member` (IDE0251), `dotnet_style_explicit_tuple_names`
+(IDE0033), `dotnet_style_prefer_simplified_interpolation` (IDE0071),
+`csharp_style_expression_bodied_lambdas` (IDE0053: which delegate type a lambda converts to can
+depend on its body), moving usings into a namespace, adding a byte order mark, renaming symbols
+other files may reference, and other code-style options. Unlike the Visual Studio extension,
+fixes from third-party analyzers are not applied.
 
 ### Naming rules
 

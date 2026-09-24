@@ -68,7 +68,15 @@ First release of the Visual Studio Code port.
   expressions (IDE0016), `is null` over `is object` (IDE0150), tuple swaps (IDE0180), local
   functions over lambdas (IDE0039), tuple deconstruction (IDE0042), UTF-8 string literals (IDE0230),
   `System.Threading.Lock` on .NET 9+ (IDE0330), implicitly typed lambdas (IDE0350), unbound generic
-  types in `nameof` (IDE0340), with primary constructors (IDE0290) reported only. Code-style rules apply only when
+  types in `nameof` (IDE0340), parentheses for clarity (IDE0047, IDE0048), predefined type
+  keywords (IDE0049), compound assignment (IDE0054, IDE0074), simplified booleans (IDE0075), `??`
+  and `?.` (IDE0029 - IDE0031), `?.Invoke` for delegates (IDE1005), `is null` over
+  `ReferenceEquals` (IDE0041), `not` and combined patterns (IDE0083, IDE0078), inferred tuple and
+  anonymous member names (IDE0037), conditional assignment/return (IDE0045, IDE0046), object and
+  collection initializers (IDE0017, IDE0028), auto properties (IDE0032), expression-bodied members
+  (IDE0021 - IDE0027, IDE0061), `readonly` structs (IDE0250), `static` local functions (IDE0062)
+  and modifier order (IDE0036), with primary constructors (IDE0290), namespaces that do not match
+  their folder (IDE0130) and unused parameters (IDE0060) reported only. Code-style rules apply only when
   their severity is `suggestion`, `warning` or `error`; C# formatting options only while `IDE0055`
   is; the core EditorConfig properties and the using order options whenever they are set. They run after the other cleanup steps, change code only when the result is certain from the
   syntax, and list the violations they could not fix in the Code Janitor output channel and the
@@ -89,6 +97,13 @@ First release of the Visual Studio Code port.
   that cannot be moved safely (partial types, structs, files with preprocessor directives or
   several namespaces) and existing target files are reported instead; files are never renamed or
   overwritten.
+- **Full C# formatting from `.editorconfig`**: while `IDE0055` is enforced, cleanup applies every
+  `csharp_space_*` option, the `csharp_indent_*` options, `csharp_preserve_single_line_blocks` and
+  `csharp_preserve_single_line_statements`, the object-initializer, anonymous-type and query-clause
+  new-line options, and re-indents code to `indent_size`, matching Roslyn's formatter. It works token
+  by token, never touches strings, comments or preprocessor directives, and leaves the spacing and
+  relative indentation of lines the parser cannot fully read as they are (the latter logged to the
+  output channel).
 - Optional layout-only cleanup for files that are not C#.
 - **Explorer context menu**: a `Code Janitor` submenu holding every batch action for a file, a
   folder (recursively) or a multi-selection - `Cleanup Selected Files`, generating and removing XML

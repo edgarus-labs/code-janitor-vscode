@@ -12,6 +12,9 @@ import {
   parseErrorCount,
   tabWidth,
 } from './editorConfigSupport';
+import { applyIndentation } from './editorConfigIndentation';
+import { applySpacing } from './editorConfigSpacing';
+import { applyQueryClauseNewLines, applyWrapping } from './editorConfigWrapping';
 import { removeTrailingWhitespace } from './text';
 import { sortUsingDirectives } from './usingDirectiveOrganizer';
 
@@ -41,9 +44,12 @@ export function createEditorConfigFormattingConverter(
       const enforced = isEnforced(resolveDiagnosticSeverity(props, 'IDE0055'));
       let formatted = applyUsingDirectiveOrder(current, props);
       if (enforced) {
+        formatted = applyWrapping(formatted, props);
         formatted = applyOpenBraceNewLines(formatted, props, report);
         formatted = applyNewLinesBeforeKeywords(formatted, props);
         formatted = applySpacing(formatted, props);
+        formatted = applyQueryClauseNewLines(formatted, props);
+        formatted = applyIndentation(formatted, props, report);
       }
 
       // Only whitespace and using order change; a result the parser reads worse is dropped.
@@ -206,6 +212,11 @@ function braceKind(container: Node): string | undefined {
       return owner.type === 'switch_statement' ? 'control_blocks' : undefined;
 
     case 'initializer_expression':
+      // As in Roslyn, array initializers (`new[] {`, `new int[] {`, `int[] a = {`) keep their brace.
+      if (owner.type === 'array_creation_expression' || owner.type === 'implicit_array_creation_expression' || owner.type === 'equals_value_clause') {
+        return undefined;
+      }
+
       return owner.type === 'anonymous_object_creation_expression' ? 'anonymous_types' : 'object_collection_array_initializers';
 
     case 'block':
@@ -302,6 +313,24 @@ function applyOpenBraceNewLines(source: string, props: EditorConfigProperties, r
   }
 }
 
+/** Index of the `{` matching the code `}` at `close` (0 when unbalanced). */
+function matchingOpenBrace(source: string, kinds: Uint8Array, close: number): number {
+  let depth = 0;
+  for (let i = close; i >= 0; i--) {
+    if (kinds[i] !== CODE) {
+      continue;
+    }
+
+    if (source[i] === '}') {
+      depth++;
+    } else if (source[i] === '{' && --depth === 0) {
+      return i;
+    }
+  }
+
+  return 0;
+}
+
 /** End of the last non-whitespace character before `index`; 0 at the start of the file. */
 function previousTokenEnd(source: string, index: number): number {
   let i = index;
@@ -362,87 +391,16 @@ function applyNewLinesBeforeKeywords(source: string, props: EditorConfigProperti
         continue;
       }
 
+      // As in Roslyn, `try { A(); } catch { }` written on one line stays on one line.
+      if (preference === 'true' && !source.slice(matchingOpenBrace(source, kinds, previousEnd - 1), previousEnd).includes('\n')) {
+        continue;
+      }
+
       edits.push({
         start: previousEnd,
         end: keyword.startIndex,
         text: preference === 'true' ? `${newline}${lineIndentAt(source, previousEnd - 1)}` : ' ',
       });
-    }
-
-    return applyEdits(source, edits);
-  } finally {
-    tree.delete();
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// csharp_space_after_cast / csharp_space_after_keywords_in_control_flow_statements
-// ---------------------------------------------------------------------------------------------
-
-const CONTROL_FLOW_KEYWORDS: Record<string, true> = {
-  if: true,
-  for: true,
-  foreach: true,
-  while: true,
-  switch: true,
-  catch: true,
-  using: true,
-  lock: true,
-  fixed: true,
-};
-
-const CONTROL_FLOW_STATEMENTS = [
-  'if_statement',
-  'for_statement',
-  'for_each_statement',
-  'while_statement',
-  'do_statement',
-  'switch_statement',
-  'catch_clause',
-  'using_statement',
-  'lock_statement',
-  'fixed_statement',
-];
-
-function applySpacing(source: string, props: EditorConfigProperties): string {
-  const cast = optionValue(props, 'csharp_space_after_cast');
-  const controlFlow = optionValue(props, 'csharp_space_after_keywords_in_control_flow_statements');
-  const castSpace = cast === 'true' ? ' ' : cast === 'false' ? '' : undefined;
-  const keywordSpace = controlFlow === 'true' ? ' ' : controlFlow === 'false' ? '' : undefined;
-  if (castSpace === undefined && keywordSpace === undefined) {
-    return source;
-  }
-
-  const tree = parseCSharp(source);
-
-  try {
-    const edits: TextEdit[] = [];
-    const setGap = (start: number, end: number, text: string): void => {
-      const gap = source.slice(start, end);
-      if (gap !== text && /^[ \t]*$/.test(gap)) {
-        edits.push({ start, end, text });
-      }
-    };
-
-    if (castSpace !== undefined) {
-      for (const castNode of findAll(tree.rootNode, 'cast_expression')) {
-        const close = castNode.children.find((child) => child.type === ')');
-        const value = castNode.childForFieldName('value');
-        if (close && value) {
-          setGap(close.endIndex, value.startIndex, castSpace);
-        }
-      }
-    }
-
-    if (keywordSpace !== undefined) {
-      for (const statement of findAll(tree.rootNode, CONTROL_FLOW_STATEMENTS)) {
-        const children = statement.children;
-        for (let i = 0; i < children.length - 1; i++) {
-          if (CONTROL_FLOW_KEYWORDS[children[i].type] === true && children[i + 1].type === '(') {
-            setGap(children[i].endIndex, children[i + 1].startIndex, keywordSpace);
-          }
-        }
-      }
     }
 
     return applyEdits(source, edits);

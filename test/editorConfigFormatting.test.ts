@@ -184,8 +184,7 @@ describe('csharp_new_line_before_else/catch/finally', () => {
   const split = method(
     'try',
     '{',
-    '    if (x) { A(); }',
-    '    else { B(); }',
+    '    if (x) { A(); } else { B(); }',
     '}',
     'catch (Exception)',
     '{',
@@ -202,7 +201,7 @@ describe('csharp_new_line_before_else/catch/finally', () => {
     expect(format(split, rules.join('\n')).output).toBe(joined);
   });
 
-  it('moves the keyword to its own line when true', () => {
+  it('moves the keyword to its own line when true, leaving a construct written on one line alone as Roslyn does', () => {
     const rules = ['csharp_new_line_before_else = true', 'csharp_new_line_before_catch = true', 'csharp_new_line_before_finally = true', IDE0055];
 
     expect(format(joined, rules.join('\n')).output).toBe(split);

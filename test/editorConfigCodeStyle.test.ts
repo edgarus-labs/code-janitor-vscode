@@ -370,8 +370,8 @@ describe('csharp_prefer_braces', () => {
     expect(codeStyle(source, 'csharp_prefer_braces = false:warning').output).toBe(source);
   });
 
-  it('reports instead of bracing a statement whose header the parser cannot read', () => {
-    const source = method('if ((Mode)x == Mode.A) return;');
+  it('reports instead of bracing a statement the parser cannot read', () => {
+    const source = method('if (x > 0) y = z with { A = 1 };');
     const { output, issues } = codeStyle(source, 'csharp_prefer_braces = true:warning');
 
     expect(output).toBe(source);

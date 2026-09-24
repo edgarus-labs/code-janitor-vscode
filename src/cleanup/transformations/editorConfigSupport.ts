@@ -210,7 +210,7 @@ export function parseErrorCount(source: string): number {
   }
 }
 
-function isRecoveredNode(node: Node): boolean {
+export function isRecoveredNode(node: Node): boolean {
   if (node.type === 'incomplete_declaration') {
     return true;
   }

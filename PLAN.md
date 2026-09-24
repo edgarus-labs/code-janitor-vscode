@@ -62,11 +62,22 @@ commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanu
   `editorConfigVarPreference.ts` (`var`), `editorConfigBraces.ts` (braces),
   `editorConfigExpressionPreferences.ts` (target-typed `new`, `default`, index/range, `is null`,
   `nameof`, UTF-8 literals, implicit lambdas), `editorConfigStatementPreferences.ts` (`throw`
-  expressions, tuple swap, local functions, deconstruction) and `editorConfigTypePreferences.ts`
-  (`System.Threading.Lock`, primary constructors). `projectInfo.ts` reads the target frameworks of
-  the nearest `.csproj` for rules that depend on them.
+  expressions, tuple swap, local functions, deconstruction, conditional assignment/return,
+  object and collection initializers), `editorConfigTypePreferences.ts` (`System.Threading.Lock`,
+  primary constructors), `editorConfigOperatorPreferences.ts` (parentheses, predefined types,
+  compound assignment, simplified booleans, `??`, `?.`, delegate calls, `is null`/`not`/combined
+  patterns, inferred names), `editorConfigMemberPreferences.ts` (modifier order, `readonly`
+  structs, `static` local functions, auto properties; namespace/folder and unused parameters
+  reported) and `editorConfigExpressionBodies.ts` (expression-bodied members). The rules run in
+  passes until one changes nothing (at most three), and only the last pass reports.
+  `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks) for rules that
+  depend on it.
 - `transformations/editorConfigFormatting.ts`: core EditorConfig properties and using order, and the
-  C# formatting options gated on IDE0055.
+  C# formatting options gated on IDE0055, in this order: `editorConfigWrapping.ts` (single-line
+  blocks and statements, initializer and anonymous-type members), brace and keyword new lines,
+  `editorConfigSpacing.ts` (every `csharp_space_*` option, one horizontal gap at a time), query
+  clauses (aligned with `from` once spacing is final) and `editorConfigIndentation.ts` (re-indents
+  each line from the syntax tree to `indent_size`, following the `csharp_indent_*` options).
 - `transformations/editorConfigSupport.ts`: option/severity reading, indentation and line helpers,
   and parse-error detection shared by the rules.
 

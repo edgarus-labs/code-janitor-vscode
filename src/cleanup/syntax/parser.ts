@@ -1599,16 +1599,12 @@ class CSharpParser {
       return;
     }
 
-    let depth = 0;
+    this.take(children);
+    let depth = 1;
 
-    do {
-      if (this.is('(')) {
-        depth++;
-      } else if (this.is(')')) {
-        depth--;
-      }
-
-      if (depth === 1 && !this.is('(')) {
+    while (depth > 0 && !this.is('end')) {
+      // At the header's own level every part is parsed, including one that starts with `(`.
+      if (depth === 1) {
         const before = this.pos;
         const inner = this.parseHeaderContent();
 
@@ -1622,8 +1618,14 @@ class CSharpParser {
         }
       }
 
+      if (this.is('(')) {
+        depth++;
+      } else if (this.is(')')) {
+        depth--;
+      }
+
       this.take(children);
-    } while (depth > 0 && !this.is('end'));
+    }
   }
 
   /**

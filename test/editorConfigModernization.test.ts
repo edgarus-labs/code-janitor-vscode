@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import { unsupportedEditorConfigSettings } from '../src/cleanup/editorConfigRegistry';
-import { findTargetFrameworks } from '../src/cleanup/projectInfo';
+import { findProject } from '../src/cleanup/projectInfo';
 import { createEditorConfigCodeStyleConverter, EditorConfigCodeStyleOptions } from '../src/cleanup/transformations/editorConfigCodeStyle';
 
 function lines(...text: string[]): string {
@@ -246,14 +246,14 @@ describe('IDE0330 csharp_prefer_system_threading_lock', () => {
   const rules = 'csharp_prefer_system_threading_lock = true:warning';
 
   it('uses System.Threading.Lock for fields only locked on, on .NET 9 and later', () => {
-    const { output, issues } = codeStyle(source, rules, { targetFrameworks: ['net9.0'] });
+    const { output, issues } = codeStyle(source, rules, { project: { directory: '/repo', targetFrameworks: ['net9.0'] } });
 
     expect(output).toBe(source.replace('private readonly object _gate = new object();', 'private readonly System.Threading.Lock _gate = new();'));
     expect(issues).toEqual([expect.stringMatching(/^IDE0330 .* '_shared' was not changed .*more than lock statements/)]);
   });
 
   it('reports instead of converting when the project does not target .NET 9', () => {
-    const { output, issues } = codeStyle(source, rules, { targetFrameworks: ['net8.0', 'net9.0'] });
+    const { output, issues } = codeStyle(source, rules, { project: { directory: '/repo', targetFrameworks: ['net8.0', 'net9.0'] } });
 
     expect(output).toBe(source);
     expect(issues).toHaveLength(2);
@@ -265,7 +265,7 @@ describe('IDE0330 csharp_prefer_system_threading_lock', () => {
       fs.mkdirSync(path.join(root, 'src'));
       fs.writeFileSync(path.join(root, 'App.csproj'), '<Project><PropertyGroup><TargetFrameworks>net9.0;net10.0</TargetFrameworks></PropertyGroup></Project>');
 
-      expect(findTargetFrameworks(path.join(root, 'src', 'A.cs'))).toEqual(['net9.0', 'net10.0']);
+      expect(findProject(path.join(root, 'src', 'A.cs'))).toEqual({ directory: root, rootNamespace: 'App', targetFrameworks: ['net9.0', 'net10.0'] });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -295,15 +295,15 @@ describe('unsupported settings and rule severities', () => {
       [
         {
           directory: '/repo',
-          text: 'root = true\n[*.cs]\ncsharp_style_unused_value_assignment_preference = discard_variable:suggestion\ndotnet_diagnostic.IDE0059.severity = none\ncsharp_style_expression_bodied_methods = true\ndotnet_diagnostic.IDE0022.severity = warning\n',
+          text: 'root = true\n[*.cs]\ncsharp_style_unused_value_assignment_preference = discard_variable:suggestion\ndotnet_diagnostic.IDE0059.severity = none\ncsharp_style_prefer_switch_expression = true\ndotnet_diagnostic.IDE0066.severity = warning\n',
         },
       ],
       '/repo/A.cs'
     );
 
     expect(unsupportedEditorConfigSettings(props)).toEqual([
-      '"csharp_style_expression_bodied_methods = true" is not supported and was not applied.',
-      '"dotnet_diagnostic.ide0022.severity = warning" is not supported and was not applied.',
+      '"csharp_style_prefer_switch_expression = true" is not supported and was not applied.',
+      '"dotnet_diagnostic.ide0066.severity = warning" is not supported and was not applied.',
     ]);
   });
 });

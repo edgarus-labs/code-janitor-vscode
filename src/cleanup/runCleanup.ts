@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import { EditorConfigProperties, loadEditorConfigProperties } from './editorconfig';
 import { effectiveEditorConfigValue, enforcedOptionValue, unsupportedEditorConfigSettings } from './editorConfigRegistry';
 import { SourceTransformationPipeline, delegateTransformation } from './pipeline';
-import { findTargetFrameworks } from './projectInfo';
+import { ProjectInfo, findProject } from './projectInfo';
 import { CleanupSettings, SourceTransformation } from './types';
 import { updateAccessorsToBothBeSingleLineOrMultiLineConverter } from './transformations/accessorFormat';
 import { createBlankLinePaddingConverter } from './transformations/blankLinePadding';
@@ -62,8 +62,10 @@ export interface EditorConfigRules {
   readonly report: EditorConfigIssueReporter;
   /** File name (with extension) of the file being cleaned. */
   readonly fileName?: string;
-  /** Target frameworks of the file's project, when a rule needs them and they are known. */
-  readonly targetFrameworks?: readonly string[];
+  /** Full path of the file being cleaned. */
+  readonly filePath?: string;
+  /** The file's project, when a rule needs it and it is found (see `projectInfo.ts`). */
+  readonly project?: ProjectInfo;
 }
 
 /**
@@ -117,10 +119,13 @@ export function getCleanupPipeline(
     properties,
     report: (message) => onIssue?.({ kind: 'unresolved', message: `${filePath}: ${message}` }),
     fileName: filePath ? path.basename(filePath) : undefined,
-    // Only IDE0330 (System.Threading.Lock needs .NET 9) reads the project file.
-    targetFrameworks:
-      effectiveEditorConfigValue(properties, 'csharp_prefer_system_threading_lock') === 'true'
-        ? findTargetFrameworks(filePath)
+    filePath: filePath || undefined,
+    // Only IDE0330 (System.Threading.Lock needs .NET 9) and IDE0130 (namespace matches folder)
+    // read the project file.
+    project:
+      effectiveEditorConfigValue(properties, 'csharp_prefer_system_threading_lock') === 'true' ||
+      effectiveEditorConfigValue(properties, 'dotnet_style_namespace_match_folder') === 'true'
+        ? findProject(filePath)
         : undefined,
   };
 
@@ -246,7 +251,8 @@ export function buildPipeline(
     hasEditorConfig && rules
       ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, {
           fileName: rules.fileName,
-          targetFrameworks: rules.targetFrameworks,
+          filePath: rules.filePath,
+          project: rules.project,
         })
       : undefined,
     restoreByteOrderMark

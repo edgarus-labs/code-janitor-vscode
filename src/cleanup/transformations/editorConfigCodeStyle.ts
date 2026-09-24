@@ -1,6 +1,7 @@
 import { STRING, classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
+import { ProjectInfo } from '../projectInfo';
 import { SourceTransformation } from '../types';
 import { applyBracePreference } from './editorConfigBraces';
 import { applyQualificationPreferences } from './editorConfigQualification';
@@ -20,6 +21,9 @@ import {
   readCodeStyleOption,
 } from './editorConfigSupport';
 import { EXPRESSION_PREFERENCES, applyExpressionPreference } from './editorConfigExpressionPreferences';
+import { EXPRESSION_BODY_RULES } from './editorConfigExpressionBodies';
+import { MEMBER_RULES } from './editorConfigMemberPreferences';
+import { OPERATOR_RULES } from './editorConfigOperatorPreferences';
 import { STATEMENT_PREFERENCES, applyStatementPreference } from './editorConfigStatementPreferences';
 import { applySystemThreadingLock, reportPrimaryConstructors } from './editorConfigTypePreferences';
 import { applyVarPreferences } from './editorConfigVarPreference';
@@ -31,29 +35,36 @@ import { readonlyFieldConverter } from './readonlyFieldAndSingleLineMethods';
 export interface EditorConfigCodeStyleOptions {
   /** File name used for `{fileName}` in `file_header_template`. */
   readonly fileName?: string;
-  /** Target frameworks of the file's project, when known (see `projectInfo.ts`). */
-  readonly targetFrameworks?: readonly string[];
+  /** Full path of the file, for rules that compare it with its project folder. */
+  readonly filePath?: string;
+  /** The file's project, when known (see `projectInfo.ts`). */
+  readonly project?: ProjectInfo;
 }
 
-interface RuleContext {
+export interface RuleContext {
   readonly props: EditorConfigProperties;
   readonly report: EditorConfigIssueReporter;
   /** One indentation level for code the rules create or re-indent. */
   readonly indent: string;
   readonly fileName?: string;
-  readonly targetFrameworks?: readonly string[];
+  readonly filePath?: string;
+  readonly project?: ProjectInfo;
 }
 
-interface Rule {
+export interface Rule {
   /** The option(s) the rule applies, for reports. */
   readonly option: string;
   readonly apply: (source: string, context: RuleContext) => string;
 }
 
+/** Rule passes over a file: one rule's rewrite can make another one's apply (`if`/`return` chains). */
+const MAX_PASSES = 3;
+
 /**
  * Applies the C# code-style preferences of `.editorconfig` whose diagnostic is enforced
  * (`suggestion`, `warning` or `error`). Each rule rewrites code only when the result is certain
- * from syntax alone and reports every violation it leaves in place.
+ * from syntax alone and reports every violation it leaves in place. The rules run again while a
+ * pass changes the code, and only the last pass reports, so reports describe the final code.
  */
 export function createEditorConfigCodeStyleConverter(
   props: EditorConfigProperties,
@@ -69,33 +80,59 @@ export function createEditorConfigCodeStyleConverter(
 
       // A byte order mark would confuse the parser; the rules work on the text after it.
       const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
-      const text = source.slice(bom.length);
-      const context: RuleContext = { props, report, indent: indentUnit(props, text), fileName: options.fileName, targetFrameworks: options.targetFrameworks };
+      let current = source.slice(bom.length);
+      let issues: string[] = [];
 
-      let current = text;
-      let errors: number | undefined;
-
-      for (const rule of RULES) {
-        const updated = rule.apply(current, context);
+      for (let pass = 0; pass < MAX_PASSES; pass++) {
+        issues = [];
+        const context: RuleContext = {
+          props,
+          report: (issue) => issues.push(issue),
+          indent: indentUnit(props, current),
+          fileName: options.fileName,
+          filePath: options.filePath,
+          project: options.project,
+        };
+        const updated = applyRules(current, context);
         if (updated === current) {
-          continue;
-        }
-
-        // Every rule edits code it parsed; a result the parser reads worse than the input is dropped.
-        errors ??= parseErrorCount(current);
-        const updatedErrors = parseErrorCount(updated);
-        if (updatedErrors > errors) {
-          report(`${rule.option}: changes discarded, the rewritten code could not be verified.`);
-          continue;
+          break;
         }
 
         current = updated;
-        errors = updatedErrors;
+      }
+
+      for (const issue of issues) {
+        report(issue);
       }
 
       return bom + current;
     },
   };
+}
+
+function applyRules(source: string, context: RuleContext): string {
+  let current = source;
+  let errors: number | undefined;
+
+  for (const rule of RULES) {
+    const updated = rule.apply(current, context);
+    if (updated === current) {
+      continue;
+    }
+
+    // Every rule edits code it parsed; a result the parser reads worse than the input is dropped.
+    errors ??= parseErrorCount(current);
+    const updatedErrors = parseErrorCount(updated);
+    if (updatedErrors > errors) {
+      context.report(`${rule.option}: changes discarded, the rewritten code could not be verified.`);
+      continue;
+    }
+
+    current = updated;
+    errors = updatedErrors;
+  }
+
+  return current;
 }
 
 const RULES: readonly Rule[] = [
@@ -122,7 +159,7 @@ const RULES: readonly Rule[] = [
   },
   { option: 'csharp_prefer_simple_using_statement', apply: applySimpleUsingStatementPreference },
   ...STATEMENT_PREFERENCES.map(
-    (rule): Rule => ({ option: rule.option, apply: (source, { props }) => applyStatementPreference(rule, source, props) })
+    (rule): Rule => ({ option: rule.option, apply: (source, { props, indent }) => applyStatementPreference(rule, source, props, indent) })
   ),
   ...EXPRESSION_PREFERENCES.map(
     (rule): Rule => ({
@@ -132,12 +169,15 @@ const RULES: readonly Rule[] = [
   ),
   {
     option: 'csharp_prefer_system_threading_lock',
-    apply: (source, { props, report, targetFrameworks }) => applySystemThreadingLock(source, props, report, targetFrameworks),
+    apply: (source, { props, report, project }) => applySystemThreadingLock(source, props, report, project?.targetFrameworks),
   },
   {
     option: 'csharp_style_prefer_primary_constructors',
     apply: (source, { props, report }) => reportPrimaryConstructors(source, props, report),
   },
+  ...OPERATOR_RULES,
+  ...MEMBER_RULES,
+  ...EXPRESSION_BODY_RULES,
   {
     option: 'csharp_prefer_braces',
     apply: (source, { props, report, indent }) => applyBracePreference(source, props, report, indent),
