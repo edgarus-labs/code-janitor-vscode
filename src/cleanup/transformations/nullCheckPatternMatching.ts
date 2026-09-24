@@ -1,5 +1,6 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
+import { isPlainNullComparison } from './typeFacts';
 
 /**
  * Node types that can only ever be reached through a LINQ query-expression clause. Every clause
@@ -62,7 +63,10 @@ export const nullCheckPatternMatchingConverter: SourceTransformation = {
           continue;
         }
 
-        if (isInPossibleExpressionTree(expression)) {
+        // `is null` never calls a user-defined `==` and does not compile for a non-nullable value
+        // type (CS0037): only operands whose declared type rules both out are converted
+        // (https://learn.microsoft.com/dotnet/csharp/language-reference/operators/patterns#constant-pattern).
+        if (isInPossibleExpressionTree(expression) || !isPlainNullComparison(target, tree.rootNode)) {
           continue;
         }
 

@@ -1,5 +1,6 @@
 import { Node, TextEdit, applyEdits, parseCSharp, walk } from '../parser';
 import { CleanupSettings, SourceTransformation } from '../types';
+import { hasParseErrors, isRecoveredNode } from './editorConfigSupport';
 
 const TYPE_DECLARATIONS = new Set([
   'class_declaration',
@@ -41,9 +42,26 @@ export function createExplicitAccessModifierConverter(settings: AccessSettings):
       try {
         const edits: TextEdit[] = [];
 
+        // In a body the parser could not fully read, members can be misread (the modifier would
+        // land inside a type or name), so none of them is changed.
+        const unreadableBodies = new Map<number, boolean>();
+        const unreadable = (body: Node | null): boolean => {
+          if (!body) {
+            return false;
+          }
+
+          let result = unreadableBodies.get(body.startIndex);
+          if (result === undefined) {
+            result = body.namedChildren.some(isRecoveredNode);
+            unreadableBodies.set(body.startIndex, result);
+          }
+
+          return result;
+        };
+
         for (const node of walk(tree.rootNode)) {
           const insertion = accessModifierFor(node, settings);
-          if (!insertion) {
+          if (!insertion || hasParseErrors(node) || unreadable(node.parent)) {
             continue;
           }
 

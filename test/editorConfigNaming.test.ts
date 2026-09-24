@@ -358,8 +358,7 @@ dotnet_naming_style.s_prefix.capitalization = camel_case
 
     const { output, issues } = clean(source);
 
-    expect(output).toBe(source.replaceAll('Values', 'values'));
-    expect(issues.some((issue) => issue.includes("local 'Covered'"))).toBe(true);
+    expect(output).toBe(source.replaceAll('Values', 'values').replaceAll('Covered', 'covered'));
     expect(issues.some((issue) => issue.includes("parameter 'First'"))).toBe(true);
     expect(issues.some((issue) => issue.includes("parameter 'Second'"))).toBe(true);
   });
@@ -408,6 +407,38 @@ dotnet_naming_style.t_prefix.capitalization = pascal_case
     const projectionResult = clean(projection);
     expect(projectionResult.output).toBe(projection);
     expect(projectionResult.issues).toEqual([expect.stringMatching(/'Size' should be named '_size'.*anonymous type/)]);
+  });
+});
+
+describe('code the parser misreads', () => {
+  it('renames nothing a member split into pieces declares, like an explicit interface implementation', () => {
+    const source = [
+      'public abstract class Handler<T> : IHandler<T>',
+      '{',
+      '    Task IHandler<T>.Handle(T message)',
+      '    {',
+      '        return Task.CompletedTask;',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+
+    expect(clean(source).output).toBe(source);
+  });
+
+  it('renames nothing next to a member the parser split into pieces, like a function pointer field', () => {
+    const source = [
+      'public unsafe class Native',
+      '{',
+      '    private delegate*<int, void> callback;',
+      '    private int count;',
+      '',
+      '    public void Call() => callback(count);',
+      '}',
+      '',
+    ].join('\n');
+
+    expect(clean(source).output).toBe(source.replace(/\bcount\b/g, '_count'));
   });
 });
 

@@ -14,7 +14,7 @@ import {
   readCodeQualityOption,
   resultantVisibility,
 } from './editorConfigQualityRulesSupport';
-import { collectDisqualifiedTypeNames, hasOverridableMember } from './sealedClass';
+import { collectDisqualifiedTypeNames, sealingBlocker } from './sealedClass';
 
 /**
  * CA1852: seals classes and records that are not visible outside the assembly when no type of the
@@ -53,7 +53,7 @@ export function applySealInternalTypes(source: string, context: RuleContext): st
         continue;
       }
 
-      const reason = sealingBlocker(declaration, project === undefined, project?.incomplete, project?.internalsVisibleTo === true);
+      const reason = blockerOf(declaration, project === undefined, project?.incomplete, project?.internalsVisibleTo === true);
       if (reason) {
         context.report(describeDiagnostic('CA1852', source, declaration.startIndex, `'${name}' is not visible outside the assembly and could be sealed, but ${reason}; it was left unsealed.`));
         continue;
@@ -68,7 +68,7 @@ export function applySealInternalTypes(source: string, context: RuleContext): st
   }
 }
 
-function sealingBlocker(declaration: Node, noProject: boolean, incomplete: string | undefined, internalsVisibleTo: boolean): string | undefined {
+function blockerOf(declaration: Node, noProject: boolean, incomplete: string | undefined, internalsVisibleTo: boolean): string | undefined {
   if (hasModifier(declaration, 'partial')) {
     return 'it is partial and its other parts were not analyzed';
   }
@@ -77,13 +77,9 @@ function sealingBlocker(declaration: Node, noProject: boolean, incomplete: strin
     return 'the cleanup parser could not fully analyze it';
   }
 
-  if (hasOverridableMember(declaration)) {
-    return 'it declares virtual members (CS0549 once sealed)';
-  }
-
-  const members = declaration.childForFieldName('body')?.namedChildren ?? [];
-  if (members.some((member) => hasModifier(member, 'protected') && !hasModifier(member, 'override'))) {
-    return 'it declares protected members (CS0628 once sealed)';
+  const structural = sealingBlocker(declaration);
+  if (structural) {
+    return structural;
   }
 
   if (noProject) {

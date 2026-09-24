@@ -52,7 +52,7 @@ const LITERAL_TYPES = new Set([
 
 /** Tokens that may appear inside a type argument list; anything else rules out generics. */
 const TYPE_ARGUMENT_TOKENS = new Set([
-  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out',
+  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out', '(', ')',
 ]);
 
 const AFTER_TYPE_ARGUMENTS = new Set([
@@ -814,25 +814,14 @@ class CSharpParser {
     return this.finish('field_declaration', true, startToken, children, fields);
   }
 
+  /** `IFoo.Bar` or `IFoo<T>.Bar`: a (generic) name followed by a dot. */
   private isExplicitInterfaceSpecifier(): boolean {
-    let offset = 0;
+    const save = this.pos;
+    this.pos++;
+    const end = this.is('<') ? this.typeArgumentListEnd() : this.pos - 1;
+    this.pos = save;
 
-    while (this.peek(offset).type === 'identifier') {
-      const next = this.peek(offset + 1);
-
-      if (next.type === '.') {
-        return true;
-      }
-
-      if (next.type === '<') {
-        offset += 1;
-        continue;
-      }
-
-      return false;
-    }
-
-    return false;
+    return end >= 0 && this.tokens[end + 1]?.type === '.';
   }
 
   private parseExplicitInterfaceSpecifier(): Node {
@@ -1293,10 +1282,21 @@ class CSharpParser {
    */
   private typeArgumentListEnd(): number {
     let depth = 0;
+    // Parentheses only appear around tuple types, so they must balance inside the list.
+    let parentheses = 0;
     let i = this.pos;
 
     for (; i < this.tokens.length; i++) {
       const type = this.tokens[i].type;
+
+      if (type === '(' || type === ')') {
+        parentheses += type === '(' ? 1 : -1;
+        if (parentheses < 0) {
+          return -1;
+        }
+
+        continue;
+      }
 
       if (type === '<') {
         depth++;
@@ -1317,7 +1317,7 @@ class CSharpParser {
       }
     }
 
-    if (depth !== 0 || i >= this.tokens.length) {
+    if (depth !== 0 || parentheses !== 0 || i >= this.tokens.length) {
       return -1;
     }
 
@@ -1639,7 +1639,8 @@ class CSharpParser {
 
     const save = this.pos;
     const declaration = this.tryParseVariableDeclaration();
-    if (declaration) {
+    // `(await f(x))` is not the declaration `await f`: a header declaration ends the header part.
+    if (declaration && (this.is(')') || this.is(';') || this.is('in'))) {
       return declaration;
     }
 
@@ -3121,7 +3122,9 @@ class CSharpParser {
     const save = this.pos;
     const type = this.parseType();
 
-    if (!type || !this.is('identifier')) {
+    // The declaration is the whole argument: `async x => ...` and `await f(x)` are not `T name`.
+    const end = this.peek(1).type;
+    if (!type || !this.is('identifier') || (end !== ',' && end !== ')' && end !== ']')) {
       this.pos = save;
 
       return undefined;

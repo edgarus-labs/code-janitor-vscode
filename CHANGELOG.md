@@ -171,6 +171,35 @@ First release of the Visual Studio Code port.
 - Blank-line padding and the blank line before `return`/`throw` inserted blank lines at the wrong
   place - and a new one on every run - in a CRLF file whose verbatim strings contain bare LF line
   breaks: lines were counted on CRLF while the syntax tree counts them on LF.
+- One type per file: two files cleaned together that both hold an extra type of the same name
+  (in different namespaces) no longer write it to the same new file, where the second overwrote
+  the first. The second file keeps its type and the violation is reported.
+- `.editorconfig` naming rules now run after the code-style rules, so names those rules introduce
+  (e.g. the local function IDE0039 makes of a lambda) follow the naming rules in the same cleanup
+  instead of the next one.
+- Code-style rules and the matching Code Janitor settings were audited against the C# rules (see
+  "Code-style guards checked against the C# rules" in the README). Each rule is skipped and
+  reported when the project's C# version or runtime lacks the syntax it needs, whether that
+  version comes from `<LangVersion>`, `Directory.Build.props` or the target framework default.
+  New guards against rewrites that break the build or change behavior:
+  - IDE0056 needs a known countable receiver; IDE0071 only simplifies value types and enums.
+  - IDE0090 skips nullable targets and type parameters; IDE0150 and IDE0041 skip non-nullable
+    value types; IDE0074 skips properties; IDE0200 skips `[Conditional]` methods.
+  - IDE0016 and the pattern-matching null-check setting skip types that may overload `==`.
+  - IDE0032 keeps field initializer order; IDE0053 and the single-statement lambda setting only
+    rewrite lambdas stored as a written delegate type.
+  - IDE0044 and the readonly-field setting skip possibly mutable struct fields.
+  - IDE0018 and the out-variable setting no longer move a variable out of scope.
+  - IDE0160 skips a namespace wrapped in `#if`; moving usings outside a namespace (setting)
+    skips usings that resolve relative to it.
+  - IDE0040 and the access-modifier setting leave explicit implementations of generic interfaces
+    and unreadable type bodies alone.
+- The C# parser now reads `await f(x)` in `if`/`while` headers and in lambda arguments, tuple types
+  used as type arguments (`IEnumerable<(Type A, object B)>`) and explicit implementations of
+  generic interfaces (`Task IHandler<T>.Handle(...)`). Rules used to garble these into code that
+  did not compile.
+- Blank-line padding keeps a `//` comment attached to the member below it and no longer adds a
+  second blank line after a member already followed by one.
 - The editor context submenu no longer splits Generate and Remove XML Documentation across two
   groups separated by an unrelated divider. They are adjacent, in their own group - not folded into
   the AI actions group either, since removal never calls AI.
@@ -196,6 +225,9 @@ First release of the Visual Studio Code port.
   `.editorconfig` checks that cleanup applies naming, code-style and formatting rules, lists the
   settings it does not apply in the Code Janitor output channel, moves extra types to their own
   files (SA1402) and applies the rules on save.
+- `npm run verify:compile`: a compile oracle that builds C# projects before and after cleanup with
+  every rule enforced and finds the rule behind each new compiler error, over a corpus of tricky
+  C# in `test/oracle` (see `PLAN.md`). Development only; needs the .NET SDK.
 - `npm run generate:editorconfig`: writes an `.editorconfig` with every documented C# code-style,
   formatting and naming option at its documented default, enforcing as warnings what cleanup
   applies (see `PLAN.md`).

@@ -173,7 +173,45 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
     }
   }
 
-  return writes.every((write) => isWriteInMatchingConstructor(write, typeDeclaration, isStatic));
+  if (!writes.every((write) => isWriteInMatchingConstructor(write, typeDeclaration, isStatic))) {
+    return false;
+  }
+
+  // Outside its constructor, a readonly field of a mutable struct is copied before each member
+  // access, so a call that changed it would change the copy instead
+  // (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/readonly#readonly-field-example).
+  // Unless the field's type is known to be a reference type, it must not be accessed that way.
+  const type = declaration?.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '';
+  let root: Node = typeDeclaration;
+  while (root.parent) {
+    root = root.parent;
+  }
+
+  return (
+    isKnownReferenceType(type, root) ||
+    ![...scopeNodes(typeDeclaration)].some(
+      (node) =>
+        (node.type === 'member_access_expression' || node.type === 'element_access_expression' || node.type === 'conditional_access_expression') &&
+        fieldAccessKind(node.childForFieldName('expression') ?? node.namedChild(0)!, fieldName) === FieldAccess.Direct &&
+        !isWriteInMatchingConstructor(node, typeDeclaration, isStatic)
+    )
+  );
+}
+
+/** Reference types whose members cannot change a field holding them: known framework types and the file's own. */
+const KNOWN_REFERENCE_TYPES =
+  /^(?:(?:System\.)?(?:string|object|String|Object|Random|Exception|Type|Uri|Task|StringBuilder|Stopwatch|SemaphoreSlim|CancellationTokenSource|HttpClient|Regex|Timer)|(?:List|Dictionary|HashSet|Queue|Stack|SortedDictionary|SortedList|SortedSet|LinkedList|ConcurrentDictionary|ConcurrentQueue|ConcurrentBag|Lazy|Func|Action|Task|ObservableCollection|Collection|WeakReference)<.+>|I[A-Z]\w*(?:<.+>)?|.+\[\])\??$/;
+
+function isKnownReferenceType(type: string, root: Node): boolean {
+  if (KNOWN_REFERENCE_TYPES.test(type)) {
+    return true;
+  }
+
+  const name = type.replace(/\?$/, '').replace(/<.*>$/, '');
+
+  return findAll(root, ['class_declaration', 'interface_declaration', 'delegate_declaration', 'record_declaration']).some(
+    (declaration) => declaration.childForFieldName('name')?.text === name && !declaration.children.some((child) => child.type === 'struct')
+  );
 }
 
 /** Every descendant of the type, including any nested type declarations it contains. */

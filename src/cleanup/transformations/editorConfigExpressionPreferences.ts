@@ -3,6 +3,7 @@ import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { EditorConfigIssueReporter, describeIssue, hasParseErrors } from './editorConfigSupport';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
+import { isNonNullableValueType } from './typeFacts';
 
 /**
  * Expression-level code-style preferences. Each rewrite is made only where the result is certain
@@ -137,17 +138,19 @@ function plainArguments(list: Node | null): Node[] | undefined {
  * declares that name exactly once, with an explicit type. Any other kind of declaration (pattern,
  * lambda parameter, query variable, `var`) makes the type unknown.
  */
-export function declaredTypeText(identifier: Node): string | undefined {
-  return declaredTypeNode(identifier)?.text.replace(/\s+/g, '');
+export function declaredTypeText(identifier: Node, name = identifier.text): string | undefined {
+  return declaredTypeNode(identifier, name)?.text.replace(/\s+/g, '');
 }
 
-/** The type node behind {@link declaredTypeText}. */
-export function declaredTypeNode(identifier: Node): Node | undefined {
-  const name = identifier.text;
+/**
+ * The type node behind {@link declaredTypeText}. `name` defaults to the identifier's text; `from`
+ * can be any node the name is used in (the parser does not parse interpolation holes).
+ */
+export function declaredTypeNode(from: Node, name = from.text): Node | undefined {
   let member: Node | undefined;
   let type: Node | undefined;
 
-  for (let current = identifier.parent; current; current = current.parent) {
+  for (let current = from.parent; current; current = current.parent) {
     if (/_declaration$/.test(current.type) && current.type !== 'variable_declaration' && current.type !== 'local_declaration_statement') {
       member = current;
       break;
@@ -261,6 +264,13 @@ function implicitObjectCreation(_source: string, root: Node): TextEdit[] {
       continue;
     }
 
+    // `new()` for `int?` creates an `int` (0), where `new int?()` is null; a type parameter needs
+    // its `new()` constraint spelled out (https://learn.microsoft.com/dotnet/csharp/language-reference/operators/new-operator#constructor-invocation).
+    const typeName = createdType.text.replace(/\s+/g, '');
+    if (typeName.endsWith('?') || /^(?:System\.)?Nullable</.test(typeName) || typeParameterNames(creation).includes(typeName)) {
+      continue;
+    }
+
     const args = creation.childForFieldName('arguments');
     edits.push({
       start: creation.startIndex,
@@ -270,6 +280,17 @@ function implicitObjectCreation(_source: string, root: Node): TextEdit[] {
   }
 
   return edits;
+}
+
+/** Type parameters in scope at `node` (of the enclosing types and methods). */
+function typeParameterNames(node: Node): string[] {
+  const names: string[] = [];
+  for (let current = node.parent; current; current = current.parent) {
+    const list = current.namedChildren.find((child) => child.type === 'type_parameter_list');
+    list?.namedChildren.forEach((parameter) => names.push(parameter.text.replace(/^(?:in|out)\s+/, '')));
+  }
+
+  return names;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -330,7 +351,13 @@ function returnTypeOf(expression: Node): Node | undefined {
 // IDE0056 csharp_style_prefer_index_operator
 // ---------------------------------------------------------------------------------------------
 
-function indexOperator(_source: string, root: Node): TextEdit[] {
+/**
+ * Declared types that are countable with an `int` indexer, so `x[^n]` means `x[x.Length - n]`
+ * (https://learn.microsoft.com/dotnet/csharp/tutorials/ranges-indexes#type-support-for-indices-and-ranges).
+ */
+const INDEX_TYPE = /^(?:string|String|System\.String|[\w.<>,?]+\[\]|(?:System\.Collections\.Generic\.)?(?:List|IList|IReadOnlyList)<.+>|(?:System\.)?(?:ReadOnly)?Span<.+>)$/;
+
+function indexOperator(source: string, root: Node, _props: EditorConfigProperties, report: EditorConfigIssueReporter): TextEdit[] {
   const edits: TextEdit[] = [];
 
   for (const access of findAll(root, 'element_access_expression')) {
@@ -351,6 +378,19 @@ function indexOperator(_source: string, root: Node): TextEdit[] {
       length?.childForFieldName('expression')?.text !== receiver.text ||
       isInPossibleExpressionTree(access)
     ) {
+      continue;
+    }
+
+    if (receiver.type !== 'identifier' || !INDEX_TYPE.test(declaredTypeText(receiver) ?? '')) {
+      report(
+        describeIssue(
+          'IDE0056',
+          'csharp_style_prefer_index_operator',
+          source,
+          access.startIndex,
+          `'${access.text}' was not changed to an index from the end: '${receiver.text}' is not declared as an array, string or list in this member or type.`
+        )
+      );
       continue;
     }
 
@@ -455,7 +495,9 @@ function nullCheckOverTypeCheck(_source: string, root: Node): TextEdit[] {
   for (const check of findAll(root, 'is_pattern_expression')) {
     const pattern = check.childForFieldName('pattern');
     const parts = pattern?.namedChildren ?? [];
-    if (!pattern || isInPossibleExpressionTree(check)) {
+    const subject = check.childForFieldName('expression');
+    // `is null` does not compile for a non-nullable value type (CS0037); `is object` does.
+    if (!pattern || !subject || isInPossibleExpressionTree(check) || isNonNullableValueType(subjectTypeText(subject), root)) {
       continue;
     }
 

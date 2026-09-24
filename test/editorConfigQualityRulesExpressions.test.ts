@@ -231,6 +231,23 @@ describe('CA1507 use nameof in place of string', () => {
   });
 });
 
+describe('CA1507 scopes', () => {
+  it('does not name parameters outside a static local function or lambda (CS8421)', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    void M(string value)',
+      '    {',
+      '        static void Check(string other) => throw new ArgumentNullException("value");',
+      '        Func<string, int> f = static s => throw new ArgumentNullException("value");',
+      '    }',
+      '}'
+    );
+
+    expect(cleanup(source, 'dotnet_diagnostic.CA1507.severity = warning')).toEqual({ output: source, issues: [] });
+  });
+});
+
 describe('string and StringBuilder rules', () => {
   it('CA1834 appends a char for a single-character string', () => {
     expectRewrite(

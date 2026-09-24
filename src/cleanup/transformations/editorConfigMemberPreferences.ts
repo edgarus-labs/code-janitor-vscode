@@ -472,6 +472,16 @@ function autoProperties(source: string, report: EditorConfigIssueReporter): stri
           continue;
         }
 
+        // Initializers run in textual order: moving one past another member's initializer would
+        // reorder them (https://learn.microsoft.com/dotnet/csharp/language-reference/language-specification/classes#1556-variable-initializers).
+        const hasInitializer = (member: Node): boolean =>
+          member.namedChildren.some((child) => child.type === 'equals_value_clause') ||
+          (member.namedChildren.find((child) => child.type === 'variable_declaration')?.descendantsOfType('equals_value_clause').length ?? 0) > 0;
+        const [from, to] = [members.indexOf(field), members.indexOf(property)].sort((a, b) => a - b);
+        if (hasInitializer(field) && members.slice(from + 1, to).some(hasInitializer)) {
+          continue;
+        }
+
         const inProperty = (node: Node): boolean => node.startIndex >= property.startIndex && node.endIndex <= property.endIndex;
         const name = declarators[0].childForFieldName('name')!;
         const otherUses = type

@@ -4,6 +4,7 @@ import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { hasComment } from './editorConfigStatementPreferences';
 import { describeIssue, hasParseErrors, lineIndentAt, newlineOf } from './editorConfigSupport';
+import { storedDelegateType } from './typeFacts';
 
 /**
  * `csharp_style_expression_bodied_*` (IDE0021 - IDE0027, IDE0061): members whose body is a single
@@ -210,7 +211,11 @@ function lambdaBodies(source: string, root: Node, preference: Preference, contex
         continue;
       }
 
-      if (value) {
+      // A block lambda cannot become an expression tree; an expression lambda passed to a method
+      // can make an `Expression<T>` overload (IQueryable) applicable. Only lambdas stored in a
+      // variable of a written delegate type are safe
+      // (https://learn.microsoft.com/dotnet/csharp/language-reference/operators/lambda-expressions#expression-lambdas).
+      if (value && storedDelegateType(lambda)) {
         edits.push({ start: body.startIndex, end: body.endIndex, text: value.text });
       } else {
         context.report(describeIssue('IDE0053', LAMBDA_OPTION, source, lambda.startIndex, 'the lambda body was not changed: without the delegate type, an expression body could change the overload it binds to.'));

@@ -761,6 +761,7 @@
     "test:e2e": "vscode-test",
     "smoke-test": "node scripts/smoke-test.js",
     "generate:editorconfig": "vite-node scripts/generate-editorconfig.ts",
+    "verify:compile": "vite-node scripts/compile-oracle.ts --",
     "verify:bundle": "node scripts/verify-bundle.js",
     "package": "npm run build && npx vsce package"
   },

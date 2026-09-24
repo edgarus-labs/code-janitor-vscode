@@ -71,8 +71,12 @@ commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanu
   structs and struct members, `static` local functions, auto properties; namespace/folder and unused parameters
   reported) and `editorConfigExpressionBodies.ts` (expression-bodied members and lambdas). The rules run in
   passes until one changes nothing (at most three), and only the last pass reports.
-  `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks) for rules that
-  depend on it.
+  `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks, C# language
+  version and whether the runtime has `System.Index`/`Range`) for rules that depend on it; a rule
+  whose rewrite needs a newer C# version or runtime is skipped and reported.
+  `typeFacts.ts` holds what the file proves about a type (reference types without `operator ==`,
+  non-nullable value types, plain null comparisons, variables, the written delegate type of a
+  lambda), shared by the code-style rules and the legacy converters.
 - `transformations/editorConfigQualityRules.ts`: the code-quality (CA) rules and the IDE rules
   without a code-style option (`SUPPORTED_DIAGNOSTICS` in the registry), run by the code-style
   stage before the member preferences, each gated on its diagnostic's severity (including the
@@ -160,6 +164,14 @@ default. Its severities come from the `.editorconfig` registry: what cleanup app
 `warning`, the other documented style rules are `suggestion`s. The option data and its
 documentation links are in `scripts/editorConfigTemplate.ts`; `test/editorConfigTemplate.test.ts`
 checks that the file makes every supported setting take effect.
+
+`npm run verify:compile -- [<folder>[=<project file>] ...]` is the compile oracle (needs the .NET
+SDK; development only, the extension never runs .NET). For each project - by default the corpus
+under `test/oracle`, C# written to be tricky for the rules - it builds a copy with the generated
+`.editorconfig`, runs cleanup on it (one type per file included), builds again and fails on every
+new compiler error. For new errors it runs cleanup once per rule (each diagnostic of the registry,
+each boolean setting) and lists the rules that break the build. Add a case to `test/oracle` for
+every construct a rule mishandled.
 
 ## AI behavior
 

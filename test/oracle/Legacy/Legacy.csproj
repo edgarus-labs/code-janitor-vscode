@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile oracle corpus: netstandard2.0 with C# 7.3, where modern syntax and APIs do not exist. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <RootNamespace>Legacy</RootNamespace>
+  </PropertyGroup>
+</Project>

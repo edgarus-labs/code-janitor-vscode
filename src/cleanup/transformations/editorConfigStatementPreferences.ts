@@ -3,6 +3,7 @@ import { effectiveEditorConfigValue, enforcedOptionValue } from '../editorConfig
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { RELATIONAL, UNARY, nullTest, operatorOf, precedenceOf, unparenthesized, withParentheses } from './editorConfigPrecedence';
 import { hasParseErrors, lineEndAt, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
+import { isPlainNullComparison } from './typeFacts';
 import { delegateParameterTypes, subjectTypeText } from './editorConfigExpressionPreferences';
 
 /**
@@ -167,8 +168,13 @@ function nullCheckedIdentifier(statement: Node): string | undefined {
     const left = condition.childForFieldName('left');
     const right = condition.childForFieldName('right');
     const checked = right?.type === 'null_literal' ? left : left?.type === 'null_literal' ? right : undefined;
+    let root: Node = statement;
+    while (root.parent) {
+      root = root.parent;
+    }
 
-    return checked?.type === 'identifier' ? checked.text : undefined;
+    // `??` never calls a user-defined `==`, so `x == null` must be a plain null check.
+    return checked?.type === 'identifier' && isPlainNullComparison(checked, root) ? checked.text : undefined;
   }
 
   if (condition?.type === 'is_pattern_expression' && condition.childForFieldName('pattern')?.text === 'null') {

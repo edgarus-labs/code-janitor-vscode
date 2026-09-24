@@ -76,8 +76,8 @@ describe('IDE0056 csharp_style_prefer_index_operator', () => {
   it('uses ^ for Length and Count from the end of the same receiver', () => {
     expectRewrite(
       'csharp_style_prefer_index_operator',
-      method('var a = items[items.Length - 1];', 'var b = list[list.Count - (n + 1)];', 'var c = items[other.Length - 1];', 'Expression<Func<int>> e = () => items[items.Length - 1];'),
-      method('var a = items[^1];', 'var b = list[^(n + 1)];', 'var c = items[other.Length - 1];', 'Expression<Func<int>> e = () => items[items.Length - 1];')
+      method('List<int> list = Load();', 'var a = items[items.Length - 1];', 'var b = list[list.Count - (n + 1)];', 'var c = items[other.Length - 1];', 'Expression<Func<int>> e = () => items[items.Length - 1];'),
+      method('List<int> list = Load();', 'var a = items[^1];', 'var b = list[^(n + 1)];', 'var c = items[other.Length - 1];', 'Expression<Func<int>> e = () => items[items.Length - 1];')
     );
   });
 });
@@ -265,7 +265,32 @@ describe('IDE0330 csharp_prefer_system_threading_lock', () => {
       fs.mkdirSync(path.join(root, 'src'));
       fs.writeFileSync(path.join(root, 'App.csproj'), '<Project><PropertyGroup><TargetFrameworks>net9.0;net10.0</TargetFrameworks></PropertyGroup></Project>');
 
-      expect(findProject(path.join(root, 'src', 'A.cs'))).toEqual({ directory: root, rootNamespace: 'App', targetFrameworks: ['net9.0', 'net10.0'] });
+      expect(findProject(path.join(root, 'src', 'A.cs'))).toEqual({
+        directory: root,
+        rootNamespace: 'App',
+        targetFrameworks: ['net9.0', 'net10.0'],
+        languageVersion: 13,
+        modernRuntime: true,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the C# language version from LangVersion, Directory.Build.props or the framework default', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-project-'));
+    const project = (name: string, content: string): string => {
+      fs.mkdirSync(path.join(root, name));
+      fs.writeFileSync(path.join(root, name, `${name}.csproj`), `<Project><PropertyGroup>${content}</PropertyGroup></Project>`);
+
+      return path.join(root, name, 'A.cs');
+    };
+    try {
+      expect(findProject(project('Framework', '<TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>'))).toMatchObject({ languageVersion: 7.3, modernRuntime: false });
+      expect(findProject(project('Latest', '<TargetFramework>net472</TargetFramework><LangVersion>latest</LangVersion>'))).toMatchObject({ languageVersion: 99, modernRuntime: false });
+      expect(findProject(project('Pinned', '<TargetFramework>net8.0</TargetFramework><LangVersion>9.0</LangVersion>'))).toMatchObject({ languageVersion: 9, modernRuntime: true });
+      fs.writeFileSync(path.join(root, 'Directory.Build.props'), '<Project><PropertyGroup><LangVersion>10</LangVersion></PropertyGroup></Project>');
+      expect(findProject(project('Props', '<TargetFramework>netstandard2.0</TargetFramework>'))).toMatchObject({ languageVersion: 10, modernRuntime: false });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

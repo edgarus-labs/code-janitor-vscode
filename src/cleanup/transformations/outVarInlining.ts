@@ -85,11 +85,12 @@ function collectBlockEdits(source: string, block: Node, edits: TextEdit[], optio
       continue;
     }
 
+    // An out variable declared in a nested block, or in a `while`/`for`/`foreach`/`using` header,
+    // is scoped to it, so later uses would not compile
+    // (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/out-parameter-modifier#out-parameter-modifier).
     if (
-      options.preserveScope === true &&
-      (declaration.hasModifiers ||
-        source.slice(statements[i].endIndex, next.startIndex).trim() !== '' ||
-        !keepsScope(next, outArgument.expression))
+      !keepsScope(next, outArgument.expression) ||
+      (options.preserveScope === true && (declaration.hasModifiers || source.slice(statements[i].endIndex, next.startIndex).trim() !== ''))
     ) {
       continue;
     }

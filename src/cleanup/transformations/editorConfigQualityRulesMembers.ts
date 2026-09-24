@@ -66,6 +66,17 @@ function untilStable(
 // ---------------------------------------------------------------------------------------------
 
 /** Instance members every class and struct has (`System.Object`). */
+/** Nodes whose `this`/`base` keyword is not a use of the instance (expressions, `this` parameters, `: this(...)`, indexers). */
+const NON_INSTANCE_KEYWORD_PARENTS = new Set([
+  'this_expression',
+  'base_expression',
+  'parameter',
+  'parameter_modifier',
+  'constructor_initializer',
+  'indexer_declaration',
+  'explicit_interface_specifier',
+]);
+
 const OBJECT_INSTANCE_MEMBERS = ['ToString', 'GetHashCode', 'Equals', 'GetType', 'MemberwiseClone', 'Finalize'];
 
 /** Members the compiler adds to records. */
@@ -382,7 +393,8 @@ class StaticMembers {
       return report(`it has the attribute [${attribute.text}], which may need an instance member`);
     }
 
-    if (hasModifier(member, 'readonly')) {
+    const readonlyAccessor = (member.childForFieldName('accessors')?.namedChildren ?? []).some((accessor) => /^(?:\[[^\]]*\]\s*)*readonly\b/.test(accessor.text));
+    if (hasModifier(member, 'readonly') || readonlyAccessor) {
       return report('it is readonly, which a static member cannot be');
     }
 
@@ -475,6 +487,12 @@ class StaticMembers {
           return INSTANCE;
         }
       } else if (node.type === 'interpolated_string_expression' && /\b(?:this|base)\b/.test(node.text)) {
+        return INSTANCE;
+      } else if (
+        !NON_INSTANCE_KEYWORD_PARENTS.has(node.type) &&
+        node.children.some((child) => !child.isNamed && (child.type === 'this' || child.type === 'base'))
+      ) {
+        // A bare `this`/`base` keyword outside an expression: code the parser read as loose tokens.
         return INSTANCE;
       }
     }

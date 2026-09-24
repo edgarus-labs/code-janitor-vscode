@@ -1,5 +1,7 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
+import { delegateParameterTypes } from './editorConfigExpressionPreferences';
+import { storedDelegateType } from './typeFacts';
 
 const JSON_SERIALIZER_RECEIVERS = new Set([
   'JsonSerializer',
@@ -108,10 +110,14 @@ export const singleStatementLambdaConverter: SourceTransformation = {
     try {
       const edits: TextEdit[] = [];
 
+      // A block body cannot become an expression tree and `{ F(); }` discards F's value, so as an
+      // argument the expression body can bind to another overload (`Expression<T>`, `Func<Task>`).
+      // Only lambdas that initialize a variable of a written delegate type are rewritten
+      // (https://learn.microsoft.com/dotnet/csharp/language-reference/operators/lambda-expressions#expression-lambdas).
       for (const lambda of findAll(tree.rootNode, 'lambda_expression')) {
         const body = lambda.childForFieldName('body');
         const expression = singleExpressionOfBlock(body);
-        if (body && expression) {
+        if (body && expression && storedDelegateType(lambda)) {
           edits.push({ start: body.startIndex, end: body.endIndex, text: expression.text });
         }
       }
@@ -119,11 +125,14 @@ export const singleStatementLambdaConverter: SourceTransformation = {
       for (const anonymous of findAll(tree.rootNode, 'anonymous_method_expression')) {
         const body = anonymous.namedChildren.find((child) => child?.type === 'block');
         const expression = singleExpressionOfBlock(body);
-        if (!expression) {
+        const delegateType = storedDelegateType(anonymous);
+        const parameters = anonymous.childForFieldName('parameters');
+        // `delegate { }` without a parameter list converts to a delegate with any parameters; `() =>`
+        // only to one without (https://learn.microsoft.com/dotnet/csharp/language-reference/operators/delegate-operator).
+        if (!expression || !delegateType || (!parameters && delegateParameterTypes(delegateType)?.length !== 0)) {
           continue;
         }
 
-        const parameters = anonymous.childForFieldName('parameters');
         const isAsync = anonymous.children.some((child) => child?.type === 'async');
         const prefix = isAsync ? 'async ' : '';
 

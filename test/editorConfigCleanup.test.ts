@@ -88,3 +88,34 @@ describe('.editorconfig categories in the cleanup pipeline', () => {
     expect(clean('\uFEFFclass Sample\n{\n}\n').output).toBe('\uFEFFinternal class Sample\n{\n}\n');
   });
 });
+
+describe('.editorconfig naming rules and code-style rewrites together', () => {
+  it('names the local functions code style creates, so a second cleanup changes nothing', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'code-janitor-naming-order-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, '.editorconfig'),
+        [
+          'root = true',
+          '[*.cs]',
+          'csharp_style_prefer_local_over_anonymous_function = true:warning',
+          'dotnet_naming_rule.local_functions.severity = warning',
+          'dotnet_naming_rule.local_functions.symbols = local_functions',
+          'dotnet_naming_rule.local_functions.style = pascal',
+          'dotnet_naming_symbols.local_functions.applicable_kinds = local_function',
+          'dotnet_naming_style.pascal.capitalization = pascal_case',
+        ].join('\n')
+      );
+      const filePath = path.join(root, 'Sample.cs');
+      const source = ['public class C', '{', '    public int M()', '    {', '        Func<int, int> twice = x => x * 2;', '        return twice(2);', '    }', '}', ''].join('\n');
+
+      const once = runCleanup(source, filePath, createDefaultSettings());
+
+      expect(once).toContain('Twice(2)');
+      expect(once).not.toMatch(/\btwice\b/);
+      expect(runCleanup(once, filePath, createDefaultSettings())).toBe(once);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

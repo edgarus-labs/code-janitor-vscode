@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { EditorConfigProperties, loadEditorConfigProperties } from './editorconfig';
-import { effectiveEditorConfigValue, enforcedOptionValue, unsupportedEditorConfigSettings } from './editorConfigRegistry';
+import { effectiveEditorConfigValue, enforcedOptionValue, isDiagnosticEnforced, unsupportedEditorConfigSettings } from './editorConfigRegistry';
 import { SourceTransformationPipeline, delegateTransformation } from './pipeline';
 import { ProjectInfo, findProject } from './projectInfo';
 import { CleanupSettings, SourceTransformation } from './types';
@@ -53,7 +53,6 @@ import { varWhenApparentConverter } from './transformations/varWhenApparent';
 import { createEditorConfigNamingConverter } from './transformations/editorConfigNaming';
 import { createEditorConfigCodeStyleConverter } from './transformations/editorConfigCodeStyle';
 import { createEditorConfigFormattingConverter } from './transformations/editorConfigFormatting';
-import { qualityRulesNeedProject } from './transformations/editorConfigQualityRules';
 import { EditorConfigIssueReporter, tabWidth } from './transformations/editorConfigSupport';
 
 /** The `.editorconfig` properties of the file being cleaned. */
@@ -121,14 +120,8 @@ export function getCleanupPipeline(
     report: (message) => onIssue?.({ kind: 'unresolved', message: `${filePath}: ${message}` }),
     fileName: filePath ? path.basename(filePath) : undefined,
     filePath: filePath || undefined,
-    // IDE0330 (System.Threading.Lock needs .NET 9), IDE0130 (namespace matches folder) and the
-    // code-quality rules that check the project's other files or target frameworks read it.
-    project:
-      effectiveEditorConfigValue(properties, 'csharp_prefer_system_threading_lock') === 'true' ||
-      effectiveEditorConfigValue(properties, 'dotnet_style_namespace_match_folder') === 'true' ||
-      qualityRulesNeedProject(properties)
-        ? findProject(filePath)
-        : undefined,
+    // Every rule depends on the project's C# version; some also on its folder or frameworks.
+    project: properties.entries.size > 0 ? findProject(filePath) : undefined,
   };
 
   return buildPipeline(source, settings, rules, externalDisqualifiedTypeNames);
@@ -177,7 +170,10 @@ export function buildPipeline(
       : undefined,
     settings.convertToVarWhenApparent && !varStyleKeys.some(decides) ? varWhenApparentConverter : undefined,
     settings.makeFieldsReadonlyWhenSafe && !decides('dotnet_style_readonly_field') ? readonlyFieldConverter : undefined,
-    settings.sealClassesWhenSafe ? createSealedClassConverter(externalDisqualifiedTypeNames) : undefined,
+    // While CA1852 is enforced, the `.editorconfig` rule alone decides what is sealed.
+    settings.sealClassesWhenSafe && !(props && isDiagnosticEnforced(props, 'CA1852'))
+      ? createSealedClassConverter(externalDisqualifiedTypeNames)
+      : undefined,
     settings.insertBlankLineBeforeReturnAndThrowStatements ? returnThrowBlankLinePaddingConverter : undefined,
     settings.convertToCollectionExpressions && collectionExpressions !== 'false' && collectionExpressions !== 'never'
       ? collectionExpressionConverter
@@ -242,9 +238,9 @@ export function buildPipeline(
     settings.removeMultipleConsecutiveBlankLines ? normalizeBlankLinesConverter : undefined,
     decides('insert_final_newline') ? undefined : ensureFinalNewlineConverter,
 
-    // The `.editorconfig` rules run after every other step: naming, code style, then formatting
+    // The `.editorconfig` rules run after every other step: code style, naming (after code style,
+    // so the names code-style rewrites introduce follow the naming rules too), then formatting
     // (last, so it formats code the other rules created).
-    hasEditorConfig && rules ? createEditorConfigNamingConverter(rules.properties, rules.report) : undefined,
     hasEditorConfig && rules
       ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, {
           fileName: rules.fileName,
@@ -252,6 +248,7 @@ export function buildPipeline(
           project: rules.project,
         })
       : undefined,
+    hasEditorConfig && rules ? createEditorConfigNamingConverter(rules.properties, rules.report) : undefined,
     restoreByteOrderMark
       ? delegateTransformation('Restore byte order mark for charset', (text) => `\uFEFF${text}`)
       : undefined,

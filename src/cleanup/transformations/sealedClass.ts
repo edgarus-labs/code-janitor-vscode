@@ -157,13 +157,38 @@ function isSafeToSeal(declaration: Node, disqualifiedTypeNames: ReadonlySet<stri
     (child) => child?.type === 'modifier' && BLOCKING_MODIFIERS[child.text] === true
   );
 
-  if (hasBlockingModifier || hasOverridableMember(declaration)) {
+  if (hasBlockingModifier || sealingBlocker(declaration) !== undefined) {
     return false;
   }
 
   const name = declaration.childForFieldName('name')?.text;
 
   return name !== undefined && !disqualifiedTypeNames.has(name);
+}
+
+/**
+ * Why a type must not be sealed whatever derives from it, or `undefined`: an `abstract` member or
+ * nested type at any depth (the user's rule; an abstract member of a sealed type is CS0513), a
+ * `virtual` member (CS0549) or a `protected` member or nested type (CS0628).
+ * https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/sealed
+ */
+export function sealingBlocker(declaration: Node): string | undefined {
+  const body = declaration.childForFieldName('body');
+  const nested = body ? findAll(body, ['modifier']) : [];
+  if (nested.some((modifier) => modifier.text === 'abstract')) {
+    return 'it contains abstract members/types';
+  }
+
+  if (hasOverridableMember(declaration)) {
+    return 'it declares virtual members (CS0549 once sealed)';
+  }
+
+  const members = body?.namedChildren ?? [];
+  if (members.some((member) => member.namedChildren.some((child) => child.type === 'modifier' && child.text === 'protected') && !member.namedChildren.some((child) => child.type === 'modifier' && child.text === 'override'))) {
+    return 'it declares protected members or nested types (CS0628 once sealed)';
+  }
+
+  return undefined;
 }
 
 /** True when the type directly declares a `virtual` method, property, indexer, event or event field (CS0549 once sealed). */

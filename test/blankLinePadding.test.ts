@@ -26,6 +26,20 @@ describe('blankLinePaddingConverter', () => {
     expect(result).toContain('int _x;\r\n\r\n    /// <summary>');
   });
 
+  it('keeps a line comment directly above a member attached to it', () => {
+    const source = 'class C\n{\n    int _x;\n    // Explains M.\n    void M() { }\n\n    int _y; // trailing\n    void N() { }\n}\n';
+
+    expect(apply(source, 'insertBlankLinePaddingBeforeMethods')).toBe(
+      'class C\n{\n    int _x;\n\n    // Explains M.\n    void M() { }\n\n    int _y; // trailing\n\n    void N() { }\n}\n'
+    );
+  });
+
+  it('does not add a second blank line after a member already followed by one', () => {
+    const source = 'class C\n{\n    void M()\n    {\n    }\n\n    int _x;\n}\n';
+
+    expect(apply(source, 'insertBlankLinePaddingAfterMethods')).toBe(source);
+  });
+
   it('returns the source unchanged when every setting is disabled', () => {
     const source = 'public class Foo { public void Bar() { } }';
 

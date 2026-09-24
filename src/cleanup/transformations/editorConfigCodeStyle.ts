@@ -1,6 +1,7 @@
-import { STRING, classifyCSharp } from '../csharpScanner';
+import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
+import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { ProjectInfo } from '../projectInfo';
 import { SourceTransformation } from '../types';
 import { applyBracePreference } from './editorConfigBraces';
@@ -13,6 +14,7 @@ import {
   indentFollowingLines,
   indentUnit,
   isBlank,
+  isRecoveredNode,
   lineEndAt,
   lineIndentAt,
   lineStartAt,
@@ -29,7 +31,7 @@ import { STATEMENT_PREFERENCES, applyStatementPreference } from './editorConfigS
 import { applySystemThreadingLock, reportPrimaryConstructors } from './editorConfigTypePreferences';
 import { applyVarPreferences } from './editorConfigVarPreference';
 import { createExplicitAccessModifierConverter } from './explicitAccessModifier';
-import { moveUsingsOutside } from './namespaceScope';
+import { isFullyQualifiedUsing, moveUsingsOutside } from './namespaceScope';
 import { inlineOutVariableDeclarations } from './outVarInlining';
 import { readonlyFieldConverter } from './readonlyFieldAndSingleLineMethods';
 
@@ -111,11 +113,94 @@ export function createEditorConfigCodeStyleConverter(
   };
 }
 
+interface LanguageRequirement {
+  /** Lowest C# version with the syntax the rule writes. */
+  readonly version: number;
+  /** True when the syntax needs .NET Core 3.0+ types (`System.Index`, `System.Range`, `Span<T>`). */
+  readonly modernRuntime?: boolean;
+}
+
+/**
+ * What the rewrite of each option needs from the project
+ * (https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-version-history). Options missing
+ * here write syntax every C# version has.
+ */
+const LANGUAGE_REQUIREMENTS: Record<string, LanguageRequirement> = {
+  csharp_style_implicit_object_creation_when_type_is_apparent: { version: 9 },
+  csharp_prefer_simple_default_expression: { version: 7.1 },
+  csharp_style_prefer_index_operator: { version: 8, modernRuntime: true },
+  csharp_style_prefer_range_operator: { version: 8, modernRuntime: true },
+  csharp_style_throw_expression: { version: 7 },
+  csharp_style_prefer_null_check_over_type_check: { version: 9 },
+  csharp_style_prefer_tuple_swap: { version: 7 },
+  csharp_style_prefer_local_over_anonymous_function: { version: 7 },
+  csharp_style_deconstructed_variable_declaration: { version: 7 },
+  csharp_style_prefer_utf8_string_literals: { version: 11, modernRuntime: true },
+  csharp_prefer_system_threading_lock: { version: 13 },
+  csharp_style_prefer_unbound_generic_type_in_nameof: { version: 14 },
+  csharp_prefer_simple_using_statement: { version: 8 },
+  csharp_style_inlined_variable_declaration: { version: 7 },
+  csharp_style_prefer_not_pattern: { version: 9 },
+  csharp_style_prefer_pattern_matching: { version: 9 },
+  dotnet_style_prefer_is_null_check_over_reference_equality_method: { version: 9 },
+  dotnet_style_null_propagation: { version: 6 },
+  csharp_style_conditional_delegate_call: { version: 6 },
+  dotnet_style_prefer_compound_assignment: { version: 8 },
+  dotnet_style_prefer_inferred_tuple_names: { version: 7.1 },
+  csharp_style_prefer_switch_expression: { version: 9 },
+  csharp_style_pattern_matching_over_as_with_null_check: { version: 7 },
+  csharp_style_pattern_matching_over_is_with_cast_check: { version: 7 },
+  dotnet_style_explicit_tuple_names: { version: 7 },
+  csharp_style_prefer_extended_property_pattern: { version: 10 },
+  dotnet_style_prefer_simplified_interpolation: { version: 6 },
+  csharp_style_prefer_readonly_struct: { version: 7.2 },
+  csharp_style_prefer_readonly_struct_member: { version: 8 },
+  csharp_prefer_static_local_function: { version: 8 },
+  dotnet_style_prefer_auto_properties: { version: 6 },
+  csharp_style_expression_bodied_methods: { version: 6 },
+  csharp_style_expression_bodied_operators: { version: 6 },
+  csharp_style_expression_bodied_properties: { version: 6 },
+  csharp_style_expression_bodied_indexers: { version: 6 },
+  csharp_style_expression_bodied_constructors: { version: 7 },
+  csharp_style_expression_bodied_accessors: { version: 7 },
+  csharp_style_expression_bodied_local_functions: { version: 7 },
+};
+
+/** The requirement of `rule` for the option's current value (file-scoped namespaces need C# 10). */
+function requirementOf(rule: Rule, props: EditorConfigProperties): LanguageRequirement | undefined {
+  if (rule.option === 'csharp_style_namespace_declarations') {
+    return effectiveEditorConfigValue(props, rule.option) === 'file_scoped' ? { version: 10 } : undefined;
+  }
+
+  return LANGUAGE_REQUIREMENTS[rule.option];
+}
+
+/** Why the project cannot take the rule's syntax, or `undefined` when it can (or is unknown). */
+function unsupportedByProject(rule: Rule, context: RuleContext): string | undefined {
+  const requirement = requirementOf(rule, context.props);
+  const project = context.project;
+  if (!requirement || !project || effectiveEditorConfigValue(context.props, rule.option) === undefined) {
+    return undefined;
+  }
+
+  if (project.languageVersion !== undefined && project.languageVersion < requirement.version) {
+    return `the project uses C# ${project.languageVersion} and the rewrite needs C# ${requirement.version}`;
+  }
+
+  return requirement.modernRuntime && project.modernRuntime === false ? 'the project targets a runtime without the types the rewrite needs' : undefined;
+}
+
 function applyRules(source: string, context: RuleContext): string {
   let current = source;
   let errors: number | undefined;
 
   for (const rule of RULES) {
+    const unsupported = unsupportedByProject(rule, context);
+    if (unsupported) {
+      context.report(`${rule.option}: not applied, ${unsupported}.`);
+      continue;
+    }
+
     const updated = rule.apply(current, context);
     if (updated === current) {
       continue;
@@ -295,6 +380,23 @@ function toBlockScopedNamespace(source: string, context: RuleContext): string {
     }
 
     const kinds = classifyCSharp(source);
+    // An `#if` open before the declaration closes after it: the closing brace would have to go
+    // inside that `#if` group, where it is skipped when the symbol is not defined.
+    let openConditionals = 0;
+    for (const directive of source.slice(0, namespaceNode.startIndex).matchAll(/^[ \t]*#[ \t]*(if|endif)\b/gm)) {
+      if (kinds[directive.index + directive[0].indexOf('#')] === CODE) {
+        openConditionals += directive[1] === 'if' ? 1 : -1;
+      }
+    }
+
+    if (openConditionals > 0) {
+      context.report(
+        describeIssue('IDE0160', NAMESPACE_OPTION, source, namespaceNode.startIndex, 'namespace not converted: an #if directive before it ends after it.')
+      );
+
+      return source;
+    }
+
     if (containsMultiLineString(source, kinds, semicolon.endIndex, source.length)) {
       context.report(
         describeIssue(
@@ -363,8 +465,6 @@ function dedentBlock(source: string, kinds: Uint8Array, start: number, end: numb
 const USING_PLACEMENT_OPTION = 'csharp_using_directive_placement';
 
 /** Roots that are taken to be fully qualified when a using directive moves out of a namespace. */
-const WELL_KNOWN_ROOTS: Record<string, true> = { System: true, Microsoft: true };
-
 function applyUsingPlacementPreference(source: string, context: RuleContext): string {
   const option = readCodeStyleOption(context.props, USING_PLACEMENT_OPTION, 'IDE0065');
   if (!option?.enforced || (option.value !== 'outside_namespace' && option.value !== 'inside_namespace')) {
@@ -422,21 +522,6 @@ function applyUsingPlacementPreference(source: string, context: RuleContext): st
   } finally {
     tree.delete();
   }
-}
-
-function isFullyQualifiedUsing(text: string, namespaceRoot: string | undefined): boolean {
-  const target = /^using\s+(?:static\s+)?(?:@?\w+\s*=\s*)?([\s\S]*?);$/.exec(text.trim())?.[1].trim();
-  if (!target) {
-    return false;
-  }
-
-  if (target.startsWith('global::')) {
-    return true;
-  }
-
-  const first = target.split(/[.<:\s]/)[0];
-
-  return WELL_KNOWN_ROOTS[first] === true || first === namespaceRoot;
 }
 
 /** Moving usings out leaves the blank line that separated them from the members; drop it. */
@@ -606,6 +691,8 @@ function addPrivateToIndexers(source: string): string {
       if (
         !owner ||
         owner.type === 'interface_declaration' ||
+        hasParseErrors(indexer) ||
+        indexer.parent?.namedChildren.some(isRecoveredNode) ||
         accessModifiers(indexer).length > 0 ||
         indexer.namedChildren.some((child) => child.type === 'explicit_interface_specifier')
       ) {

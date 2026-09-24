@@ -1,5 +1,3 @@
-import { EditorConfigProperties } from '../editorconfig';
-import { isDiagnosticEnforced } from '../editorConfigRegistry';
 import type { Rule } from './editorConfigCodeStyle';
 import {
   applyArrayEmpty,
@@ -38,10 +36,3 @@ export const QUALITY_RULES: readonly Rule[] = [
   { option: 'CA1852', apply: applySealInternalTypes },
 ];
 
-/** Rules that read the file's project: its other files (CA1822, CA1852) or its target frameworks. */
-const PROJECT_RULES = ['CA1822', 'CA1852', 'CA1825', 'CA1847', 'CA1865', 'CA1866', 'CA1867', 'CA2249'];
-
-/** True when an enforced rule needs the file's project (see `projectInfo.ts`). */
-export function qualityRulesNeedProject(props: EditorConfigProperties): boolean {
-  return PROJECT_RULES.some((diagnosticId) => isDiagnosticEnforced(props, diagnosticId));
-}

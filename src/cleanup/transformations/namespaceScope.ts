@@ -10,8 +10,48 @@ const NAMESPACE_TYPES = ['namespace_declaration', 'file_scoped_namespace_declara
  */
 export const moveUsingsOutsideNamespaceConverter: SourceTransformation = {
   name: 'Move using directives outside namespace',
-  apply: moveUsingsOutside,
+  apply: (source) => (usingsCanMoveOutside(source) ? moveUsingsOutside(source) : source),
 };
+
+const WELL_KNOWN_ROOTS: Record<string, true> = { System: true, Microsoft: true };
+
+/**
+ * True when a using directive names the same thing inside and outside the namespace: `global::`
+ * names, `System`/`Microsoft` names and names starting with the namespace's first segment. Other
+ * names may resolve relative to the enclosing namespace
+ * (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/using-directive).
+ */
+export function isFullyQualifiedUsing(text: string, namespaceRoot: string | undefined): boolean {
+  const target = /^using\s+(?:static\s+)?(?:@?\w+\s*=\s*)?([\s\S]*?);$/.exec(text.trim())?.[1].trim();
+  if (!target) {
+    return false;
+  }
+
+  if (target.startsWith('global::')) {
+    return true;
+  }
+
+  const first = target.split(/[.<:\s]/)[0];
+
+  return WELL_KNOWN_ROOTS[first] === true || first === namespaceRoot;
+}
+
+/** True when the file has one namespace and every using inside it is fully qualified. */
+function usingsCanMoveOutside(source: string): boolean {
+  if (!source) {
+    return false;
+  }
+
+  const tree = parseCSharp(source);
+  try {
+    const namespaces = findAll(tree.rootNode, NAMESPACE_TYPES);
+    const root = namespaces[0]?.childForFieldName('name')?.text.split('.')[0];
+
+    return namespaces.length === 1 && directUsings(namespaces[0]).every((directive) => isFullyQualifiedUsing(directive.text, root));
+  } finally {
+    tree.delete();
+  }
+}
 
 export function moveUsingsOutside(source: string): string {
   if (!source) {

@@ -565,7 +565,7 @@ export function applyNameOf(source: string, context: RuleContext): string {
 
       const value = literal.type === 'string_literal' ? literal.text.slice(1, -1) : literal.text.slice(2, -1);
       const kind = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(value) ? nameArgumentKind(argument) : undefined;
-      const names = kind === 'paramName' ? enclosingParameters(argument) : kind === 'propertyName' ? containingProperties(argument) : undefined;
+      const names = kind === 'paramName' ? enclosingParameters(argument, source) : kind === 'propertyName' ? containingProperties(argument) : undefined;
       const declared = names?.get(value);
       if (declared && !suppressions.isSuppressed('CA1507', argument)) {
         edits.push({ start: literal.startIndex, end: literal.endIndex, text: `nameof(${declared})` });
@@ -620,7 +620,7 @@ function nameArgumentKind(argument: Node): 'paramName' | 'propertyName' | undefi
 }
 
 /** Parameter names (as declared, keeping `@`) of the member, local functions, lambdas and accessors enclosing `node`. */
-function enclosingParameters(node: Node): Map<string, string> {
+function enclosingParameters(node: Node, source: string): Map<string, string> {
   const names = new Map<string, string>();
   const add = (identifier: Node | null | undefined): void => {
     if (identifier?.type === 'identifier') {
@@ -638,6 +638,14 @@ function enclosingParameters(node: Node): Map<string, string> {
       }
     } else if (current.type === 'accessor_declaration' && /^(?:\[[^\]]*\]\s*)*(?:\w+\s+)*(?:set|init|add|remove)\b/.test(current.text)) {
       names.set('value', 'value');
+    }
+
+    // A static local function or lambda cannot reference the enclosing parameters (CS8421).
+    const precededByStatic = /\bstatic\s*$/.test(source.slice(Math.max(0, current.startIndex - 20), current.startIndex));
+    const isStatic = (current.type === 'local_function_statement' || current.type === 'lambda_expression' || current.type === 'anonymous_method_expression') &&
+      (current.namedChildren.some((child) => child.type === 'modifier' && child.text === 'static') || /^(?:async\s+)?static\b/.test(current.text) || precededByStatic);
+    if (isStatic) {
+      break;
     }
   }
 

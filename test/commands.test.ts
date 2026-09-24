@@ -618,6 +618,26 @@ describe('cleanup commands', () => {
     }
   });
 
+  it('never lets two files of one batch split a type into the same new file', async () => {
+    const root = tempRoot();
+    try {
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+      const first = path.join(root, 'First.cs');
+      const second = path.join(root, 'Second.cs');
+      state.files.set(first, 'namespace A;\n\ninternal class First\n{\n}\n\ninternal class Options\n{\n}\n');
+      const secondSource = 'namespace B;\n\ninternal class Second\n{\n}\n\ninternal class Options\n{\n}\n';
+      state.files.set(second, secondSource);
+
+      const result = await runCleanupOnUris(createContext(), [Uri.file(first), Uri.file(second)]);
+
+      expect(result).toEqual({ changed: 1, failed: 0, unresolved: 1, created: 1 });
+      expect(state.files.get(path.join(root, 'Options.cs'))).toBe('namespace A;\n\ninternal class Options\n{\n}\n');
+      expect(state.files.get(second)).toBe(secondSource);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('leaves the file whole and reports the violation when a target file already exists', async () => {
     const root = tempRoot();
     try {

@@ -227,11 +227,11 @@ describe('IDE0053 csharp_style_expression_bodied_lambdas', () => {
 });
 
 describe('IDE0071 dotnet_style_prefer_simplified_interpolation', () => {
-  it('drops ToString calls in the holes of interpolated strings typed as string', () => {
+  it('drops ToString calls on value types in the holes of interpolated strings typed as string', () => {
     expectRewrite(
       'dotnet_style_prefer_simplified_interpolation = true',
-      method('var a = $"{s.ToString()} and {i.ToString("N2")}";', 'Use($"{i.ToString()}");'),
-      method('var a = $"{s} and {i:N2}";', 'Use($"{i.ToString()}");')
+      method('var a = $"{i.ToString()} and {i.ToString("N2")}";', 'Use($"{i.ToString()}");'),
+      method('var a = $"{i} and {i:N2}";', 'Use($"{i.ToString()}");')
     );
   });
 });

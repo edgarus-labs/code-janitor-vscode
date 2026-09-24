@@ -1,7 +1,7 @@
 import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { Rule } from './editorConfigCodeStyle';
-import { declaredTypeNode, delegateParameterTypes, isSimpleReceiver, subjectTypeText } from './editorConfigExpressionPreferences';
+import { declaredTypeNode, declaredTypeText, delegateParameterTypes, isSimpleReceiver, subjectTypeText } from './editorConfigExpressionPreferences';
 import { hasComment, returnType, tupleElements } from './editorConfigStatementPreferences';
 import {
   RELATIONAL,
@@ -15,6 +15,7 @@ import {
   withParentheses,
 } from './editorConfigPrecedence';
 import { EditorConfigIssueReporter, describeIssue, hasParseErrors } from './editorConfigSupport';
+import { NULLABLE_VALUE_TYPE, isNonNullableValueType, isPlainReferenceType, isVariable } from './typeFacts';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
 
 /**
@@ -67,53 +68,6 @@ function normalized(text: string): string {
 // ---------------------------------------------------------------------------------------------
 // Types known from the file
 // ---------------------------------------------------------------------------------------------
-
-const PLAIN_REFERENCE_TYPES: Record<string, true> = {
-  string: true,
-  String: true,
-  'System.String': true,
-  object: true,
-  Object: true,
-  'System.Object': true,
-};
-
-/**
- * True when `x == null` on a value of `type` is a plain reference comparison: `string`, `object`,
- * arrays, and interfaces or base-less classes declared in the file without `operator ==`.
- */
-function isPlainReferenceType(type: string | undefined, root: Node): boolean {
-  const bare = type?.replace(/\?$/, '');
-  if (!bare) {
-    return false;
-  }
-
-  if (PLAIN_REFERENCE_TYPES[bare] === true || bare.endsWith(']')) {
-    return true;
-  }
-
-  const name = bare.replace(/<.*>$/, '');
-  if (!/^[A-Za-z_]\w*$/.test(name)) {
-    return false;
-  }
-
-  const declarations = findAll(root, ['class_declaration', 'interface_declaration', 'struct_declaration', 'record_declaration', 'enum_declaration', 'delegate_declaration']).filter(
-    (declaration) => declaration.childForFieldName('name')?.text === name
-  );
-
-  return (
-    declarations.length > 0 &&
-    declarations.every(
-      (declaration) =>
-        !declaration.namedChildren.some((child) => child.type === 'modifier' && child.text === 'partial') &&
-        (declaration.type === 'interface_declaration' ||
-          (declaration.type === 'class_declaration' &&
-            !declaration.namedChildren.some((child) => child.type === 'base_list') &&
-            !declaration.descendantsOfType('operator_declaration').some((operator) => /operator\s*(?:==|!=)/.test(operator.text))))
-    )
-  );
-}
-
-const NULLABLE_VALUE_TYPE = /^(?:bool|byte|sbyte|char|decimal|double|float|short|ushort|int|uint|long|ulong|nint|nuint|DateTime|DateTimeOffset|TimeSpan|Guid)\?$/;
 
 /** `condition ? whenTrue : whenFalse` of a fully parsed conditional expression. */
 function conditionalParts(conditional: Node): { condition: Node; whenTrue: Node; whenFalse: Node } | undefined {
@@ -373,6 +327,8 @@ const compoundAssignment: Collect = (source, root) => {
       !isSimpleReceiver(left) ||
       !operator ||
       COMPOUND_OPERATORS[operator] !== true ||
+      // `P = P ?? v` always runs P's setter, `P ??= v` only when P is null: only for variables.
+      (operator === '??' && !isVariable(left)) ||
       !operandLeft ||
       !operandRight ||
       normalized(operandLeft.text) !== normalized(left.text) ||
@@ -648,6 +604,8 @@ const isNullOverReferenceEquals: Collect = (_source, root) => {
       args.length !== 2 ||
       !subject ||
       subject.type === 'null_literal' ||
+      // `is null` does not compile for a non-nullable value type (CS0037), `ReferenceEquals` does.
+      isNonNullableValueType(subjectTypeText(subject), root) ||
       hasParseErrors(invocation) ||
       isInPossibleExpressionTree(invocation)
     ) {
@@ -1103,24 +1061,52 @@ function interpolationHoles(text: string): { start: number; end: number }[] | un
   return holes;
 }
 
-/** `$"{x.ToString()}"` becomes `$"{x}"` and `$"{x.ToString("N2")}"` becomes `$"{x:N2}"`. */
-const simplifiedInterpolations: Collect = (_source, root) => {
-  const edits: TextEdit[] = [];
-  for (const interpolation of findAll(root, 'interpolated_string_expression')) {
-    const text = interpolation.text;
-    const holes = text.startsWith('$"') && !text.startsWith('$"""') && isStringInterpolation(interpolation) ? interpolationHoles(text) : undefined;
-    for (const hole of holes ?? []) {
-      const content = text.slice(hole.start, hole.end);
-      const match = /^\s*((?:this|[A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)\.ToString\(\s*(?:"([^"\\{}]*)")?\s*\)\s*$/.exec(content);
-      if (match && match[2] !== '') {
+/**
+ * `$"{x.ToString()}"` becomes `$"{x}"` and `$"{x.ToString("N2")}"` becomes `$"{x:N2}"` when `x`
+ * is declared as a built-in value type or an enum: a hole formats a null reference as an empty
+ * string where `ToString()` throws, and a type's own `IFormattable.ToString` may differ from its
+ * `ToString()` (https://learn.microsoft.com/dotnet/csharp/language-reference/tokens/interpolated#structure-of-an-interpolated-string).
+ */
+function simplifiedInterpolations(report: EditorConfigIssueReporter): Collect {
+  return (source, root) => {
+    const edits: TextEdit[] = [];
+    for (const interpolation of findAll(root, 'interpolated_string_expression')) {
+      const text = interpolation.text;
+      const holes = text.startsWith('$"') && !text.startsWith('$"""') && isStringInterpolation(interpolation) ? interpolationHoles(text) : undefined;
+      for (const hole of holes ?? []) {
+        const content = text.slice(hole.start, hole.end);
+        const match = /^\s*((?:this|[A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)\.ToString\(\s*(?:"([^"\\{}]*)")?\s*\)\s*$/.exec(content);
+        if (!match || match[2] === '') {
+          continue;
+        }
+
         const start = interpolation.startIndex + hole.start;
-        edits.push({ start, end: interpolation.startIndex + hole.end, text: match[2] === undefined ? match[1] : `${match[1]}:${match[2]}` });
+        const end = interpolation.startIndex + hole.end;
+        // The parser keeps holes as text: the receiver is looked up by name from the string.
+        const type = /^[A-Za-z_]\w*$/.test(match[1]) ? declaredTypeText(interpolation, match[1]) : undefined;
+        const formattable = findAll(root, 'struct_declaration').some(
+          (declaration) => declaration.childForFieldName('name')?.text === type && /\bIFormattable\b/.test(declaration.text)
+        );
+        if (!isNonNullableValueType(type, root) || formattable) {
+          report(
+            describeIssue(
+              'IDE0071',
+              'dotnet_style_prefer_simplified_interpolation',
+              source,
+              start,
+              `'${content.trim()}' was kept: '${match[1]}' is not declared as a built-in value type or enum, so without ToString() the hole could format it differently or not throw on null.`
+            )
+          );
+          continue;
+        }
+
+        edits.push({ start, end, text: match[2] === undefined ? match[1] : `${match[1]}:${match[2]}` });
       }
     }
-  }
 
-  return edits;
-};
+    return edits;
+  };
+}
 
 // ---------------------------------------------------------------------------------------------
 // IDE0170 csharp_style_prefer_extended_property_pattern
@@ -1255,7 +1241,7 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
       const methodReturns = method?.childForFieldName('type')?.text.replace(/\s+/g, '');
       const matches =
         method !== undefined &&
-        !method.namedChildren.some((child) => child.type === 'type_parameter_list') &&
+        !method.namedChildren.some((child) => child.type === 'type_parameter_list' || child.type === 'attribute_list') &&
         parameterTypes !== undefined &&
         methodParameters.length === parameterTypes.length &&
         methodParameters.every(
@@ -1305,7 +1291,22 @@ export const OPERATOR_RULES: readonly Rule[] = [
   },
   parenthesesRule(),
   whenPreferred('dotnet_style_explicit_tuple_names', explicitTupleNames),
-  whenPreferred('dotnet_style_prefer_simplified_interpolation', simplifiedInterpolations),
+  {
+    option: 'dotnet_style_prefer_simplified_interpolation',
+    // Reports as it goes, so it makes one pass: its rewrites never nest.
+    apply: (source, { props, report }) => {
+      if (effectiveEditorConfigValue(props, 'dotnet_style_prefer_simplified_interpolation') !== 'true') {
+        return source;
+      }
+
+      const tree = parseCSharp(source);
+      try {
+        return applyEdits(source, simplifiedInterpolations(report)(source, tree.rootNode));
+      } finally {
+        tree.delete();
+      }
+    },
+  },
   whenPreferred('csharp_style_prefer_extended_property_pattern', extendedPropertyPatterns),
   {
     option: METHOD_GROUP_OPTION,

@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import { findProject } from '../src/cleanup/projectInfo';
+import { runCleanup } from '../src/cleanup/runCleanup';
+import { createDefaultSettings } from '../src/cleanup/types';
 import { createEditorConfigCodeStyleConverter, EditorConfigCodeStyleOptions } from '../src/cleanup/transformations/editorConfigCodeStyle';
 
 function lines(...text: string[]): string {
@@ -43,6 +45,20 @@ function project(files: Record<string, string>, file: string, csproj = '<Project
 
 describe('CA1822 mark members as static', () => {
   const warning = 'dotnet_diagnostic.CA1822.severity = warning';
+
+  it('keeps a member instance when this appears in code the parser reads as loose tokens', () => {
+    const source = lines(
+      'internal class C',
+      '{',
+      '    private IEnumerable<(int A, object B)> Pairs(int x)',
+      '    {',
+      '        yield return (x, this);',
+      '    }',
+      '}'
+    );
+
+    expect(cleanup(source, warning).output).toBe(source);
+  });
 
   it('makes private members that use no instance data static and drops this. at their call sites', () => {
     const source = lines(
@@ -217,8 +233,8 @@ describe('CA1822 mark members as static', () => {
     const source = lines(
       'class Run',
       '{',
-      '    private readonly List<(string Id, int Count)> _applied = new List<(string Id, int Count)>();',
-      '    private void Record(string id) => _applied.Add((id, 1));',
+      '    private readonly unsafe delegate*<int, void> _applied;',
+      '    private unsafe void Record(int id) => _applied(id);',
       '}'
     );
 
@@ -226,6 +242,14 @@ describe('CA1822 mark members as static', () => {
 
     expect(result.output).toBe(source);
     expect(result.issues).toEqual([expect.stringMatching(/^CA1822 line 4: 'Record' .*could not read every member declaration of Run/)]);
+  });
+
+  it('reports a property with a readonly accessor, which a static property cannot have (CS0106)', () => {
+    const source = lines('struct Point', '{', '    private int Zero { readonly get => 0; }', '}');
+
+    const result = cleanup(source, warning);
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1822 line 3: 'Zero' .*readonly/)]);
   });
 
   it('honors dotnet_code_quality api_surface', () => {
@@ -364,6 +388,45 @@ describe('CA1852 seal internal types', () => {
     const noProject = cleanup(lines('class Lone { }'), warning);
     expect(noProject.output).toBe(lines('class Lone { }'));
     expect(noProject.issues).toEqual([expect.stringMatching(/^CA1852 line 1: 'Lone' .*project/)]);
+  });
+
+  it('never seals a type containing abstract members or nested abstract types, at any depth', () => {
+    const source = lines(
+      'internal class Host',
+      '{',
+      '    private abstract class Nested { }',
+      '    private class Impl : Nested { }',
+      '}',
+      'internal class Deep',
+      '{',
+      '    private class Middle',
+      '    {',
+      '        private abstract class Leaf { }',
+      '    }',
+      '}'
+    );
+    const result = cleanup(source, warning, project({ 'Host.cs': source }, 'Host.cs'));
+
+    expect(result.output).toBe(source.replace('    private class Impl', '    private sealed class Impl'));
+    expect(result.issues).toEqual([
+      expect.stringMatching(/^CA1852 line 1: 'Host' .*contains abstract members\/types/),
+      expect.stringMatching(/^CA1852 line 6: 'Deep' .*contains abstract members\/types/),
+      expect.stringMatching(/^CA1852 line 8: 'Middle' .*contains abstract members\/types/),
+    ]);
+  });
+
+  it('decides alone, instead of the sealing setting, while it is enforced', () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-quality-'));
+    temporaryFolders.push(folder);
+    fs.writeFileSync(path.join(folder, '.editorconfig'), `root = true\n[*.cs]\n${warning}\n`);
+    const filePath = path.join(folder, 'Lone.cs');
+    const settings = { ...createDefaultSettings(), sealClassesWhenSafe: true };
+    const messages: string[] = [];
+
+    const output = runCleanup(lines('internal class Lone { }'), filePath, settings, undefined, (issue) => messages.push(issue.message));
+
+    expect(output).toBe(lines('internal class Lone { }'));
+    expect(messages).toEqual([expect.stringMatching(/CA1852 line 1: 'Lone' .*project/)]);
   });
 
   it('applies only while CA1852 is enforced', () => {

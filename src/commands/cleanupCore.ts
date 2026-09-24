@@ -116,6 +116,8 @@ export async function runCleanupOnUris(
   const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
   let unresolved = 0;
   let unsupported = 0;
+  // Files the split plans to create in this batch, so no two files of the batch create the same one.
+  const plannedFiles = new Set<string>();
   const report = (issue: EditorConfigIssue): void => {
     if (issue.kind === 'unresolved') {
       unresolved++;
@@ -135,7 +137,7 @@ export async function runCleanupOnUris(
     'Cleanup',
     'Code Janitor: no files to clean up.',
     true,
-    (file) => splitTypesForEditorConfig(file, report)
+    (file) => splitTypesForEditorConfig(file, report, plannedFiles)
   );
 
   if (unresolved > 0) {
@@ -153,11 +155,14 @@ export async function runCleanupOnUris(
  * The one-type-per-file pre-cleanup step (`SA1402`/`MA0048`/`SA1649` enforced in `.editorconfig`):
  * the file's content without the types moved out, and the new files holding them, which are
  * cleaned and written like the file itself. Violations it cannot fix go to `onIssue`. `undefined`
- * when the file is not C# or nothing is split.
+ * when the file is not C# or nothing is split. `plannedFiles` holds the paths of the files other
+ * files of the same batch will create: they are reserved like existing files, and the files this
+ * split creates are added.
  */
 export async function splitTypesForEditorConfig(
   file: CollectedFile,
-  onIssue: EditorConfigIssueListener
+  onIssue: EditorConfigIssueListener,
+  plannedFiles: Set<string> = new Set()
 ): Promise<PreCleanupResult | undefined> {
   if (!isCSharp(file.uri)) {
     return undefined;
@@ -168,7 +173,7 @@ export async function splitTypesForEditorConfig(
     return undefined;
   }
 
-  const outcome = planOneTypePerFile(file.content, file.uri.fsPath, rules, await siblingCSharpFileNames(file.uri));
+  const outcome = planOneTypePerFile(file.content, file.uri.fsPath, rules, await reservedFileNames(file.uri, plannedFiles));
   for (const message of outcome.issues) {
     onIssue({ kind: 'unresolved', message: `${file.uri.fsPath}: ${message}` });
   }
@@ -178,6 +183,7 @@ export async function splitTypesForEditorConfig(
   }
 
   logInfo(`One type per file (.editorconfig): ${file.uri.fsPath} split into ${outcome.plan.newFiles.length} new file(s).`);
+  outcome.plan.newFiles.forEach((planned) => plannedFiles.add(planned.filePath));
 
   return {
     content: outcome.plan.updatedSource,
@@ -303,6 +309,21 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
   );
 
   return { changed: changedOriginals + createdFiles, failed };
+}
+
+/**
+ * The `.cs` file names a split of `uri` must not use: the files of its directory, and the files of
+ * that directory `plannedFiles` (other files of the same batch) will create.
+ */
+async function reservedFileNames(uri: vscode.Uri, plannedFiles: ReadonlySet<string>): Promise<Set<string>> {
+  const reserved = await siblingCSharpFileNames(uri);
+  for (const planned of plannedFiles) {
+    if (path.dirname(planned) === path.dirname(uri.fsPath)) {
+      reserved.add(path.basename(planned));
+    }
+  }
+
+  return reserved;
 }
 
 /** Existing `.cs` file names in the same directory, used to avoid overwriting a file when planning new names. */
