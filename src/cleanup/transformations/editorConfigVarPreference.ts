@@ -5,6 +5,7 @@ import {
   EditorConfigIssueReporter,
   describeIssue,
   hasParseErrors,
+  lineNumberAt,
   readCodeStyleOption,
 } from './editorConfigSupport';
 import { isTypeApparent } from './varWhenApparent';
@@ -74,6 +75,7 @@ export function applyVarPreferences(source: string, props: EditorConfigPropertie
 
   try {
     const edits: TextEdit[] = [];
+    const unknown: UnknownTypes = { lines: [], options: new Set() };
 
     for (const statement of findAll(tree.rootNode, 'local_declaration_statement')) {
       const declaration = statement.namedChildren.find((child) => child.type === 'variable_declaration');
@@ -90,16 +92,30 @@ export function applyVarPreferences(source: string, props: EditorConfigPropertie
 
       const name = declarators[0].childForFieldName('name')?.text ?? '';
       if (type.type === 'implicit_type') {
-        toExplicitType(source, type, initializer, name, options, report, edits);
+        toExplicitType(source, type, initializer, options, unknown, edits);
       } else {
         toVar(source, type, initializer, name, options, report, edits);
       }
+    }
+
+    // Without a compiler most `var` locals have an unknown type: one line per file, not one each.
+    if (unknown.lines.length > 0) {
+      const count = unknown.lines.length;
+      report(
+        `IDE0008 (${[...unknown.options].join('/')}): ${count} ${count === 1 ? 'local' : 'locals'} kept as 'var' (${count === 1 ? 'line' : 'lines'} ${unknown.lines.join(', ')}): ${count === 1 ? 'its' : 'their'} type is not known without a compiler.`
+      );
     }
 
     return applyEdits(source, edits);
   } finally {
     tree.delete();
   }
+}
+
+/** `var` locals that should have an explicit type the syntax does not tell. */
+interface UnknownTypes {
+  readonly lines: number[];
+  readonly options: Set<string>;
 }
 
 function toVar(
@@ -151,9 +167,8 @@ function toExplicitType(
   source: string,
   type: Node,
   initializer: Node,
-  name: string,
   options: Partial<Record<Category, CodeStyleOption>>,
-  report: EditorConfigIssueReporter,
+  unknown: UnknownTypes,
   edits: TextEdit[]
 ): void {
   if (initializer.type === 'anonymous_object_creation_expression') {
@@ -171,15 +186,8 @@ function toExplicitType(
 
   const violated = (Object.keys(options) as Category[]).filter((category) => options[category]?.value === 'false');
   if (violated.length > 0) {
-    report(
-      describeIssue(
-        'IDE0008',
-        violated.map((category) => OPTION_BY_CATEGORY[category]).join('/'),
-        source,
-        type.startIndex,
-        `'var ${name}' was not changed to an explicit type: the initializer's type cannot be determined syntactically.`
-      )
-    );
+    unknown.lines.push(lineNumberAt(source, type.startIndex));
+    violated.forEach((category) => unknown.options.add(OPTION_BY_CATEGORY[category]));
   }
 }
 

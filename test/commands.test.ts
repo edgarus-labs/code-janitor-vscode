@@ -22,6 +22,7 @@ import { registerFormatOnSave } from '../src/commands/formatOnSave';
 import { readCleanupSettings, readXmlDocOptions } from '../src/commands/settings';
 import { exportRepositorySettings, importRepositorySettings, registerRepositorySettingsCommands } from '../src/commands/repositorySettings';
 import { HeaderPosition, HeaderUpdateMode } from '../src/cleanup/types';
+import { createOutputChannel } from '../src/logging';
 
 /** Trailing whitespace is the smallest change every default cleanup configuration performs. */
 const UNCLEAN = 'internal class C   \n{\n}\n';
@@ -697,6 +698,53 @@ describe('cleanup commands', () => {
     }
   });
 
+  it('lets the preview leave out individual .editorconfig rules', async () => {
+    const root = tempRoot();
+    try {
+      fs.writeFileSync(
+        path.join(root, '.editorconfig'),
+        'root = true\n\n[*.cs]\ncsharp_style_implicit_object_creation_when_type_is_apparent = true:warning\ncsharp_prefer_braces = true:warning\n'
+      );
+      const source = 'internal class A\n{\n    private readonly List<int> _a = new List<int>();\n\n    private void M(bool b)\n    {\n        if (b) return;\n    }\n}\n';
+      const document = new TextDocument(Uri.file(path.join(root, 'A.cs')), source, 'csharp');
+      state.documents.push(document);
+      window.activeTextEditor = new TextEditor(document);
+      state.modalChoices = ['Choose Rules...', 'Apply'];
+      state.quickPickSelections = [['IDE0011 (1 change)']];
+      registerCleanupCommands(createContext());
+
+      await run('codeJanitor.previewCleanupActiveFile');
+
+      expect(state.quickPickItems.map((item) => item.label)).toEqual(['IDE0090 (1 change)', 'IDE0011 (1 change)']);
+      expect(state.openedDocuments).toHaveLength(2);
+      expect(state.openedDocuments[0].content).toContain('= new();');
+      expect(document.getText()).toContain('= new List<int>();');
+      expect(document.getText()).toContain('        if (b)\n        {\n            return;\n        }\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('lists each unsupported .editorconfig setting once per run with its number of files, and once per session for single files', async () => {
+    const root = tempRoot();
+    try {
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\nmax_line_length = 120\n');
+      state.files.set(path.join(root, 'A.cs'), 'internal class A\n{\n}\n');
+      state.files.set(path.join(root, 'B.cs'), 'internal class B\n{\n}\n');
+      const notSupported = () => state.outputChannelLines.filter((line) => line.includes('max_line_length'));
+
+      createOutputChannel(createContext());
+      await runCleanupOnUris(createContext(), [Uri.file(path.join(root, 'A.cs')), Uri.file(path.join(root, 'B.cs'))]);
+      expect(notSupported()).toEqual([expect.stringMatching(/"max_line_length = 120" is not supported and was not applied\. \(2 files\)$/)]);
+
+      await runCleanupOnUris(createContext(), [Uri.file(path.join(root, 'A.cs'))]);
+      await runCleanupOnUris(createContext(), [Uri.file(path.join(root, 'B.cs'))]);
+      expect(notSupported()).toHaveLength(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not propose sealing a class in the preview when a same-directory sibling subclasses it', async () => {
     state.configuration.set('codeJanitor.cleanup.sealClassesWhenSafe', true);
     state.files.set('/w/Dog.cs', 'internal class Dog : Animal\n{\n}\n');
@@ -1333,5 +1381,80 @@ describe('activation', () => {
 
     expect(explorerContext.some((entry) => entry.command === 'codeJanitor.cleanupSelectedFiles')).toBe(false);
     expect(explorerSubmenu.some((entry) => entry.command === 'codeJanitor.cleanupSelectedFiles')).toBe(true);
+  });
+});
+
+describe('workspace-wide rename of non-private symbols (renamePublicSymbolsAcrossWorkspace)', () => {
+  const editorConfig = [
+    'root = true',
+    '[*.cs]',
+    'dotnet_naming_rule.members.symbols = members',
+    'dotnet_naming_rule.members.style = pascal',
+    'dotnet_naming_rule.members.severity = warning',
+    'dotnet_naming_symbols.members.applicable_kinds = method',
+    'dotnet_naming_symbols.members.applicable_accessibilities = public',
+    'dotnet_naming_style.pascal.capitalization = pascal_case',
+    '',
+  ].join('\n');
+  const order = 'namespace Lib;\n\npublic class Order\n{\n    public int getTotal() => 1;\n}\n';
+  const program = 'namespace App;\n\ninternal static class Program\n{\n    private static int Main() => new Lib.Order().getTotal();\n}\n';
+
+  /** Lib and App (referencing Lib) on disk, for project discovery, and in the mock file system. */
+  function setUp(): { orderFile: string; programFile: string } {
+    const root = tempRoot();
+    const files: Record<string, string> = {
+      '.editorconfig': editorConfig,
+      'Lib/Lib.csproj': '<Project Sdk="Microsoft.NET.Sdk"></Project>',
+      'Lib/Order.cs': order,
+      'App/App.csproj': '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup></Project>',
+      'App/Program.cs': program,
+    };
+    for (const [name, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+      fs.writeFileSync(path.join(root, name), text);
+      state.files.set(path.join(root, name), text);
+    }
+
+    state.workspaceFolders = [{ uri: Uri.file(root), name: 'Shop' }];
+
+    return { orderFile: path.join(root, 'Lib/Order.cs'), programFile: path.join(root, 'App/Program.cs') };
+  }
+
+  it('renames in every project using the symbol once the listed renames are confirmed', async () => {
+    const { orderFile, programFile } = setUp();
+    state.configuration.set('codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace', true);
+    state.modalChoices = ['Rename'];
+
+    await runCleanupOnUris(createContext(), [Uri.file(orderFile)], { renameAcrossWorkspace: true });
+
+    expect(state.warningMessages).toEqual([
+      'Code Janitor: rename 1 symbol(s) in 2 file(s) of the workspace to follow the .editorconfig naming rules?',
+    ]);
+    expect(state.files.get(orderFile)).toContain('public int GetTotal() => 1;');
+    expect(state.files.get(programFile)).toContain('new Lib.Order().GetTotal()');
+  });
+
+  it('changes nothing and reports the violation when the renames are not confirmed', async () => {
+    const { orderFile, programFile } = setUp();
+    state.configuration.set('codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace', true);
+    state.modalChoices = [undefined];
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(orderFile)], { renameAcrossWorkspace: true });
+
+    expect(state.files.get(orderFile)).toContain('getTotal');
+    expect(state.files.get(programFile)).toBe(program);
+    expect(result.unresolved).toBeGreaterThan(0);
+  });
+
+  it('does not rename across the workspace while the setting is off, nor outside the batch commands', async () => {
+    const { orderFile, programFile } = setUp();
+
+    await runCleanupOnUris(createContext(), [Uri.file(orderFile)], { renameAcrossWorkspace: true });
+    state.configuration.set('codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace', true);
+    state.modalChoices = ['Rename'];
+    await runCleanupOnUris(createContext(), [Uri.file(orderFile)]);
+
+    expect(state.warningMessages.filter((message) => message.includes('rename'))).toEqual([]);
+    expect(state.files.get(programFile)).toBe(program);
   });
 });

@@ -106,7 +106,8 @@ suite('.editorconfig cleanup (real VS Code host)', () => {
 
     await vscode.commands.executeCommand('codeJanitor.cleanupActiveFile');
 
-    const line = await outputChannelLine(/\.editorconfig setting not supported: .*Reported\.cs: /);
+    // Listed once per session and settings file, with the number of files it applies to.
+    const line = await outputChannelLine(/\.editorconfig setting not supported: .*dotnet_style_allow_multiple_blank_lines_experimental/);
     assert.match(line, /"dotnet_style_allow_multiple_blank_lines_experimental = false:warning" is not supported and was not applied\./);
   });
 

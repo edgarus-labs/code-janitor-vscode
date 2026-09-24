@@ -412,6 +412,53 @@ describe('cleanup pipeline', () => {
       expect(preview.steps.every((s) => !s.included)).toBe(true);
     });
 
+    it('lists the .editorconfig rules that change the code, with their number of changes, and leaves out excluded rules', () => {
+      const source = [
+        'internal class C',
+        '{',
+        '    private readonly List<int> _a = new List<int>();',
+        '',
+        '    private readonly List<int> _b = new List<int>();',
+        '',
+        '    private void M(bool b)',
+        '    {',
+        '        if (b) return;',
+        '    }',
+        '}',
+        '',
+      ].join('\n');
+      const rules = editorConfig(
+        'csharp_style_implicit_object_creation_when_type_is_apparent = true:warning\ncsharp_prefer_braces = true:warning'
+      );
+      const pipeline = buildPipeline(source, createDefaultSettings(), rules);
+
+      const full = pipeline.preview(source);
+      const codeStyle = full.steps.find((step) => step.rules !== undefined && step.rules.length > 0);
+      expect(codeStyle?.rules).toEqual([
+        { id: 'IDE0090', changes: 2, included: true },
+        { id: 'IDE0011', changes: 1, included: true },
+      ]);
+      expect(codeStyle?.changes).toBe(3);
+      expect(full.updatedSource).toContain('= new();');
+
+      const without = pipeline.preview(source, undefined, new Set(['IDE0090']));
+      expect(without.updatedSource).toContain('= new List<int>();');
+      expect(without.updatedSource).toContain('        {\n            return;\n        }');
+      expect(without.steps.find((step) => step.index === codeStyle?.index)?.rules).toEqual([
+        { id: 'IDE0090', changes: 0, included: false },
+        { id: 'IDE0011', changes: 1, included: true },
+      ]);
+    });
+
+    it('does not remove a final newline that a later step puts back', () => {
+      const source = 'internal class C\n{\n}\n';
+      const steps = (rules?: EditorConfigRules) => buildPipeline(source, createDefaultSettings(), rules).preview(source).steps;
+
+      expect(steps().filter((step) => step.changed)).toEqual([]);
+      expect(steps(editorConfig('insert_final_newline = true')).filter((step) => step.changed)).toEqual([]);
+      expect(buildPipeline(source, createDefaultSettings(), editorConfig('insert_final_newline = false')).run(source)).toBe('internal class C\n{\n}');
+    });
+
     it('applies changes conditionally via tryApply', () => {
       const source = 'class C\n{\n}\n';
       const pipeline = buildPipeline(source, createDefaultSettings());

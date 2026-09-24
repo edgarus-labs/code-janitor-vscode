@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import {
+  createEditorConfigIssueLog,
   discoverDisqualifiedTypeNamesForFile,
   expandToCSharpFiles,
   expandToCleanableFiles,
   isSupportedFile,
-  logEditorConfigIssue,
   runCleanupOnUris,
   runFixNamespaceOnUris,
   runFormatCommentsOnUris,
@@ -12,6 +12,7 @@ import {
   runRemoveXmlDocOnUris,
   runSplitTopLevelTypesOnUris,
 } from './cleanupCore';
+import { PreviewResult } from '../cleanup/pipeline';
 import { getCleanupPipeline } from '../cleanup/runCleanup';
 import { readCleanupSettings } from './settings';
 import { logInfo } from '../logging';
@@ -50,7 +51,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
 
       const expanded = (await Promise.all(targets.map((u) => expandToCleanableFiles(u)))).flat();
 
-      await runWithProgress('Cleaning up selected files...', () => runCleanupOnUris(context, expanded));
+      await runWithProgress('Cleaning up selected files...', () => runCleanupOnUris(context, expanded, { renameAcrossWorkspace: true }));
     }),
 
     vscode.commands.registerCommand(
@@ -182,7 +183,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
         return;
       }
 
-      await runWithProgress(`Cleaning up ${files.length} file(s)...`, () => runCleanupOnUris(context, files));
+      await runWithProgress(`Cleaning up ${files.length} file(s)...`, () => runCleanupOnUris(context, files, { renameAcrossWorkspace: true }));
     }),
 
     vscode.commands.registerCommand('codeJanitor.removeXmlDocWorkspace', async () => {
@@ -304,6 +305,29 @@ async function runWithProgress(
   void vscode.window.showInformationMessage(`Code Janitor: ${doneLabel} - ${parts.join(', ')}.`);
 }
 
+/** One choice of "Choose Rules...": a step of the pipeline, or one rule of a step made of rules. */
+interface PreviewChoice extends vscode.QuickPickItem {
+  readonly step: number;
+  readonly rule?: string;
+}
+
+const CHOOSE_RULES = 'Choose Rules...';
+
+/** The steps and rules that change the file, labeled with their number of changes. */
+function previewChoices(preview: PreviewResult): PreviewChoice[] {
+  const changes = (count: number) => `${count} ${count === 1 ? 'change' : 'changes'}`;
+
+  return preview.steps.flatMap((step): PreviewChoice[] =>
+    step.rules
+      ? step.rules
+          .filter((rule) => rule.changes > 0)
+          .map((rule) => ({ label: `${rule.id} (${changes(rule.changes)})`, description: step.name, step: step.index, rule: rule.id, picked: true }))
+      : step.changed
+        ? [{ label: `${step.name} (${changes(step.changes)})`, step: step.index, picked: true }]
+        : []
+  );
+}
+
 async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, editor: vscode.TextEditor): Promise<void> {
   const document = editor.document;
   if (!isSupportedFile(document.uri)) {
@@ -316,17 +340,19 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   const root = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
   const settings = readCleanupSettings(root);
   const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
-  let unresolved = 0;
+  // Only the first, complete preview reports issues: previews without some rules repeat them.
+  const issues = createEditorConfigIssueLog(true);
+  let reporting = true;
   const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings, disqualifiedTypeNames, (issue) => {
-    if (issue.kind === 'unresolved') {
-      unresolved++;
+    if (reporting) {
+      issues.report(issue);
     }
-
-    logEditorConfigIssue(issue);
   });
 
-  const preview = pipeline.preview(content);
-  if (!preview.hasChanges) {
+  const full = pipeline.preview(content);
+  reporting = false;
+  const { unresolved } = issues.finish();
+  if (!full.hasChanges) {
     void (unresolved > 0
       ? vscode.window.showWarningMessage(
           `Code Janitor: no changes, but ${unresolved} .editorconfig rule violation(s) could not be fixed (see the Code Janitor output).`
@@ -336,34 +362,45 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
     return;
   }
 
-  const previewDoc = await vscode.workspace.openTextDocument({
-    content: preview.updatedSource,
-    language: document.languageId,
-  });
-
-  const changedSteps = preview.steps.filter((s) => s.changed).map((s) => s.name);
+  const choices = previewChoices(full);
   logInfo(
-    `Preview cleanup for ${document.fileName}: ${changedSteps.length} rule(s) would make changes (${changedSteps.join(
-      ', '
-    )})${unresolved > 0 ? `; ${unresolved} .editorconfig rule violation(s) could not be fixed` : ''}.`
+    `Preview cleanup for ${document.fileName}: ${choices.length} rule(s) would make changes (${choices
+      .map((choice) => choice.label)
+      .join(', ')})${unresolved > 0 ? `; ${unresolved} .editorconfig rule violation(s) could not be fixed` : ''}.`
   );
 
   const fileName = document.fileName.split(/[\\/]/).pop() ?? 'file';
-  await vscode.commands.executeCommand(
-    'vscode.diff',
-    document.uri,
-    previewDoc.uri,
-    `Code Janitor: Cleanup Preview (${fileName})`
-  );
+  let preview = full;
+  let excluded = new Set<PreviewChoice>();
+  for (;;) {
+    const previewDoc = await vscode.workspace.openTextDocument({ content: preview.updatedSource, language: document.languageId });
+    await vscode.commands.executeCommand('vscode.diff', document.uri, previewDoc.uri, `Code Janitor: Cleanup Preview (${fileName})`);
 
-  const choice = await vscode.window.showInformationMessage(
-    `Code Janitor: apply cleanup changes to ${fileName}?`,
-    { modal: true },
-    'Apply'
-  );
+    const choice = await vscode.window.showInformationMessage(
+      preview.hasChanges ? `Code Janitor: apply cleanup changes to ${fileName}?` : 'Code Janitor: no changes with the chosen rules.',
+      { modal: true },
+      ...(preview.hasChanges ? ['Apply', CHOOSE_RULES] : [CHOOSE_RULES])
+    );
+    if (choice !== CHOOSE_RULES) {
+      if (choice === 'Apply') {
+        break;
+      }
 
-  if (choice !== 'Apply') {
-    return;
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(
+      choices.map((item) => ({ ...item, picked: !excluded.has(item) })),
+      { canPickMany: true, title: `Code Janitor: changes to apply to ${fileName}` }
+    );
+    if (picked) {
+      excluded = new Set(choices.filter((item) => !picked.some((p) => p.step === item.step && p.rule === item.rule)));
+      preview = pipeline.preview(
+        content,
+        new Set([...excluded].filter((item) => !item.rule).map((item) => item.step)),
+        new Set([...excluded].flatMap((item) => (item.rule ? [item.rule] : [])))
+      );
+    }
   }
 
   if (document.isClosed) {

@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import { runCleanup } from '../cleanup/runCleanup';
 import {
+  createEditorConfigIssueLog,
   discoverDisqualifiedTypeNamesForFile,
   isPathCleanable,
-  logEditorConfigIssue,
   splitTypesForEditorConfig,
 } from './cleanupCore';
 import { readCleanupSettings } from './settings';
@@ -34,19 +34,21 @@ export function registerFormatOnSave(context: vscode.ExtensionContext): void {
 
 async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
   const content = document.getText();
+  // Saves repeat: the unsupported settings of an `.editorconfig` are reported once per session.
+  const issues = createEditorConfigIssueLog(true);
 
   try {
     const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath);
     // One type per file (.editorconfig): the types moved out are written to their new files first.
-    const split = await splitTypesForEditorConfig({ uri: document.uri, content, isOpen: true }, logEditorConfigIssue);
+    const split = await splitTypesForEditorConfig({ uri: document.uri, content, isOpen: true }, issues.report);
     const input = split?.content ?? content;
     const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, input);
     for (const created of split?.createdFiles ?? []) {
-      const cleaned = runCleanup(created.content, created.uri.fsPath, settings, disqualifiedTypeNames, logEditorConfigIssue);
+      const cleaned = runCleanup(created.content, created.uri.fsPath, settings, disqualifiedTypeNames, issues.report);
       await vscode.workspace.fs.writeFile(created.uri, Buffer.from(cleaned, 'utf8'));
     }
 
-    const output = runCleanup(input, document.uri.fsPath, settings, disqualifiedTypeNames, logEditorConfigIssue);
+    const output = runCleanup(input, document.uri.fsPath, settings, disqualifiedTypeNames, issues.report);
     if (output === content) {
       return [];
     }
@@ -56,5 +58,7 @@ async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscod
     return [vscode.TextEdit.replace(fullRange, output)];
   } catch {
     return [];
+  } finally {
+    issues.finish();
   }
 }

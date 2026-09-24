@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile oracle corpus: a project using the public API of another one (Lib), for the
+       workspace-wide rename of non-private symbols (renamePublicSymbolsAcrossWorkspace). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Shop</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Lib/**" />
+    <ProjectReference Include="Lib/Lib.csproj" />
+  </ItemGroup>
+</Project>

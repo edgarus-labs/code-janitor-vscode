@@ -83,22 +83,31 @@ function refuse(reason: string): never {
   throw new RenameRefused(reason);
 }
 
-function checkNewName(symbol: DeclaredSymbol, newName: string): void {
-  const oldName = symbol.name;
+/** Why `oldName` cannot become `newName` whatever the symbol is, if so. */
+export function invalidNewName(oldName: string, newName: string): string | undefined {
   if (CONTEXTUAL_KEYWORDS.has(oldName)) {
-    refuse(`'${oldName}' is a contextual keyword`);
+    return `'${oldName}' is a contextual keyword`;
   }
 
   if (!newName || newName === oldName) {
-    refuse('no compliant name can be derived');
+    return 'no compliant name can be derived';
   }
 
   if (!IDENTIFIER.test(newName)) {
-    refuse(`'${newName}' is not a valid C# identifier`);
+    return `'${newName}' is not a valid C# identifier`;
   }
 
   if (RESERVED_KEYWORDS.has(newName)) {
-    refuse(`'${newName}' is a C# keyword`);
+    return `'${newName}' is a C# keyword`;
+  }
+
+  return undefined;
+}
+
+function checkNewName(symbol: DeclaredSymbol, newName: string): void {
+  const invalid = invalidNewName(symbol.name, newName);
+  if (invalid) {
+    refuse(invalid);
   }
 
   // `value` is only special inside accessors, where it names the implicit parameter.

@@ -108,6 +108,12 @@ First release of the Visual Studio Code port.
   documentation) and type parameters. Public symbols, members of partial types and names whose
   references cannot be resolved from the syntax are listed in the Code Janitor output channel and
   the cleanup summary instead.
+- **Workspace-wide rename for `.editorconfig` naming rules** (`codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace`,
+  off by default): Cleanup Selected Files and Cleanup Workspace rename the types and non-private
+  members that break the naming rules in every file of their project and of the projects
+  referencing it, after listing the renames in a dialog, as one undoable edit. Renames that cannot
+  be proven safe from the syntax - names used as text (strings, XAML, Razor, JSON), NuGet package
+  APIs, `InternalsVisibleTo`, virtual members, bases declared outside the workspace - are reported.
 - **One type per file from `.editorconfig`**: when `SA1402` (StyleCop) or `MA0048` (Meziantou) is
   enforced with `dotnet_diagnostic.<ID>.severity`, cleanup - including cleanup on save - first
   moves the extra top-level types of a file to their own files, named after each type, and cleans
@@ -148,7 +154,21 @@ First release of the Visual Studio Code port.
   code, so applying it unattended across many files was judged too risky to ship without a
   finer-grained review step per change; see `PLAN.md` for the reasoning.
 
+- **Preview Cleanup** can now leave out single changes. **Choose Rules...** lists each step and
+  each `.editorconfig` rule that changes the file, with its number of changes
+  (`IDE0090 (3 changes)`). Unchecked ones are left out of the diff and of what gets applied.
+
 ### Fixed
+
+- Removing the blank lines at the bottom of a file keeps its final newline whenever a final
+  newline is ensured (always, unless `insert_final_newline = false`), instead of dropping it for
+  the next step to add back. This also stops the preview from listing both steps as changes.
+- Less output noise:
+  - Unsupported `.editorconfig` settings are listed once per cleanup run, with the number of files
+    they affect, instead of once per file. For single-file cleanup, cleanup on save and the
+    preview, an `.editorconfig`'s unsupported settings are listed only once per session.
+  - When explicit types are preferred (IDE0008), the `var` locals whose type is not known without
+    a compiler are reported in one line per file instead of one line each.
 
 - Pattern-matching null checks (`convertToPatternMatchingNullChecks`) no longer rewrite `== null` /
   `!= null` inside a lambda that may be compiled to an expression tree (e.g. an EF Core
@@ -225,6 +245,9 @@ First release of the Visual Studio Code port.
   `.editorconfig` checks that cleanup applies naming, code-style and formatting rules, lists the
   settings it does not apply in the Code Janitor output channel, moves extra types to their own
   files (SA1402) and applies the rules on save.
+- `test/oracle/MultiProject`: a project using another project's public API, for the compile
+  oracle of the workspace-wide rename; CI runs `npm run verify:compile` in a separate job with
+  the .NET SDK.
 - `npm run verify:compile`: a compile oracle that builds C# projects before and after cleanup with
   every rule enforced and finds the rule behind each new compiler error, over a corpus of tricky
   C# in `test/oracle` (see `PLAN.md`). Development only; needs the .NET SDK.

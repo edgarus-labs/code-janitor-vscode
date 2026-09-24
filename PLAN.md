@@ -43,8 +43,14 @@ the option's diagnostic is enforced); it lists the file's unsupported settings a
 Code Janitor setting is skipped or adjusted (the mapping is in the README). The naming, code-style
 and formatting categories run at the end of `buildPipeline` (`runCleanup.ts`), in that order,
 after every other step, whenever the file has `.editorconfig` properties. Issues reach the
-commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanup summary) and
-`unsupported` settings (logged only).
+commands as `EditorConfigIssue`s (`{ kind, filePath, detail }`): `unresolved` violations
+(counted in the cleanup summary) and `unsupported` settings. `editorConfigIssueLog.ts` logs them
+for one run: violations per file, each unsupported setting once with its file count, and for
+single-file runs (cleanup on save, preview, Cleanup Active File) only for `.editorconfig`
+configurations not yet reported in the session. The preview (`pipeline.preview`) can leave out
+steps by index and `.editorconfig` rules by diagnostic id: the code-style converter implements
+`SourceTransformation.applyRules`, which reports how many places each rule changed. `lineDiff.ts`
+counts those places.
 
 - `oneTypePerFile.ts`: `SA1402`/`MA0048`/`SA1649` (explicit `dotnet_diagnostic` severity only).
   Not a pipeline step: it creates files, so `commands/cleanupCore.ts` (`splitTypesForEditorConfig`)
@@ -56,6 +62,11 @@ commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanu
   scopes and every identifier occurrence with its role, and `naming/renamer.ts` plans a rename
   that is refused unless every occurrence in the symbol's scope is understood. Violations are
   fixed in passes over the re-parsed text until none can be fixed; the rest are reported.
+  With `renamePublicSymbolsAcrossWorkspace`, `naming/workspaceScope.ts` reads the workspace's
+  project files (files, `ProjectReference`s, packaging, `InternalsVisibleTo`) and
+  `naming/workspaceRenamer.ts` plans the renames of types and non-private members across the
+  declaring project and the projects referencing it; `commands/workspaceRename.ts` previews them
+  and applies them as one WorkspaceEdit after batch cleanup.
 - `transformations/editorConfigCodeStyle.ts`: code-style rules in a fixed order, reusing the
   existing converters (file-scoped namespaces, explicit access modifiers, readonly fields, `out`
   variable inlining, using placement). Rule modules: `editorConfigQualification.ts` (`this.`),

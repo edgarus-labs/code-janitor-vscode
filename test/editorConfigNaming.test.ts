@@ -457,8 +457,9 @@ describe('naming rules in the cleanup pipeline', () => {
       expect(output).toContain('public int Get(int Offset) => _count + Offset;');
       expect(issues).toHaveLength(1);
       expect(issues[0].kind).toBe('unresolved');
-      expect(issues[0].message.startsWith(`${filePath}: IDE1006 `)).toBe(true);
-      expect(issues[0].message).toMatch(/parameter 'Offset' should be named 'offset'/);
+      expect(issues[0].filePath).toBe(filePath);
+      expect(issues[0].detail.startsWith('IDE1006 ')).toBe(true);
+      expect(issues[0].detail).toMatch(/parameter 'Offset' should be named 'offset'/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

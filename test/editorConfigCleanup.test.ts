@@ -73,11 +73,12 @@ describe('.editorconfig categories in the cleanup pipeline', () => {
     );
   });
 
-  it('reports violations it cannot fix, prefixed with the file path', () => {
+  it('reports violations it cannot fix, with the file path', () => {
     expect(clean(SOURCE).issues).toEqual([
       {
         kind: 'unresolved',
-        message: `${filePath}: IDE0007 (csharp_style_var_elsewhere) line 7: 'Widget widget' was not changed to 'var': the initializer's type cannot be determined syntactically.`,
+        filePath,
+        detail: `IDE0007 (csharp_style_var_elsewhere) line 7: 'Widget widget' was not changed to 'var': the initializer's type cannot be determined syntactically.`,
       },
     ]);
   });

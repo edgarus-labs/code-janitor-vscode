@@ -282,8 +282,12 @@ export const state = {
   errorMessages: [] as string[],
   inputBoxResult: undefined as string | undefined,
   modalChoice: undefined as string | undefined,
+  /** Answers to the next messages, in order; `modalChoice` answers once they are used up. */
+  modalChoices: [] as (string | undefined)[],
   /** Label of the quick pick item to choose, or undefined to simulate dismissal. */
   quickPickChoice: undefined as string | undefined,
+  /** Labels to choose in the next multi-select quick picks, in order (undefined simulates dismissal). */
+  quickPickSelections: [] as (string[] | undefined)[],
   quickPickItems: [] as { label: string }[],
   copilotModels: [] as { id: string; family: string; vendor: string; name: string; maxInputTokens: number }[],
   openedDocuments: [] as { content: string; language: string }[],
@@ -310,7 +314,9 @@ export function resetMock(): void {
   state.errorMessages = [];
   state.inputBoxResult = undefined;
   state.modalChoice = undefined;
+  state.modalChoices = [];
   state.quickPickChoice = undefined;
+  state.quickPickSelections = [];
   state.quickPickItems = [];
   state.copilotModels = [];
   state.openedDocuments = [];
@@ -373,13 +379,13 @@ export const window = {
   showInformationMessage(message: string, ..._rest: unknown[]): Thenable<string | undefined> {
     state.informationMessages.push(message);
 
-    return Promise.resolve(state.modalChoice);
+    return Promise.resolve(state.modalChoices.length > 0 ? state.modalChoices.shift() : state.modalChoice);
   },
 
   showWarningMessage(message: string, ..._rest: unknown[]): Thenable<string | undefined> {
     state.warningMessages.push(message);
 
-    return Promise.resolve(state.modalChoice);
+    return Promise.resolve(state.modalChoices.length > 0 ? state.modalChoices.shift() : state.modalChoice);
   },
 
   showErrorMessage(message: string): Thenable<string | undefined> {
@@ -392,8 +398,13 @@ export const window = {
     return Promise.resolve(state.inputBoxResult);
   },
 
-  showQuickPick<T extends { label: string }>(items: T[], _options?: unknown): Thenable<T | undefined> {
+  showQuickPick<T extends { label: string }>(items: T[], options?: { canPickMany?: boolean }): Thenable<T | T[] | undefined> {
     state.quickPickItems = items;
+    if (options?.canPickMany) {
+      const labels = state.quickPickSelections.shift();
+
+      return Promise.resolve(labels && items.filter((item) => labels.includes(item.label)));
+    }
 
     return Promise.resolve(items.find((item) => item.label === state.quickPickChoice));
   },
@@ -497,6 +508,16 @@ export const workspace = {
       const document = state.documents.find((candidate) => candidate.uri.toString() === key);
       if (document) {
         applyRangeEdits(document, edits);
+        continue;
+      }
+
+      // A closed file: VS Code loads it, applies the edit and the caller saves it.
+      const filePath = key.replace(/^file:\/\//, '');
+      const content = state.files.get(filePath);
+      if (content !== undefined) {
+        const loaded = new TextDocument(Uri.file(filePath), content, 'csharp');
+        applyRangeEdits(loaded, edits);
+        state.files.set(filePath, loaded.getText());
       }
     }
 

@@ -36,7 +36,10 @@ then either:
 - Right-click a C# file (or select several, or a whole folder) and choose **Code Janitor:
   Cleanup Selected Files** - or open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run
   any **Code Janitor** command.
-- **Code Janitor: Cleanup Active File** cleans the file you're currently editing.
+- **Code Janitor: Cleanup Active File** cleans the file you're currently editing. **Preview Cleanup
+  (Active File)** shows the changes as a diff first. Its **Choose Rules...** button lists every
+  step and every `.editorconfig` rule that would change the file, with its number of changes
+  (e.g. `IDE0090 (3 changes)`), so you can leave some out before applying.
 - **Code Janitor: Cleanup Workspace** cleans every C# file in the project; **Cleanup Open Files**
   and **Cleanup Changed Files (Git)** clean a smaller, more targeted set.
 - Turn on **Code Janitor: Toggle Cleanup on Save** to run cleanup automatically when saving supported files.
@@ -115,8 +118,11 @@ have no `.editorconfig` counterpart and always apply as configured.
 
 Settings in the `.editorconfig` that cleanup does not implement are never ignored silently: each
 one that would take effect (an enforced rule, or an EditorConfig property without a severity) is
-listed once per file in the **Code Janitor** output channel as not supported. Rules at `silent` or
-`none` require nothing and are not listed, nor are Visual Basic options.
+listed in the **Code Janitor** output channel as not supported. Each cleanup run lists it once,
+with the number of files it affects. Cleaning a single file, cleanup on save and the preview skip
+the settings of an `.editorconfig` whose settings were already listed in the session. Rules at `silent` or
+`none` require nothing and are not listed, nor are Visual Basic options. Rule violations cleanup
+could not fix are still listed per file and place.
 
 - **Severity.** A code-style rule is applied only when its diagnostic is `suggestion`, `warning` or
   `error` - set with `option = value:severity`, a naming rule's `severity`,
@@ -133,7 +139,7 @@ Supported code-style options:
 | --- | --- | --- |
 | `csharp_style_namespace_declarations` | IDE0160, IDE0161 | Converts the file's only namespace to file-scoped or block-scoped. |
 | `dotnet_style_require_accessibility_modifiers` | IDE0040 | `always`/`for_non_interface_members` add the default modifier, `omit_if_default` removes it. Partial types and (for `always`) interface members are reported. |
-| `csharp_style_var_for_built_in_types`, `csharp_style_var_when_type_is_apparent`, `csharp_style_var_elsewhere` | IDE0007, IDE0008 | Local declarations only. The type must follow from the initializer (literal, `new T()`, `(T)x`, `x as T`, `default(T)`, `new T[n]`); other declarations are reported. |
+| `csharp_style_var_for_built_in_types`, `csharp_style_var_when_type_is_apparent`, `csharp_style_var_elsewhere` | IDE0007, IDE0008 | Local declarations only. The type must follow from the initializer (literal, `new T()`, `(T)x`, `x as T`, `default(T)`, `new T[n]`). Other declarations are reported: for `false`, the `var` locals whose type is not known without a compiler get one line per file, with their line numbers. |
 | `csharp_prefer_braces` | IDE0011 | `true` and `when_multiline` add braces; `false` never removes them. |
 | `dotnet_style_qualification_for_field`, `_property`, `_method`, `_event` | IDE0003, IDE0009 | Adds or removes `this.` for members declared in the same type in the file, unless a local, parameter or type parameter of the same name exists in the member. `this.` on other members is reported. |
 | `csharp_using_directive_placement` | IDE0065 | `outside_namespace` moves usings whose name starts with `global::`, `System`, `Microsoft` or the namespace's first segment; other usings, and `inside_namespace`, are reported. |
@@ -338,6 +344,30 @@ reported instead of renamed, for example:
 - a member read through an expression whose type is not evident (`GetOther().field`);
 - names used in `switch` sections, switch expressions, patterns, deconstruction or code the
   cleanup parser cannot fully structure, and variables declared inside expressions (`out var`).
+
+With `codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace` (off by default; `.codejanitor` key
+`renamePublicSymbolsAcrossWorkspace`), **Cleanup Selected Files** and **Cleanup Workspace** also
+rename the types and non-private members the cleaned files declare, in every `.cs` file of their
+project and of the projects referencing it (`<ProjectReference>`, directly or not). The renames are
+listed in a dialog first and applied as one edit, undone with a single Undo; cleanup on save and
+Cleanup Active File never make them. Like the in-file renames they are syntactic, so a rename is
+only made when:
+
+- every declaration of the old name in those projects is renamed with it (overloads, or the same
+  member of several types getting the same new name) or is a local or parameter whose scope is
+  known, and the new name is not declared or used there yet;
+- the old name does not appear as text: in strings (reflection), preprocessor symbols, or XAML,
+  Razor or JSON files of the projects;
+- code outside the workspace cannot depend on it: public symbols of a project that builds a NuGet
+  package (`IsPackable`, `GeneratePackageOnBuild`, `PackageId`) and internal symbols of an assembly
+  with `InternalsVisibleTo` are reported, as are members of types whose base types are declared
+  outside the workspace;
+- the member is not virtual, abstract, an override, `new`, extern, partial, an interface member,
+  or annotated with attributes, and no serialization attribute (`[DataContract]`, `[JsonProperty]`,
+  ...) makes the name part of a data format; attribute classes are not renamed.
+
+Top-level statements are not parsed reliably, so a name they use is not renamed. Everything
+refused is reported in the Code Janitor output channel with the reason.
 
 ### One type per file
 

@@ -523,6 +523,11 @@
             "default": false,
             "description": "Add the 'sealed' modifier to classes that are not derived from within the same file."
           },
+          "codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace": {
+            "type": "boolean",
+            "default": false,
+            "description": "Cleanup Selected Files and Cleanup Workspace: rename public and internal symbols that break the .editorconfig naming rules (IDE1006) in every file of their project and of the projects referencing it, after showing the list of renames. Renames that cannot be proven safe (names used as text, NuGet package APIs, virtual members, ...) are reported instead. Never runs on save."
+          },
           "codeJanitor.cleanup.convertToCollectionExpressions": {
             "type": "boolean",
             "default": false,
@@ -762,6 +767,7 @@
     "smoke-test": "node scripts/smoke-test.js",
     "generate:editorconfig": "vite-node scripts/generate-editorconfig.ts",
     "verify:compile": "vite-node scripts/compile-oracle.ts --",
+    "perf:corpus": "vite-node scripts/perf-corpus.ts --",
     "verify:bundle": "node scripts/verify-bundle.js",
     "package": "npm run build && npx vsce package"
   },

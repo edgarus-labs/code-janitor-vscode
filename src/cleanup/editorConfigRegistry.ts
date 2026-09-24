@@ -387,6 +387,37 @@ export function effectiveEditorConfigValue(props: EditorConfigProperties, key: s
   return isGateOpen(props, gate, raw) ? value : undefined;
 }
 
+/**
+ * The diagnostic id(s) behind a rule's option(s), for display: `IDE0090`, or `IDE0007/IDE0008` when
+ * the values set select several. `option` may end with `*` for a family of options
+ * (`csharp_style_var_*`); a diagnostic id (`CA1822`) is returned as is.
+ */
+export function diagnosticIdsOfOption(props: EditorConfigProperties, option: string): string {
+  if (/^(?:IDE|CA)\d/.test(option)) {
+    return option;
+  }
+
+  const keys = option.endsWith('*') ? Object.keys(SUPPORTED_SETTINGS).filter((key) => key.startsWith(option.slice(0, -1))) : [option];
+  const selected = new Set<string>();
+  const possible = new Set<string>();
+  for (const key of keys) {
+    const gate = SUPPORTED_SETTINGS[key]?.gate;
+    if (gate?.kind !== 'codeStyle') {
+      continue;
+    }
+
+    gate.diagnosticIds.forEach((id) => possible.add(id));
+    const raw = props.get(key);
+    if (raw !== undefined) {
+      selected.add(gate.diagnosticId(splitOptionSeverity(raw).value.toLowerCase()));
+    }
+  }
+
+  const ids = [...(selected.size > 0 ? selected : possible)].sort();
+
+  return ids.length > 0 ? ids.join('/') : option;
+}
+
 function isGateOpen(props: EditorConfigProperties, gate: Gate, raw: string): boolean {
   switch (gate.kind) {
     case 'always':

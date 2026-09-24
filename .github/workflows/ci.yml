@@ -25,3 +25,20 @@ jobs:
         run: node esbuild.js --production
       - name: Verify bundle
         run: npm run verify:bundle
+
+  compile-oracle:
+    name: Compile oracle (cleaned C# still builds)
+    # Public repository: GitHub-hosted runners only.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build test/oracle before and after cleanup
+        run: npm run verify:compile

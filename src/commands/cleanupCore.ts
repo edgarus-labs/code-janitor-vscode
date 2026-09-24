@@ -1,8 +1,9 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { loadEditorConfigProperties } from '../cleanup/editorconfig';
+import { EditorConfigIssueLog, ReportedConfigurations, editorConfigSignature } from '../cleanup/editorConfigIssueLog';
 import { planOneTypePerFile, readOneTypePerFileRules } from '../cleanup/oneTypePerFile';
-import { EditorConfigIssue, EditorConfigIssueListener, runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
+import { EditorConfigIssueListener, runCleanup, runLayoutCleanup } from '../cleanup/runCleanup';
 import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
 import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
@@ -11,6 +12,7 @@ import { createTopLevelTypeSplitPlan } from '../cleanup/topLevelTypeSplit';
 import { suggestNamespace } from './editorCommands';
 import { logError, logInfo } from '../logging';
 import { readCleanupSettings } from './settings';
+import { renameSymbolsAcrossWorkspace } from './workspaceRename';
 
 export interface CollectedFile {
   uri: vscode.Uri;
@@ -110,23 +112,17 @@ async function runBatch(
 
 export async function runCleanupOnUris(
   _context: vscode.ExtensionContext,
-  uris: vscode.Uri[]
+  uris: vscode.Uri[],
+  options: { renameAcrossWorkspace?: boolean } = {}
 ): Promise<{ changed: number; failed: number; unresolved: number; created: number }> {
   const targets = uris.filter(isSupportedFile);
   const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
-  let unresolved = 0;
-  let unsupported = 0;
+  // A single file (Cleanup Active File) does not repeat the unsupported settings of its
+  // `.editorconfig` once they were reported in the session; a batch lists them again.
+  const issues = createEditorConfigIssueLog(targets.length === 1);
+  const report = issues.report;
   // Files the split plans to create in this batch, so no two files of the batch create the same one.
   const plannedFiles = new Set<string>();
-  const report = (issue: EditorConfigIssue): void => {
-    if (issue.kind === 'unresolved') {
-      unresolved++;
-    } else {
-      unsupported++;
-    }
-
-    logEditorConfigIssue(issue);
-  };
 
   const outcome = await runBatch(
     targets,
@@ -140,12 +136,18 @@ export async function runCleanupOnUris(
     (file) => splitTypesForEditorConfig(file, report, plannedFiles)
   );
 
+  // Batch commands only (never on save): renames other files may depend on, after a preview.
+  if (options.renameAcrossWorkspace && settings.renamePublicSymbolsAcrossWorkspace) {
+    await renameSymbolsAcrossWorkspace(targets, report);
+  }
+
+  const { unresolved, unsupported } = issues.finish();
   if (unresolved > 0) {
     logInfo(`Cleanup: ${unresolved} .editorconfig rule violation(s) were not fixed.`);
   }
 
   if (unsupported > 0) {
-    logInfo(`Cleanup: ${unsupported} .editorconfig setting(s) are not supported and were not applied.`);
+    logInfo(`Cleanup: ${unsupported} .editorconfig setting(s) are not supported and were not applied (listed above with the number of files).`);
   }
 
   return { ...outcome, unresolved };
@@ -175,7 +177,7 @@ export async function splitTypesForEditorConfig(
 
   const outcome = planOneTypePerFile(file.content, file.uri.fsPath, rules, await reservedFileNames(file.uri, plannedFiles));
   for (const message of outcome.issues) {
-    onIssue({ kind: 'unresolved', message: `${file.uri.fsPath}: ${message}` });
+    onIssue({ kind: 'unresolved', filePath: file.uri.fsPath, detail: message });
   }
 
   if (!outcome.plan.hasChanges) {
@@ -195,9 +197,18 @@ export async function splitTypesForEditorConfig(
   };
 }
 
-/** Logs a `.editorconfig` rule violation cleanup could not fix safely, or a setting it does not support. */
-export function logEditorConfigIssue(issue: EditorConfigIssue): void {
-  logInfo(`${issue.kind === 'unresolved' ? '.editorconfig rule not fixed' : '.editorconfig setting not supported'}: ${issue.message}`);
+/** Unsupported settings reported in this session, by resolved `.editorconfig`. */
+const sessionConfigurations: ReportedConfigurations = {
+  seen: new Set<string>(),
+  signatureOf: (filePath) => editorConfigSignature(loadEditorConfigProperties(filePath)),
+};
+
+/**
+ * The `.editorconfig` issue log of one cleanup run (see {@link EditorConfigIssueLog}); `perSession`
+ * for runs on a single file, which skip unsupported settings already reported in the session.
+ */
+export function createEditorConfigIssueLog(perSession: boolean): EditorConfigIssueLog {
+  return new EditorConfigIssueLog(logInfo, perSession ? sessionConfigurations : undefined);
 }
 
 /** Removes XML documentation comments from every given C# file - never uses AI. */
@@ -276,6 +287,7 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
   let changedOriginals = 0;
   let createdFiles = 0;
   let failed = 0;
+  const issues = createEditorConfigIssueLog(collected.length === 1);
 
   for (const file of collected) {
     try {
@@ -287,14 +299,14 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
       }
 
       for (const newFile of plan.newFiles) {
-        const cleaned = runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames, logEditorConfigIssue);
+        const cleaned = runCleanup(newFile.content, newFile.filePath, settings, disqualifiedTypeNames, issues.report);
         await vscode.workspace.fs.writeFile(vscode.Uri.file(newFile.filePath), Buffer.from(cleaned, 'utf8'));
         createdFiles++;
       }
 
       await writeFileContent(
         file,
-        runCleanup(plan.updatedSource, file.uri.fsPath, settings, disqualifiedTypeNames, logEditorConfigIssue)
+        runCleanup(plan.updatedSource, file.uri.fsPath, settings, disqualifiedTypeNames, issues.report)
       );
       changedOriginals++;
     } catch (err) {
@@ -304,6 +316,7 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
     }
   }
 
+  issues.finish();
   logInfo(
     `Split Top-Level Types: finished - ${changedOriginals} file(s) updated, ${createdFiles} file(s) created, ${failed} failed.`
   );

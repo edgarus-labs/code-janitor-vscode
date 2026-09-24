@@ -46,6 +46,13 @@ describe('removeBlankLinesAtBottom', () => {
   it('removes a single trailing newline (treated as blank)', () => {
     expect(removeBlankLinesAtBottom('class C {}\n')).toBe('class C {}');
   });
+
+  it('keeps exactly one final newline, in the file\'s line ending, when asked to', () => {
+    expect(removeBlankLinesAtBottom('class C {}\n', true)).toBe('class C {}\n');
+    expect(removeBlankLinesAtBottom('class C {}\n  \n\n', true)).toBe('class C {}\n');
+    expect(removeBlankLinesAtBottom('class C {}\r\n\r\n', true)).toBe('class C {}\r\n');
+    expect(removeBlankLinesAtBottom('class C {}', true)).toBe('class C {}');
+  });
 });
 
 describe('removeBlankLinesAfterAttributes', () => {

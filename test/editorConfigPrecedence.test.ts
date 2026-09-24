@@ -226,12 +226,13 @@ describe('.editorconfig precedence over the cleanup settings', () => {
     const { issues } = clean(source, editorConfig);
 
     expect(issues).toEqual([
-      { kind: 'unsupported', message: `${filePath}: "csharp_prefer_static_anonymous_function = true:warning" is not supported and was not applied.` },
-      { kind: 'unsupported', message: `${filePath}: "max_line_length = 120" is not supported and was not applied.` },
-      { kind: 'unsupported', message: `${filePath}: "dotnet_diagnostic.ca1062.severity = warning" is not supported and was not applied.` },
+      { kind: 'unsupported', filePath, detail: `"csharp_prefer_static_anonymous_function = true:warning" is not supported and was not applied.` },
+      { kind: 'unsupported', filePath, detail: `"max_line_length = 120" is not supported and was not applied.` },
+      { kind: 'unsupported', filePath, detail: `"dotnet_diagnostic.ca1062.severity = warning" is not supported and was not applied.` },
       {
         kind: 'unsupported',
-        message: `${filePath}: "dotnet_diagnostic.rcs1079.severity = error" belongs to a third-party analyzer (RCS1079); cleanup only applies .NET SDK rules, so it was not applied.`,
+        filePath,
+        detail: `"dotnet_diagnostic.rcs1079.severity = error" belongs to a third-party analyzer (RCS1079); cleanup only applies .NET SDK rules, so it was not applied.`,
       },
     ]);
   });

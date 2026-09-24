@@ -6,6 +6,20 @@
 export interface SourceTransformation {
   readonly name: string;
   apply(source: string): string;
+  /**
+   * For a transformation made of several rules (the `.editorconfig` code-style rules): applies it
+   * without the rules whose id is in `excludedRules`, and tells how many places each rule changed.
+   */
+  applyRules?(source: string, excludedRules: ReadonlySet<string>): { readonly output: string; readonly rules: readonly RuleChange[] };
+}
+
+/** What one rule of a transformation did in a preview; an excluded rule changes nothing. */
+export interface RuleChange {
+  /** The rule's diagnostic id(s), e.g. `IDE0090` or `IDE0007/IDE0008`. */
+  readonly id: string;
+  /** The number of separate places the rule changed. */
+  readonly changes: number;
+  readonly included: boolean;
 }
 
 export const enum HeaderPosition {
@@ -70,6 +84,11 @@ export interface CleanupSettings {
   convertToVarWhenApparent: boolean;
   makeFieldsReadonlyWhenSafe: boolean;
   sealClassesWhenSafe: boolean;
+  /**
+   * Batch cleanup only: rename non-private symbols that violate the `.editorconfig` naming rules in
+   * every file of their project and of the projects referencing it, after a preview.
+   */
+  renamePublicSymbolsAcrossWorkspace: boolean;
   insertBlankLineBeforeReturnAndThrowStatements: boolean;
   convertToCollectionExpressions: boolean;
   reuseJsonSerializerOptionsForCA1869: boolean;
@@ -154,6 +173,7 @@ export function createDefaultSettings(): CleanupSettings {
     convertToVarWhenApparent: false,
     makeFieldsReadonlyWhenSafe: false,
     sealClassesWhenSafe: false,
+    renamePublicSymbolsAcrossWorkspace: false,
     insertBlankLineBeforeReturnAndThrowStatements: false,
     convertToCollectionExpressions: false,
     reuseJsonSerializerOptionsForCA1869: false,

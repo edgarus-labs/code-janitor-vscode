@@ -423,7 +423,7 @@ describe('CA1852 seal internal types', () => {
     const settings = { ...createDefaultSettings(), sealClassesWhenSafe: true };
     const messages: string[] = [];
 
-    const output = runCleanup(lines('internal class Lone { }'), filePath, settings, undefined, (issue) => messages.push(issue.message));
+    const output = runCleanup(lines('internal class Lone { }'), filePath, settings, undefined, (issue) => messages.push(issue.detail));
 
     expect(output).toBe(lines('internal class Lone { }'));
     expect(messages).toEqual([expect.stringMatching(/CA1852 line 1: 'Lone' .*project/)]);

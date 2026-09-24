@@ -74,8 +74,9 @@ export interface EditorConfigRules {
  */
 export interface EditorConfigIssue {
   readonly kind: 'unresolved' | 'unsupported';
-  /** The message, starting with the file path. */
-  readonly message: string;
+  readonly filePath: string;
+  /** What cleanup could not honor, without the file path. */
+  readonly detail: string;
 }
 
 export type EditorConfigIssueListener = (issue: EditorConfigIssue) => void;
@@ -112,12 +113,12 @@ export function getCleanupPipeline(
 ): SourceTransformationPipeline {
   const properties = loadEditorConfigProperties(filePath);
   for (const message of unsupportedEditorConfigSettings(properties)) {
-    onIssue?.({ kind: 'unsupported', message: `${filePath}: ${message}` });
+    onIssue?.({ kind: 'unsupported', filePath, detail: message });
   }
 
   const rules: EditorConfigRules = {
     properties,
-    report: (message) => onIssue?.({ kind: 'unresolved', message: `${filePath}: ${message}` }),
+    report: (message) => onIssue?.({ kind: 'unresolved', filePath, detail: message }),
     fileName: filePath ? path.basename(filePath) : undefined,
     filePath: filePath || undefined,
     // Every rule depends on the project's C# version; some also on its folder or frameworks.
@@ -155,6 +156,9 @@ export function buildPipeline(
   const restoreByteOrderMark = charsetDecides && source.startsWith('\uFEFF');
 
   const hasEditorConfig = props !== undefined && props.entries.size > 0;
+  // The final newline is ensured by a later step (unless `insert_final_newline = false`): removing
+  // the blank lines at the bottom keeps it, rather than dropping it to have it added back.
+  const keepFinalNewline = !decides('insert_final_newline') || effectiveEditorConfigValue(props!, 'insert_final_newline') === 'true';
   const trimTrailingWhitespace = props && effectiveEditorConfigValue(props, 'trim_trailing_whitespace');
 
   const transformations: (SourceTransformation | undefined)[] = [
@@ -221,7 +225,7 @@ export function buildPipeline(
       ? delegateTransformation('Remove blank lines at top', removeBlankLinesAtTop)
       : undefined,
     settings.removeBlankLinesAtBottom
-      ? delegateTransformation('Remove blank lines at bottom', removeBlankLinesAtBottom)
+      ? delegateTransformation('Remove blank lines at bottom', (text) => removeBlankLinesAtBottom(text, keepFinalNewline))
       : undefined,
     settings.removeBlankLinesAfterAttributes
       ? delegateTransformation('Remove blank lines after attributes', removeBlankLinesAfterAttributes)
@@ -285,6 +289,7 @@ export function runLayoutCleanup(source: string, filePath: string, settings: Cle
   const props = loadEditorConfigProperties(filePath);
   const charset = effectiveEditorConfigValue(props, 'charset');
   const trim = effectiveEditorConfigValue(props, 'trim_trailing_whitespace');
+  const finalNewline = effectiveEditorConfigValue(props, 'insert_final_newline') !== 'false';
 
   const transformations: (SourceTransformation | undefined)[] = [
     (charset === undefined ? settings.removeByteOrderMark : charset === 'utf-8') ? byteOrderMarkConverter : undefined,
@@ -296,10 +301,10 @@ export function runLayoutCleanup(source: string, filePath: string, settings: Cle
       ? delegateTransformation('Remove blank lines at top', removeBlankLinesAtTop)
       : undefined,
     settings.removeBlankLinesAtBottom
-      ? delegateTransformation('Remove blank lines at bottom', removeBlankLinesAtBottom)
+      ? delegateTransformation('Remove blank lines at bottom', (text) => removeBlankLinesAtBottom(text, finalNewline))
       : undefined,
     settings.removeMultipleConsecutiveBlankLines ? normalizeBlankLinesConverter : undefined,
-    effectiveEditorConfigValue(props, 'insert_final_newline') !== 'false' ? ensureFinalNewlineConverter : undefined,
+    finalNewline ? ensureFinalNewlineConverter : undefined,
   ];
 
   return new SourceTransformationPipeline(transformations).run(source);

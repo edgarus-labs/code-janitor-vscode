@@ -22,6 +22,8 @@ import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
 import { editorConfigCatalog } from '../src/cleanup/editorConfigRegistry';
 import { CompilerError, compilerErrors, editorConfigVariant, newCompilerErrors, settingsVariant } from './compileOracle';
 import { renderEditorConfig } from './editorConfigTemplate';
+import { planWorkspaceRenames } from '../src/cleanup/naming/workspaceRenamer';
+import { discoverProjects } from '../src/cleanup/naming/workspaceScope';
 
 const SKIPPED_FOLDERS = new Set(['bin', 'obj', '.git', '.vs', 'node_modules']);
 const BUILD_ARGUMENTS = [
@@ -117,6 +119,22 @@ function cleanUp(copy: string, projectDir: string, settings: CleanupSettings): C
     }
   }
 
+  // Like Cleanup Workspace with renamePublicSymbolsAcrossWorkspace, confirming the renames.
+  if (settings.renamePublicSymbolsAcrossWorkspace) {
+    const plan = planWorkspaceRenames({
+      projects: discoverProjects([copy]),
+      targets: csharpFiles(projectDir),
+      read: (file) => fs.readFileSync(file, 'utf8'),
+    });
+    unresolved += plan.issues.length;
+    for (const [file, content] of plan.contents) {
+      fs.writeFileSync(file, content, 'utf8');
+      if (!changed.includes(path.relative(copy, file))) {
+        changed.push(path.relative(copy, file));
+      }
+    }
+  }
+
   return { changed, unresolved };
 }
 
@@ -145,7 +163,12 @@ function candidates(settings: CleanupSettings): { label: string; editorConfig: s
   const booleanSettings = (Object.keys(settings) as (keyof CleanupSettings)[]).filter((key) => settings[key] === true);
 
   return [
-    ...diagnostics.map((id) => ({ label: id, editorConfig: id, setting: undefined })),
+    // IDE1006 also renames across the workspace, as with the setting on.
+    ...diagnostics.map((id) => ({
+      label: id,
+      editorConfig: id,
+      setting: id === 'IDE1006' ? ('renamePublicSymbolsAcrossWorkspace' as const) : undefined,
+    })),
     ...booleanSettings.map((key) => ({ label: `setting ${key}`, editorConfig: undefined, setting: key })),
   ];
 }
@@ -169,7 +192,7 @@ function checkTarget(target: Target, editorConfig: string): number {
     }
 
     console.log(`  before cleanup: ${baseline.errors.length} compiler error(s)`);
-    const settings = createDefaultSettings();
+    const settings = { ...createDefaultSettings(), renamePublicSymbolsAcrossWorkspace: true };
     const outcome = cleanUp(copy, projectDir, settings);
     const after = build(copy, target.project, false);
     const added = newCompilerErrors(baseline.errors, after.errors);

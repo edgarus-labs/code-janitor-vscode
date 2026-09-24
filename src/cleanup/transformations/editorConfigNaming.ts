@@ -11,7 +11,7 @@ const NAMING_DIAGNOSTIC_ID = 'IDE1006';
 /** Safety net: every pass that edits fixes at least one violation, so this is not reached in practice. */
 const MAX_PASSES = 500;
 
-interface Violation {
+export interface NamingViolation {
   readonly symbol: DeclaredSymbol;
   readonly rule: NamingRule;
   readonly severity: EditorConfigSeverity;
@@ -47,7 +47,7 @@ function applyNamingRules(
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const model = buildSourceModel(current);
-    const violations = findViolations(model, rules, props);
+    const violations = findNamingViolations(model, rules, props);
     if (violations.length === 0) {
       return current;
     }
@@ -63,7 +63,7 @@ function applyNamingRules(
         ? planRename(model, violation.symbol, violation.newName, targetName)
         : { ok: false as const, reason: 'no compliant name can be derived' };
       if (!plan.ok) {
-        unresolved.push(describe(violation, plan.reason));
+        unresolved.push(describeNamingViolation(violation, plan.reason));
         continue;
       }
 
@@ -87,8 +87,8 @@ function applyNamingRules(
     current = applyEdits(current, edits);
   }
 
-  for (const violation of findViolations(buildSourceModel(current), rules, props)) {
-    report(describe(violation, 'the file needs more renames than one cleanup makes'));
+  for (const violation of findNamingViolations(buildSourceModel(current), rules, props)) {
+    report(describeNamingViolation(violation, 'the file needs more renames than one cleanup makes'));
   }
 
   return current;
@@ -106,8 +106,8 @@ function conflicts(a: Footprint, b: Footprint): boolean {
   );
 }
 
-function findViolations(model: SourceModel, rules: readonly NamingRule[], props: EditorConfigProperties): Violation[] {
-  const violations: Violation[] = [];
+export function findNamingViolations(model: SourceModel, rules: readonly NamingRule[], props: EditorConfigProperties): NamingViolation[] {
+  const violations: NamingViolation[] = [];
 
   for (const symbol of model.symbols) {
     if (!symbol.analyzable || !symbol.name || isDiscardName(symbol.name)) {
@@ -135,13 +135,14 @@ function isDiscardName(name: string): boolean {
   return /^_\d*$/.test(name);
 }
 
-function describe(violation: Violation, reason: string): string {
+/** `IDE1006 (naming rule '...', warning) line N: field 'x' should be named 'X'; not renamed because <reason>.` */
+export function describeNamingViolation(violation: NamingViolation, reason: string, outcome = 'not renamed'): string {
   const { symbol, rule, severity, newName } = violation;
   const line = symbol.nameNode.startPosition.row + 1;
   const kind = symbol.kind.replace('_', ' ');
 
   return (
     `${NAMING_DIAGNOSTIC_ID} (naming rule '${rule.title}', ${severity}) line ${line}: ` +
-    `${kind} '${symbol.name}' should be named '${newName}'; not renamed because ${reason}.`
+    `${kind} '${symbol.name}' should be named '${newName}'; ${outcome} because ${reason}.`
   );
 }

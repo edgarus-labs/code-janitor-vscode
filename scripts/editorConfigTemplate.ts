@@ -20,6 +20,8 @@ interface Section {
   readonly title: string;
   /** Documentation pages the values come from. */
   readonly sources: readonly string[];
+  /** Remarks written after the sources, before the options. */
+  readonly notes?: readonly string[];
   readonly options: readonly (readonly [key: string, value: string])[];
 }
 
@@ -135,6 +137,10 @@ const CSHARP_CONVENTIONS: readonly Section[] = [
   {
     title: 'var preferences (IDE0007, IDE0008)',
     sources: [rule('ide0007-ide0008')],
+    notes: [
+      'csharp_style_var_elsewhere = false cannot be fully enforced without a compiler: cleanup keeps var',
+      'wherever the type cannot be known from the syntax and reports it once per file.',
+    ],
     options: [
       ['csharp_style_var_elsewhere', 'false'],
       ['csharp_style_var_for_built_in_types', 'false'],
@@ -439,7 +445,13 @@ const ONE_TYPE_PER_FILE: readonly (readonly [id: string, url: string])[] = [
 ];
 
 function renderSection(section: Section): string[] {
-  return [`# ${section.title}`, ...section.sources.map((source) => `# ${source}`), ...section.options.map(([key, value]) => `${key} = ${value}`), ''];
+  return [
+    `# ${section.title}`,
+    ...section.sources.map((source) => `# ${source}`),
+    ...(section.notes ?? []).map((note) => `# ${note}`),
+    ...section.options.map(([key, value]) => `${key} = ${value}`),
+    '',
+  ];
 }
 
 function renderNaming(): string[] {

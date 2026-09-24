@@ -64,6 +64,7 @@ export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
     convertToVarWhenApparent: cfg.get('cleanup.convertToVarWhenApparent', base.convertToVarWhenApparent),
     makeFieldsReadonlyWhenSafe: cfg.get('cleanup.makeFieldsReadonlyWhenSafe', base.makeFieldsReadonlyWhenSafe),
     sealClassesWhenSafe: cfg.get('cleanup.sealClassesWhenSafe', base.sealClassesWhenSafe),
+    renamePublicSymbolsAcrossWorkspace: cfg.get('cleanup.renamePublicSymbolsAcrossWorkspace', base.renamePublicSymbolsAcrossWorkspace),
     convertToCollectionExpressions: cfg.get('cleanup.convertToCollectionExpressions', base.convertToCollectionExpressions),
     reuseJsonSerializerOptionsForCA1869: cfg.get('cleanup.reuseJsonSerializerOptionsForCA1869', base.reuseJsonSerializerOptionsForCA1869),
     simplifySingleStatementLambdas: cfg.get('cleanup.simplifySingleStatementLambdas', base.simplifySingleStatementLambdas),

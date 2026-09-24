@@ -1,9 +1,10 @@
 import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
-import { effectiveEditorConfigValue } from '../editorConfigRegistry';
+import { diagnosticIdsOfOption, effectiveEditorConfigValue } from '../editorConfigRegistry';
+import { countChangedRegions } from '../lineDiff';
 import { ProjectInfo } from '../projectInfo';
-import { SourceTransformation } from '../types';
+import { RuleChange, SourceTransformation } from '../types';
 import { applyBracePreference } from './editorConfigBraces';
 import { applyQualificationPreferences } from './editorConfigQualification';
 import {
@@ -74,43 +75,58 @@ export function createEditorConfigCodeStyleConverter(
   report: EditorConfigIssueReporter,
   options: EditorConfigCodeStyleOptions = {}
 ): SourceTransformation {
+  const run = (source: string, tracking?: RuleTracking): string => {
+    if (!source || !source.trim()) {
+      return source;
+    }
+
+    // A byte order mark would confuse the parser; the rules work on the text after it.
+    const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
+    let current = source.slice(bom.length);
+    let issues: string[] = [];
+
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      issues = [];
+      const context: RuleContext = {
+        props,
+        report: (issue) => issues.push(issue),
+        indent: indentUnit(props, current),
+        fileName: options.fileName,
+        filePath: options.filePath,
+        project: options.project,
+      };
+      const updated = applyRules(current, context, tracking);
+      if (updated === current) {
+        break;
+      }
+
+      current = updated;
+    }
+
+    for (const issue of issues) {
+      report(issue);
+    }
+
+    return bom + current;
+  };
+
   return {
     name: 'Apply .editorconfig code style',
-    apply(source: string): string {
-      if (!source || !source.trim()) {
-        return source;
-      }
+    apply: (source) => run(source),
+    applyRules(source, excludedRules) {
+      const tracking: RuleTracking = { excluded: excludedRules, changes: new Map() };
+      const output = run(source, tracking);
+      const rules: RuleChange[] = [...tracking.changes].map(([id, changes]) => ({ id, changes, included: !excludedRules.has(id) }));
 
-      // A byte order mark would confuse the parser; the rules work on the text after it.
-      const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
-      let current = source.slice(bom.length);
-      let issues: string[] = [];
-
-      for (let pass = 0; pass < MAX_PASSES; pass++) {
-        issues = [];
-        const context: RuleContext = {
-          props,
-          report: (issue) => issues.push(issue),
-          indent: indentUnit(props, current),
-          fileName: options.fileName,
-          filePath: options.filePath,
-          project: options.project,
-        };
-        const updated = applyRules(current, context);
-        if (updated === current) {
-          break;
-        }
-
-        current = updated;
-      }
-
-      for (const issue of issues) {
-        report(issue);
-      }
-
-      return bom + current;
+      return { output, rules };
     },
   };
+}
+
+/** For a preview: the rules left out, and the places each rule id changed (in rule order). */
+interface RuleTracking {
+  readonly excluded: ReadonlySet<string>;
+  readonly changes: Map<string, number>;
 }
 
 interface LanguageRequirement {
@@ -190,7 +206,7 @@ function unsupportedByProject(rule: Rule, context: RuleContext): string | undefi
   return requirement.modernRuntime && project.modernRuntime === false ? 'the project targets a runtime without the types the rewrite needs' : undefined;
 }
 
-function applyRules(source: string, context: RuleContext): string {
+function applyRules(source: string, context: RuleContext, tracking?: RuleTracking): string {
   let current = source;
   let errors: number | undefined;
 
@@ -198,6 +214,12 @@ function applyRules(source: string, context: RuleContext): string {
     const unsupported = unsupportedByProject(rule, context);
     if (unsupported) {
       context.report(`${rule.option}: not applied, ${unsupported}.`);
+      continue;
+    }
+
+    const id = tracking ? diagnosticIdsOfOption(context.props, rule.option) : undefined;
+    if (id !== undefined && tracking!.excluded.has(id)) {
+      tracking!.changes.set(id, 0);
       continue;
     }
 
@@ -212,6 +234,10 @@ function applyRules(source: string, context: RuleContext): string {
     if (updatedErrors > errors) {
       context.report(`${rule.option}: changes discarded, the rewritten code could not be verified.`);
       continue;
+    }
+
+    if (id !== undefined) {
+      tracking!.changes.set(id, (tracking!.changes.get(id) ?? 0) + countChangedRegions(current, updated));
     }
 
     current = updated;

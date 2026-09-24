@@ -275,7 +275,19 @@ describe('csharp_style_var_*', () => {
         'var unknown = Create();'
       )
     );
-    expect(issues).toEqual([expect.stringMatching(/^IDE0008 .* line 12: 'var unknown'/)]);
+    expect(issues).toEqual([
+      "IDE0008 (csharp_style_var_for_built_in_types/csharp_style_var_when_type_is_apparent): 1 local kept as 'var' (line 12): its type is not known without a compiler.",
+    ]);
+  });
+
+  it('reports the locals whose type is not known once per file', () => {
+    const source = method('var a = Create();', 'var b = Load(a);', 'var n = 5;', 'var c = a.Next;');
+    const { output, issues } = codeStyle(source, 'csharp_style_var_elsewhere = false:warning\ncsharp_style_var_for_built_in_types = false:warning');
+
+    expect(output).toBe(method('var a = Create();', 'var b = Load(a);', 'int n = 5;', 'var c = a.Next;'));
+    expect(issues).toEqual([
+      "IDE0008 (csharp_style_var_for_built_in_types/csharp_style_var_elsewhere): 3 locals kept as 'var' (lines 5, 6, 8): their type is not known without a compiler.",
+    ]);
   });
 
   it('does not take the operand of ?? after `as` for the type', () => {
@@ -283,7 +295,7 @@ describe('csharp_style_var_*', () => {
     const { output, issues } = codeStyle(source, 'csharp_style_var_when_type_is_apparent = false:warning');
 
     expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/^IDE0008 .*'var items' was not changed to an explicit type/)]);
+    expect(issues).toEqual([expect.stringMatching(/^IDE0008 .*1 local kept as 'var' \(line 5\)/)]);
   });
 
   it('keeps var when only the elsewhere preference is set and the type is built-in', () => {
