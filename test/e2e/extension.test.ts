@@ -91,13 +91,21 @@ async function withPromptsAutoAnswered<T>(run: () => Promise<T>): Promise<T> {
 }
 
 suite('Code Janitor extension (real VS Code host)', () => {
+  // Export/Import Settings write `.codejanitor` and workspace settings into the fixture workspace.
+  let workspaceRoot: string;
+  let workspaceSettings: string;
+
   suiteSetup(async function () {
     this.timeout(30000);
     await extension().activate();
+    workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    workspaceSettings = fs.readFileSync(path.join(workspaceRoot, '.vscode', 'settings.json'), 'utf8');
   });
 
   suiteTeardown(async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    fs.rmSync(path.join(workspaceRoot, '.codejanitor'), { force: true });
+    fs.writeFileSync(path.join(workspaceRoot, '.vscode', 'settings.json'), workspaceSettings, 'utf8');
   });
 
   suite('Identity and command registration', () => {

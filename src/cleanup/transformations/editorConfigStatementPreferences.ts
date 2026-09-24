@@ -1,8 +1,8 @@
 import { EditorConfigProperties } from '../editorconfig';
 import { effectiveEditorConfigValue, enforcedOptionValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
-import { UNARY, precedenceOf, unparenthesized, withParentheses } from './editorConfigPrecedence';
-import { hasParseErrors, lineIndentAt, newlineOf } from './editorConfigSupport';
+import { RELATIONAL, UNARY, nullTest, operatorOf, precedenceOf, unparenthesized, withParentheses } from './editorConfigPrecedence';
+import { hasParseErrors, lineEndAt, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
 import { delegateParameterTypes, subjectTypeText } from './editorConfigExpressionPreferences';
 
 /**
@@ -34,6 +34,9 @@ export const STATEMENT_PREFERENCES: readonly PreferenceRule[] = [
   { option: 'dotnet_style_prefer_conditional_expression_over_return', apply: conditionalReturns },
   { option: 'dotnet_style_object_initializer', apply: objectInitializers },
   { option: 'dotnet_style_collection_initializer', apply: collectionInitializers },
+  { option: 'csharp_style_prefer_switch_expression', apply: switchExpressions },
+  { option: 'csharp_style_pattern_matching_over_as_with_null_check', apply: asWithNullCheckPatterns },
+  { option: 'csharp_style_pattern_matching_over_is_with_cast_check', apply: isWithCastPatterns },
 ];
 
 /** Rewrites of one rule in a row: an `if`/`return` chain folds one statement per rewrite. */
@@ -511,7 +514,7 @@ function conditionalAssignments(source: string, _block: Node, statements: readon
 }
 
 /** The declared return type of the member or local function `node` returns from. */
-function returnType(node: Node): string | undefined {
+export function returnType(node: Node): string | undefined {
   for (let current = node.parent; current; current = current.parent) {
     if (current.type === 'lambda_expression' || current.type === 'anonymous_method_expression' || current.type === 'accessor_declaration') {
       return undefined;
@@ -703,5 +706,296 @@ function collectionInitializers(source: string, block: Node, statements: readonl
 
     edits.push(initializerEdit(source, local, group, elements, indent));
     i = j - 1;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// IDE0066 csharp_style_prefer_switch_expression
+// ---------------------------------------------------------------------------------------------
+
+interface SwitchSection {
+  /** The pattern of each `case` label (`_` for `default`). */
+  readonly patterns: string[];
+  readonly statements: Node[];
+}
+
+/** The sections of a switch statement's body, or `undefined` when a label is not plain. */
+function switchSections(source: string, body: Node): SwitchSection[] | undefined {
+  const sections: SwitchSection[] = [];
+  const children = body.children.slice(1, -1);
+  let section: { patterns: string[]; statements: Node[] } | undefined;
+  let i = 0;
+  while (i < children.length) {
+    const child = children[i];
+    if (child.type === 'case' || child.type === 'default') {
+      if (!section || section.statements.length > 0) {
+        section = { patterns: [], statements: [] };
+        sections.push(section);
+      }
+
+      let j = i + 1;
+      while (j < children.length && children[j].type !== ':') {
+        j++;
+      }
+
+      const label = child.type === 'default' ? '_' : source.slice(child.endIndex, children[j]?.startIndex ?? child.endIndex).trim();
+      if (j >= children.length || !label || label.includes('?') || label.includes(':')) {
+        return undefined;
+      }
+
+      section.patterns.push(label);
+      i = j + 1;
+    } else if (child.isNamed && section) {
+      section.statements.push(child);
+      i++;
+    } else {
+      return undefined;
+    }
+  }
+
+  return sections;
+}
+
+/** `true` when the pattern binds nothing and can be combined with `or`. */
+function isCombinablePattern(pattern: string): boolean {
+  return /^(?:-?[\w.]+|'(?:[^'\\]|\\.)+'|"(?:[^"\\]|\\.)*"|null)$/.test(pattern);
+}
+
+/** Enums declared in the file: switch arms of one enum keep their type. */
+function isEnumOfFile(type: string, anyNode: Node): boolean {
+  let root = anyNode;
+  while (root.parent) {
+    root = root.parent;
+  }
+
+  return findAll(root, 'enum_declaration').some((declaration) => declaration.childForFieldName('name')?.text === type.replace(/\?$/, ''));
+}
+
+/**
+ * A `switch` whose sections each only `return` (or `throw`), or only assign one variable and
+ * `break`, becomes a `return`/assignment of a switch expression. Without a `default` section, a
+ * `return`/`throw` right after the switch becomes the `_` arm (returns only). The target type
+ * must be one the arms' common type cannot change (as for conditional expressions) or an enum of
+ * the file.
+ */
+function switchExpressions(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { indent }: StatementContext): void {
+  for (let i = 0; i < statements.length; i++) {
+    const statement = statements[i];
+    const subject = statement.type === 'switch_statement' ? statement.namedChildren[0] : undefined;
+    const body = statement.namedChildren.find((child) => child.type === 'switch_body');
+    const sections = body && subject ? switchSections(source, body) : undefined;
+    if (!sections || sections.length === 0 || hasParseErrors(statement) || hasComment(source, statement.startIndex, statement.endIndex)) {
+      continue;
+    }
+
+    const arm = (section: SwitchSection, form: 'return' | 'assign'): { value: string; target?: string } | undefined => {
+      const [first, second] = section.statements;
+      if (section.statements.length === 1 && first.type === 'throw_statement' && first.namedChildCount === 1) {
+        return { value: `throw ${first.namedChildren[0].text}` };
+      }
+
+      if (form === 'return') {
+        const value = section.statements.length === 1 ? returnedValue(first) : undefined;
+
+        return value ? { value: value.text } : undefined;
+      }
+
+      const assignment = section.statements.length === 2 && second.type === 'break_statement' ? simpleAssignment(first) : undefined;
+
+      return assignment && isSimpleTarget(assignment.left) ? { value: assignment.right.text, target: assignment.left.text.replace(/\s+/g, '') } : undefined;
+    };
+
+    const form = sections.some((section) => section.statements.some((node) => node.type === 'return_statement')) ? 'return' : 'assign';
+    const arms = sections.map((section) => arm(section, form));
+    const targets = new Set(arms.map((result) => result?.target).filter((target) => target !== undefined));
+    if (arms.some((result) => !result) || (form === 'assign' && targets.size !== 1)) {
+      continue;
+    }
+
+    let defaultValue = sections.findIndex((section) => section.patterns.includes('_'));
+    let consumed = statement;
+    const armTexts: string[] = [];
+    sections.forEach((section, index) => {
+      if (index !== defaultValue) {
+        const patterns = section.patterns.length > 1 && section.patterns.every(isCombinablePattern) ? [section.patterns.join(' or ')] : section.patterns;
+        patterns.forEach((pattern) => armTexts.push(`${pattern} => ${arms[index]!.value}`));
+      }
+    });
+    if (sections.some((section) => section.patterns.length > 1 && !section.patterns.every(isCombinablePattern))) {
+      continue;
+    }
+
+    if (defaultValue >= 0) {
+      armTexts.push(`_ => ${arms[defaultValue]!.value}`);
+    } else {
+      const next = statements[i + 1];
+      const fallback = form === 'return' ? returnedValue(next) : undefined;
+      const thrown = next?.type === 'throw_statement' && next.namedChildCount === 1 ? `throw ${next.namedChildren[0].text}` : undefined;
+      if (!fallback && !thrown) {
+        continue;
+      }
+
+      armTexts.push(`_ => ${fallback?.text ?? thrown}`);
+      consumed = next;
+      defaultValue = sections.length;
+    }
+
+    const target = [...targets][0];
+    const declaration = form === 'assign' ? singleLocal(statements[i - 1]) : undefined;
+    const declares = declaration !== undefined && !declaration.value && declaration.name === target;
+    const type = (form === 'return' ? returnType(statement) : declares ? declaration.type.text : subjectTypeText(findTargetNode(sections)!)) ?? '';
+    if (
+      !(CONDITIONAL_TARGET_TYPES.test(type.replace(/\s+/g, '')) || isEnumOfFile(type, statement)) ||
+      armTexts.some((text) => text.includes('\n')) ||
+      (consumed !== statement && (hasParseErrors(consumed) || hasComment(source, statement.endIndex, consumed.endIndex)))
+    ) {
+      continue;
+    }
+
+    const lineIndent = lineIndentAt(source, statement.startIndex);
+    const newline = newlineOf(source);
+    const switchText = `${withParentheses(subject!.text, precedenceOf(subject!), UNARY)} switch${newline}${lineIndent}{${newline}${armTexts
+      .map((text) => `${lineIndent}${indent}${text},`)
+      .join(newline)}${newline}${lineIndent}}`;
+    if (declares) {
+      edits.push({ start: declaration.declarator.endIndex, end: consumed.endIndex, text: ` = ${switchText};` });
+    } else {
+      const prefix = form === 'return' ? 'return' : `${target} =`;
+      edits.push({ start: statement.startIndex, end: consumed.endIndex, text: `${prefix} ${switchText};` });
+    }
+
+    i += consumed === statement ? 0 : 1;
+  }
+}
+
+/** The assignment target node of the first assigning section. */
+function findTargetNode(sections: readonly SwitchSection[]): Node | undefined {
+  for (const section of sections) {
+    const assignment = simpleAssignment(section.statements[0]);
+    if (assignment) {
+      return assignment.left;
+    }
+  }
+
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------------------------
+// IDE0019 / IDE0020 csharp_style_pattern_matching_over_as_with_null_check / _is_with_cast_check
+// ---------------------------------------------------------------------------------------------
+
+/** True when `name` is declared by exactly `declarations` in `member` (no other variable of that name). */
+function declaredOnlyBy(member: Node, name: string, declarations: number): boolean {
+  const others = member
+    .descendantsOfType(['variable_declarator', 'parameter', 'declaration_expression', 'local_function_statement'])
+    .filter((node) => node.childForFieldName('name')?.text === name).length;
+  const patterns = member.descendantsOfType('pattern').filter((pattern) => pattern.namedChildren.some((child) => child.type === 'identifier' && child.text === name)).length;
+
+  return others === declarations && patterns === 0;
+}
+
+/** True when an identifier `name` inside `scope` is assigned (`name = `, `name++`, `ref`/`out name`). */
+function isAssignedIn(scope: Node, name: string): boolean {
+  return occurrences(scope, name).some((use) => {
+    const parent = use.parent;
+
+    return (
+      (parent?.type === 'assignment_expression' && parent.childForFieldName('left') === use) ||
+      parent?.type === 'postfix_unary_expression' ||
+      (parent?.type === 'prefix_unary_expression' && /^(?:\+\+|--)/.test(parent.text)) ||
+      (parent?.type === 'argument' && /^(?:ref|out)\b/.test(parent.text))
+    );
+  });
+}
+
+/** The left-most operand of a `&&` chain (the whole condition when it is not one). */
+function leftmostConjunct(condition: Node): Node {
+  let current = unparenthesized(condition);
+  while (operatorOf(current) === '&&') {
+    current = unparenthesized(current.childForFieldName('left')!);
+  }
+
+  return current;
+}
+
+/**
+ * `var s = o as T; if (s != null ...) { ... }` becomes `if (o is T s ...) { ... }` when `s` is
+ * used only inside the `if` (not in `else`, not after it) and never assigned.
+ */
+function asWithNullCheckPatterns(source: string, block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+  for (let i = 0; i + 1 < statements.length; i++) {
+    const local = singleLocal(statements[i]);
+    const value = local?.value ? unparenthesized(local.value) : undefined;
+    const statement = statements[i + 1];
+    const condition = statement.type === 'if_statement' ? statement.namedChildren[0] : undefined;
+    const test = condition ? leftmostConjunct(condition) : undefined;
+    const check = test ? nullTest(test) : undefined;
+    if (!local || value?.type !== 'binary_expression' || operatorOf(value) !== 'as' || !check || check.isNull) {
+      continue;
+    }
+
+    const operand = value.childForFieldName('left')!;
+    const type = value.childForFieldName('right')!;
+    const alternative = statement.namedChildren[2];
+    const member = enclosingMember(block);
+    const usedOutside =
+      statements.slice(i + 2).some((later) => occurrences(later, local.name).length > 0) || (alternative !== undefined && occurrences(alternative, local.name).length > 0);
+    if (
+      check.subject.type !== 'identifier' ||
+      check.subject.text !== local.name ||
+      (local.type.type !== 'implicit_type' && local.type.text.replace(/\s+/g, '') !== type.text.replace(/\s+/g, '')) ||
+      type.text.trim().endsWith('?') ||
+      usedOutside ||
+      isAssignedIn(statement, local.name) ||
+      !declaredOnlyBy(member, local.name, 1) ||
+      hasParseErrors(statements[i]) ||
+      hasParseErrors(statement) ||
+      hasComment(source, statements[i].startIndex, test!.endIndex)
+    ) {
+      continue;
+    }
+
+    edits.push({ start: statements[i].startIndex, end: statement.startIndex, text: '' });
+    edits.push({ start: test!.startIndex, end: test!.endIndex, text: `${withParentheses(operand.text, precedenceOf(operand), RELATIONAL)} is ${type.text} ${local.name}` });
+    i++;
+  }
+}
+
+/** `if (o is T) { var t = (T)o; ... }` becomes `if (o is T t) { ... }` when `t` is never assigned. */
+function isWithCastPatterns(source: string, block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+  for (const statement of statements) {
+    const condition = statement.type === 'if_statement' ? statement.namedChildren[0] : undefined;
+    const test = condition ? leftmostConjunct(condition) : undefined;
+    const pattern = test?.type === 'is_pattern_expression' ? test.childForFieldName('pattern') : null;
+    const subject = test?.childForFieldName('expression');
+    const then = statement.namedChildren[1];
+    const local = then?.type === 'block' ? singleLocal(then.namedChildren[0]) : undefined;
+    const cast = local?.value ? unparenthesized(local.value) : undefined;
+    if (!pattern || !subject || !local || cast?.type !== 'cast_expression' || pattern.namedChildCount !== 1 || !isSimpleTarget(subject)) {
+      continue;
+    }
+
+    const castType = cast.childForFieldName('type')!.text.replace(/\s+/g, '');
+    const castValue = cast.childForFieldName('value')!;
+    if (
+      castType !== pattern.text.replace(/\s+/g, '') ||
+      castType.endsWith('?') ||
+      castValue.text.replace(/\s+/g, '') !== subject.text.replace(/\s+/g, '') ||
+      (local.type.type !== 'implicit_type' && local.type.text.replace(/\s+/g, '') !== castType) ||
+      isAssignedIn(then, local.name) ||
+      !declaredOnlyBy(enclosingMember(block), local.name, 1) ||
+      hasParseErrors(statement) ||
+      hasComment(source, test!.startIndex, local.declarator.endIndex)
+    ) {
+      continue;
+    }
+
+    const declaration = then.namedChildren[0];
+    const lineStart = lineStartAt(source, declaration.startIndex);
+    const removeStart = source.slice(lineStart, declaration.startIndex).trim() === '' ? lineStart : declaration.startIndex;
+    const lineEnd = lineEndAt(source, declaration.endIndex);
+    const removeEnd = source.slice(declaration.endIndex, lineEnd).trim() === '' ? (source.startsWith('\r\n', lineEnd) ? lineEnd + 2 : lineEnd + 1) : declaration.endIndex;
+    edits.push({ start: pattern.endIndex, end: pattern.endIndex, text: ` ${local.name}` });
+    edits.push({ start: removeStart, end: removeEnd, text: '' });
   }
 }

@@ -195,6 +195,12 @@ describe('nullCheckPatternMatchingConverter', () => {
 describe('returnThrowBlankLinePaddingConverter', () => {
   const apply = (source: string) => returnThrowBlankLinePaddingConverter.apply(source);
 
+  it('pads the return itself in a CRLF file whose verbatim strings hold bare LF line breaks', () => {
+    const input = 'class C\r\n{\r\n    string M()\r\n    {\r\n        string s = @"\na\nb";\r\n        return s;\r\n    }\r\n}\r\n';
+
+    expect(apply(input)).toBe('class C\r\n{\r\n    string M()\r\n    {\r\n        string s = @"\na\nb";\r\n\r\n        return s;\r\n    }\r\n}\r\n');
+  });
+
   it('inserts a blank line before a return preceded by other statements', () => {
     const input = 'class C\r\n{\r\n    int M()\r\n    {\r\n        int x = 1;\r\n        return x;\r\n    }\r\n}\r\n';
     const expected =

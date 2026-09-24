@@ -3,14 +3,14 @@ import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { hasComment } from './editorConfigStatementPreferences';
-import { hasParseErrors, lineIndentAt, newlineOf } from './editorConfigSupport';
+import { describeIssue, hasParseErrors, lineIndentAt, newlineOf } from './editorConfigSupport';
 
 /**
  * `csharp_style_expression_bodied_*` (IDE0021 - IDE0027, IDE0061): members whose body is a single
  * `return`, expression or `throw` statement get an expression body (`true`, or
  * `when_on_single_line` for one-line expressions) and expression bodies get a block body (`false`,
- * or `when_on_single_line` for multi-line expressions). Lambdas are not changed: which delegate
- * type a lambda converts to can depend on its body.
+ * or `when_on_single_line` for multi-line expressions). Lambdas only lose `{ return ...; }`: which
+ * delegate type a lambda converts to can depend on its body.
  */
 
 type Preference = 'expression' | 'block' | 'single-line';
@@ -187,7 +187,60 @@ const BODY_OPTIONS: readonly BodyOption[] = [
   { option: 'csharp_style_expression_bodied_local_functions', types: ['local_function_statement'] },
 ];
 
-export const EXPRESSION_BODY_RULES: readonly Rule[] = BODY_OPTIONS.map(
+const LAMBDA_OPTION = 'csharp_style_expression_bodied_lambdas';
+
+/**
+ * IDE0053: `x => { return e; }` becomes `x => e`. The other conversions can change which delegate
+ * type the lambda converts to (`() => { F(); }` is an `Action`, `() => F()` can be a `Func<T>`),
+ * so those lambdas are reported instead.
+ */
+function lambdaBodies(source: string, root: Node, preference: Preference, context: RuleContext): TextEdit[] {
+  const edits: TextEdit[] = [];
+  for (const lambda of findAll(root, 'lambda_expression')) {
+    const body = lambda.childForFieldName('body');
+    if (!body || hasParseErrors(lambda)) {
+      continue;
+    }
+
+    if (body.type === 'block') {
+      const statement = body.namedChildCount === 1 ? body.namedChildren[0] : undefined;
+      const value = statement?.type === 'return_statement' && statement.namedChildCount === 1 ? statement.namedChildren[0] : undefined;
+      const expressionForm = value ? wants(preference, 'expression', value.text) : statement?.type === 'expression_statement' && wants(preference, 'expression', statement.text);
+      if (!expressionForm || hasComment(source, body.startIndex, body.endIndex)) {
+        continue;
+      }
+
+      if (value) {
+        edits.push({ start: body.startIndex, end: body.endIndex, text: value.text });
+      } else {
+        context.report(describeIssue('IDE0053', LAMBDA_OPTION, source, lambda.startIndex, 'the lambda body was not changed: without the delegate type, an expression body could change the overload it binds to.'));
+      }
+    } else if (wants(preference, 'block', body.text)) {
+      context.report(describeIssue('IDE0053', LAMBDA_OPTION, source, lambda.startIndex, 'the lambda body was not changed: without the delegate type, it is unknown whether the block must return the value.'));
+    }
+  }
+
+  return edits;
+}
+
+export const EXPRESSION_BODY_RULES: readonly Rule[] = [
+  {
+    option: LAMBDA_OPTION,
+    apply: (source, context) => {
+      const preference = PREFERENCES[effectiveEditorConfigValue(context.props, LAMBDA_OPTION) ?? ''];
+      if (!preference) {
+        return source;
+      }
+
+      const tree = parseCSharp(source);
+      try {
+        return applyEdits(source, lambdaBodies(source, tree.rootNode, preference, context));
+      } finally {
+        tree.delete();
+      }
+    },
+  },
+  ...BODY_OPTIONS.map(
   ({ option, types }): Rule => ({
     option,
     apply: (source, context) => {
@@ -209,4 +262,5 @@ export const EXPRESSION_BODY_RULES: readonly Rule[] = BODY_OPTIONS.map(
       }
     },
   })
-);
+  ),
+];

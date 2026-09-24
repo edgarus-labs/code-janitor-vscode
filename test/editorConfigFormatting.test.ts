@@ -244,12 +244,24 @@ describe('using directive options', () => {
     );
   });
 
-  it('sorts usings for dotnet_sort_system_directives_first = true without IDE0055, which does not cover using order', () => {
+  it('sorts usings whenever dotnet_sort_system_directives_first is set, without IDE0055, which does not cover using order', () => {
     const source = lines('using Contoso.Data;', 'using System;', 'using Alpha;', '', 'class Sample { }');
 
     expect(format(source, 'dotnet_sort_system_directives_first = true').output).toBe(
       lines('using System;', 'using Alpha;', 'using Contoso.Data;', '', 'class Sample { }')
     );
-    expect(format(source, 'dotnet_sort_system_directives_first = false').output).toBe(source);
+    expect(format(source, 'dotnet_sort_system_directives_first = false').output).toBe(
+      lines('using Alpha;', 'using Contoso.Data;', 'using System;', '', 'class Sample { }')
+    );
+    expect(format(source, 'indent_size = 4').output).toBe(source);
+  });
+
+  it('removes blank lines between usings for dotnet_separate_import_directive_groups = false', () => {
+    const source = lines('using System;', '', 'using Alpha;', '', '// Data access', 'using Contoso.Data;', '', 'class Sample { }');
+
+    expect(format(source, 'dotnet_separate_import_directive_groups = false').output).toBe(
+      lines('using System;', 'using Alpha;', '', '// Data access', 'using Contoso.Data;', '', 'class Sample { }')
+    );
+    expect(format(source, 'indent_size = 4').output).toBe(source);
   });
 });

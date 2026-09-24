@@ -760,6 +760,7 @@
     "pretest:e2e": "npm run build && tsc -p tsconfig.e2e.json",
     "test:e2e": "vscode-test",
     "smoke-test": "node scripts/smoke-test.js",
+    "generate:editorconfig": "vite-node scripts/generate-editorconfig.ts",
     "verify:bundle": "node scripts/verify-bundle.js",
     "package": "npm run build && npx vsce package"
   },

@@ -27,6 +27,7 @@ export const BINARY_PRECEDENCE: Record<string, number> = {
   '&&': 4,
   '||': 3,
   '??': 2,
+  as: 9,
 };
 export const RELATIONAL = 9;
 export const UNARY = 14;
@@ -111,4 +112,30 @@ export function unparenthesized(node: Node): Node {
   }
 
   return current;
+}
+
+export interface NullTest {
+  readonly subject: Node;
+  /** True for `x == null` / `x is null`, false for `x != null` / `x is not null`. */
+  readonly isNull: boolean;
+  /** True when the test is a pattern (`is null`), which never calls a user-defined operator. */
+  readonly byPattern: boolean;
+}
+
+/** `x == null`, `null != x`, `x is null`, `x is not null` (with optional parentheses). */
+export function nullTest(condition: Node): NullTest | undefined {
+  const test = unparenthesized(condition);
+  if (test.type === 'binary_expression') {
+    const operator = operatorOf(test);
+    const left = test.childForFieldName('left');
+    const right = test.childForFieldName('right');
+    const subject = right?.type === 'null_literal' ? left : left?.type === 'null_literal' ? right : undefined;
+
+    return (operator === '==' || operator === '!=') && subject ? { subject, isNull: operator === '==', byPattern: false } : undefined;
+  }
+
+  const pattern = test.type === 'is_pattern_expression' ? test.childForFieldName('pattern')?.text.replace(/\s+/g, ' ') : undefined;
+  const subject = test.childForFieldName('expression');
+
+  return (pattern === 'null' || pattern === 'not null') && subject ? { subject, isNull: pattern === 'null', byPattern: true } : undefined;
 }

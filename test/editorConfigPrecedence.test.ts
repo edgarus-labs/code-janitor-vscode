@@ -160,10 +160,23 @@ describe('.editorconfig precedence over the cleanup settings', () => {
     );
   });
 
-  it('does not sort usings for dotnet_sort_system_directives_first = false while sorting is off', () => {
+  it('sorts usings for dotnet_sort_system_directives_first = false even while sorting is off', () => {
     const source = lines('using Zeta;', 'using System;', '', 'internal class Sample { }');
 
-    expect(clean(source, 'dotnet_sort_system_directives_first = false').output).toBe(source);
+    expect(clean(source, 'dotnet_sort_system_directives_first = false').output).toBe(
+      lines('using System;', 'using Zeta;', '', 'internal class Sample { }')
+    );
+  });
+
+  it('follows dotnet_sort_system_directives_first while the sort usings setting is on', () => {
+    const source = lines('using Zeta;', 'using Alpha;', 'using System;', '', 'internal class Sample { }');
+
+    expect(clean(source, 'dotnet_sort_system_directives_first = false', { organizeUsings: true }).output).toBe(
+      lines('using Alpha;', 'using System;', 'using Zeta;', '', 'internal class Sample { }')
+    );
+    expect(clean(source, 'dotnet_sort_system_directives_first = true', { organizeUsings: true }).output).toBe(
+      lines('using System;', 'using Alpha;', 'using Zeta;', '', 'internal class Sample { }')
+    );
   });
 
   it('sorts System usings first for dotnet_sort_system_directives_first = true without IDE0055', () => {
@@ -201,9 +214,10 @@ describe('.editorconfig precedence over the cleanup settings', () => {
   it('reports unsupported settings once each and separately from violations', () => {
     const source = lines('internal class Sample', '{', '    private Widget widget = Create();', '}');
     const editorConfig = [
-      'csharp_style_prefer_switch_expression = true:warning',
+      'csharp_prefer_static_anonymous_function = true:warning',
       'max_line_length = 120',
-      'dotnet_diagnostic.CA1822.severity = warning',
+      'dotnet_diagnostic.CA1062.severity = warning',
+      'dotnet_diagnostic.RCS1079.severity = error',
       'csharp_style_expression_bodied_properties = true',
       'dotnet_diagnostic.CA2007.severity = none',
       'csharp_prefer_braces = true:warning',
@@ -212,9 +226,13 @@ describe('.editorconfig precedence over the cleanup settings', () => {
     const { issues } = clean(source, editorConfig);
 
     expect(issues).toEqual([
-      { kind: 'unsupported', message: `${filePath}: "csharp_style_prefer_switch_expression = true:warning" is not supported and was not applied.` },
+      { kind: 'unsupported', message: `${filePath}: "csharp_prefer_static_anonymous_function = true:warning" is not supported and was not applied.` },
       { kind: 'unsupported', message: `${filePath}: "max_line_length = 120" is not supported and was not applied.` },
-      { kind: 'unsupported', message: `${filePath}: "dotnet_diagnostic.ca1822.severity = warning" is not supported and was not applied.` },
+      { kind: 'unsupported', message: `${filePath}: "dotnet_diagnostic.ca1062.severity = warning" is not supported and was not applied.` },
+      {
+        kind: 'unsupported',
+        message: `${filePath}: "dotnet_diagnostic.rcs1079.severity = error" belongs to a third-party analyzer (RCS1079); cleanup only applies .NET SDK rules, so it was not applied.`,
+      },
     ]);
   });
 });
@@ -266,7 +284,7 @@ describe('unsupportedEditorConfigSettings', () => {
 
   it('treats the Style category severity as enforcing unsupported code-style options', () => {
     expect(
-      unsupported('csharp_style_prefer_switch_expression = true\ndotnet_analyzer_diagnostic.category-Style.severity = warning')
-    ).toEqual(['"csharp_style_prefer_switch_expression = true" is not supported and was not applied.']);
+      unsupported('csharp_prefer_static_anonymous_function = true\ndotnet_analyzer_diagnostic.category-Style.severity = warning')
+    ).toEqual(['"csharp_prefer_static_anonymous_function = true" is not supported and was not applied.']);
   });
 });

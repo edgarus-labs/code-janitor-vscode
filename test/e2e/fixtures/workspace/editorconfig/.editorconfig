@@ -1,0 +1,31 @@
+# Rules for the e2e tests in test/e2e/editorConfig.test.ts: files created in this folder follow them.
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Formatting (IDE0055)
+dotnet_diagnostic.IDE0055.severity = warning
+csharp_space_after_keywords_in_control_flow_statements = true
+
+# Code style
+csharp_style_namespace_declarations = file_scoped:warning
+
+# A documented option cleanup does not apply: reported in the Code Janitor output channel.
+dotnet_style_allow_multiple_blank_lines_experimental = false:warning
+
+# Naming (IDE1006): private fields are _camelCase
+dotnet_naming_rule.private_fields_underscore.severity = warning
+dotnet_naming_rule.private_fields_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore.style = underscore_camel_case
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+
+# One type per file (StyleCop SA1402)
+dotnet_diagnostic.SA1402.severity = warning

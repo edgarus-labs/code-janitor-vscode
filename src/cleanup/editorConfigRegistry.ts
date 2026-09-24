@@ -232,6 +232,15 @@ const SUPPORTED_SETTINGS: Record<string, SupportedSetting> = {
   dotnet_style_collection_initializer: { gate: codeStyle('IDE0028'), accepts: isBoolean },
   dotnet_style_prefer_conditional_expression_over_assignment: { gate: codeStyle('IDE0045'), accepts: isBoolean },
   dotnet_style_prefer_conditional_expression_over_return: { gate: codeStyle('IDE0046'), accepts: isBoolean },
+  csharp_style_prefer_switch_expression: { gate: codeStyle('IDE0066'), accepts: isBoolean },
+  csharp_style_pattern_matching_over_as_with_null_check: { gate: codeStyle('IDE0019'), accepts: isBoolean },
+  csharp_style_pattern_matching_over_is_with_cast_check: { gate: codeStyle('IDE0020'), accepts: isBoolean },
+  dotnet_style_explicit_tuple_names: { gate: codeStyle('IDE0033'), accepts: isBoolean },
+  dotnet_style_prefer_simplified_interpolation: { gate: codeStyle('IDE0071'), accepts: isBoolean },
+  csharp_style_prefer_extended_property_pattern: { gate: codeStyle('IDE0170'), accepts: isBoolean },
+  csharp_style_prefer_method_group_conversion: { gate: codeStyle('IDE0200'), accepts: isBoolean },
+  csharp_style_expression_bodied_lambdas: { gate: codeStyle('IDE0053'), accepts: expressionBodyValue },
+  csharp_style_prefer_readonly_struct_member: { gate: codeStyle('IDE0251'), accepts: isBoolean },
 };
 
 /**
@@ -240,20 +249,11 @@ const SUPPORTED_SETTINGS: Record<string, SupportedSetting> = {
  */
 const OTHER_CODE_STYLE_OPTIONS: Record<string, Gate> = {
   dotnet_style_prefer_collection_expression: codeStyle('IDE0300'),
-  dotnet_style_explicit_tuple_names: codeStyle('IDE0033'),
-  dotnet_style_prefer_simplified_interpolation: codeStyle('IDE0071'),
   dotnet_style_prefer_foreach_explicit_cast_in_source: codeStyle('IDE0220'),
   dotnet_remove_unnecessary_suppression_exclusions: codeStyle('IDE0079'),
   dotnet_style_allow_multiple_blank_lines_experimental: codeStyle('IDE2000'),
   dotnet_style_allow_statement_immediately_after_block_experimental: codeStyle('IDE2003'),
-  csharp_style_expression_bodied_lambdas: codeStyle('IDE0053'),
-  csharp_style_pattern_matching_over_is_with_cast_check: codeStyle('IDE0020'),
-  csharp_style_pattern_matching_over_as_with_null_check: codeStyle('IDE0019'),
-  csharp_style_prefer_switch_expression: codeStyle('IDE0066'),
-  csharp_style_prefer_extended_property_pattern: codeStyle('IDE0170'),
   csharp_prefer_static_anonymous_function: codeStyle('IDE0320'),
-  csharp_style_prefer_readonly_struct_member: codeStyle('IDE0251'),
-  csharp_style_prefer_method_group_conversion: codeStyle('IDE0200'),
   csharp_style_prefer_top_level_statements: codeStyleBy('true', 'IDE0210', 'IDE0211'),
   csharp_style_unused_value_assignment_preference: codeStyle('IDE0059'),
   csharp_style_unused_value_expression_statement_preference: codeStyle('IDE0058'),
@@ -281,16 +281,72 @@ export const FILE_ORGANIZATION_DIAGNOSTICS: Readonly<Record<string, string>> = {
   MA0048: 'Design',
 };
 
+interface SupportedDiagnostic {
+  /** Analyzer category, for `dotnet_analyzer_diagnostic.category-<category>.severity`. */
+  readonly category: string;
+  /** `dotnet_code_quality.*` options the rule reads. */
+  readonly options?: readonly string[];
+}
+
+/**
+ * Rules without a code-style option that cleanup applies (or reports) while
+ * `dotnet_diagnostic.<ID>.severity`, else the category or global bulk severity, enforces them.
+ */
+export const SUPPORTED_DIAGNOSTICS: Readonly<Record<string, SupportedDiagnostic>> = {
+  IDE0004: { category: 'Style' },
+  IDE0005: { category: 'Style' },
+  IDE0051: { category: 'Style' },
+  IDE0052: { category: 'Style' },
+  CA1822: {
+    category: 'Performance',
+    options: ['dotnet_code_quality.api_surface', 'dotnet_code_quality.Performance.api_surface', 'dotnet_code_quality.CA1822.api_surface'],
+  },
+  CA1852: {
+    category: 'Performance',
+    options: [
+      'dotnet_code_quality.ignore_internalsvisibleto',
+      'dotnet_code_quality.Performance.ignore_internalsvisibleto',
+      'dotnet_code_quality.CA1852.ignore_internalsvisibleto',
+    ],
+  },
+  CA1805: { category: 'Performance' },
+  CA1825: { category: 'Performance' },
+  CA1827: { category: 'Performance' },
+  CA1828: { category: 'Performance' },
+  CA1829: { category: 'Performance' },
+  CA1834: { category: 'Performance' },
+  CA1847: { category: 'Performance' },
+  CA1860: { category: 'Performance' },
+  CA1865: { category: 'Performance' },
+  CA1866: { category: 'Performance' },
+  CA1867: { category: 'Performance' },
+  CA1507: { category: 'Maintainability' },
+  CA2249: { category: 'Usage' },
+};
+
+/** True when `diagnosticId` (one of {@link SUPPORTED_DIAGNOSTICS}) is `suggestion`, `warning` or `error`. */
+export function isDiagnosticEnforced(props: EditorConfigProperties, diagnosticId: string): boolean {
+  const diagnostic = SUPPORTED_DIAGNOSTICS[diagnosticId];
+
+  return diagnostic !== undefined && isEnforced(resolveDiagnosticSeverity(props, diagnosticId, undefined, diagnostic.category));
+}
+
 /** Diagnostics whose severity cleanup reads: the ones a supported setting is gated on. */
 const SUPPORTED_DIAGNOSTIC_IDS = new Set([
   FORMATTING_DIAGNOSTIC_ID,
   NAMING_DIAGNOSTIC_ID,
   ...gateDiagnosticIds(),
   ...Object.keys(FILE_ORGANIZATION_DIAGNOSTICS),
+  ...Object.keys(SUPPORTED_DIAGNOSTICS),
 ]);
 
 /** Bulk severities cleanup honors for the diagnostics above. */
-const SUPPORTED_BULK_SEVERITY_KEYS = new Set(['dotnet_analyzer_diagnostic.severity', 'dotnet_analyzer_diagnostic.category-style.severity']);
+const SUPPORTED_BULK_SEVERITY_KEYS = new Set([
+  'dotnet_analyzer_diagnostic.severity',
+  ...[...new Set(['Style', ...Object.values(SUPPORTED_DIAGNOSTICS).map((diagnostic) => diagnostic.category)])].map(
+    (category) => `dotnet_analyzer_diagnostic.category-${category.toLowerCase()}.severity`
+  ),
+]);
 
 const CODE_STYLE_PREFIXES = [
   'dotnet_style_',
@@ -371,7 +427,12 @@ export function unsupportedEditorConfigSettings(props: EditorConfigProperties): 
     }
 
     if (isRequiredButNotApplied(props, key, raw)) {
-      messages.push(`${setting} is not supported and was not applied.`);
+      const diagnostic = /^dotnet_diagnostic\.([^.]+)\.severity$/.exec(key)?.[1];
+      messages.push(
+        diagnostic && !/^(?:IDE|CA)\d+$/i.test(diagnostic)
+          ? `${setting} belongs to a third-party analyzer (${diagnostic.toUpperCase()}); cleanup only applies .NET SDK rules, so it was not applied.`
+          : `${setting} is not supported and was not applied.`
+      );
     }
   }
 
@@ -386,6 +447,11 @@ function isRequiredButNotApplied(props: EditorConfigProperties, key: string, raw
   const diagnostic = /^dotnet_diagnostic\.([^.]+)\.severity$/.exec(key);
   if (diagnostic) {
     return !SUPPORTED_DIAGNOSTIC_IDS.has(diagnostic[1].toUpperCase()) && isEnforced(parseSeverity(raw));
+  }
+
+  // `dotnet_code_quality.*` options only parameterize a rule; its severity entry is what is reported.
+  if (key.startsWith('dotnet_code_quality.')) {
+    return false;
   }
 
   if (/^dotnet_analyzer_diagnostic\./.test(key)) {
@@ -421,4 +487,12 @@ export function enforcedOptionValue(props: EditorConfigProperties, key: string):
   }
 
   return gate.kind === 'codeStyle' ? splitOptionSeverity(raw).value.toLowerCase() : raw.trim().toLowerCase();
+}
+
+/**
+ * What cleanup applies, for tools that write `.editorconfig` files (`scripts/generate-editorconfig.ts`):
+ * the setting keys it implements and the diagnostics whose severity it honors.
+ */
+export function editorConfigCatalog(): { readonly settings: readonly string[]; readonly diagnostics: ReadonlySet<string> } {
+  return { settings: Object.keys(SUPPORTED_SETTINGS), diagnostics: SUPPORTED_DIAGNOSTIC_IDS };
 }

@@ -138,6 +138,11 @@ function plainArguments(list: Node | null): Node[] | undefined {
  * lambda parameter, query variable, `var`) makes the type unknown.
  */
 export function declaredTypeText(identifier: Node): string | undefined {
+  return declaredTypeNode(identifier)?.text.replace(/\s+/g, '');
+}
+
+/** The type node behind {@link declaredTypeText}. */
+export function declaredTypeNode(identifier: Node): Node | undefined {
   const name = identifier.text;
   let member: Node | undefined;
   let type: Node | undefined;
@@ -208,7 +213,7 @@ export function declaredTypeText(identifier: Node): string | undefined {
     }
   }
 
-  return type?.text.replace(/\s+/g, '');
+  return type;
 }
 
 /** The declared type of `x` or `this.x`, when the file declares it exactly once with a type. */

@@ -26,7 +26,11 @@ export function createBlankLinePaddingConverter(settings: PaddingSettings): Sour
       }
 
       const newline = source.includes('\r\n') ? '\r\n' : source.includes('\r') ? '\r' : '\n';
-      const lines = source.split(newline);
+      // Lines are split where the syntax tree counts rows (at '\n'): with CRLF endings each line keeps
+      // its '\r', so a file whose verbatim strings hold bare LF breaks still lines up with the tree.
+      const separator = newline === '\r' ? '\r' : '\n';
+      const blankLine = newline === '\r\n' ? '\r' : '';
+      const lines = source.split(separator);
       const wantBlankBefore = new Set<number>();
 
       const tree = parseCSharp(source);
@@ -41,11 +45,11 @@ export function createBlankLinePaddingConverter(settings: PaddingSettings): Sour
 
       for (const index of [...wantBlankBefore].sort((a, b) => b - a)) {
         if (!shouldSkipInsertion(lines, index)) {
-          lines.splice(index, 0, '');
+          lines.splice(index, 0, blankLine);
         }
       }
 
-      let result = lines.join(newline);
+      let result = lines.join(separator);
 
       if (settings.insertBlankLinePaddingBeforeCaseStatements) {
         result = result.replace(CASE_STATEMENT, (_m, indent, statement, caseIndent, caseKeyword) =>

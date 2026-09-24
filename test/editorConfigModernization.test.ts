@@ -295,15 +295,15 @@ describe('unsupported settings and rule severities', () => {
       [
         {
           directory: '/repo',
-          text: 'root = true\n[*.cs]\ncsharp_style_unused_value_assignment_preference = discard_variable:suggestion\ndotnet_diagnostic.IDE0059.severity = none\ncsharp_style_prefer_switch_expression = true\ndotnet_diagnostic.IDE0066.severity = warning\n',
+          text: 'root = true\n[*.cs]\ncsharp_style_unused_value_assignment_preference = discard_variable:suggestion\ndotnet_diagnostic.IDE0059.severity = none\ncsharp_prefer_static_anonymous_function = true\ndotnet_diagnostic.IDE0320.severity = warning\n',
         },
       ],
       '/repo/A.cs'
     );
 
     expect(unsupportedEditorConfigSettings(props)).toEqual([
-      '"csharp_style_prefer_switch_expression = true" is not supported and was not applied.',
-      '"dotnet_diagnostic.ide0066.severity = warning" is not supported and was not applied.',
+      '"csharp_prefer_static_anonymous_function = true" is not supported and was not applied.',
+      '"dotnet_diagnostic.ide0320.severity = warning" is not supported and was not applied.',
     ]);
   });
 });

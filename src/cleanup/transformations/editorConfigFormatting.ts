@@ -83,18 +83,75 @@ function optionValue(props: EditorConfigProperties, key: string): string | undef
 // dotnet_sort_system_directives_first / dotnet_separate_import_directive_groups
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Whenever the options are set, usings are sorted (`System` first only for `true`) and groups are
+ * separated by a blank line (`true`) or joined (`false`), whatever the "Sort usings" setting says.
+ */
 function applyUsingDirectiveOrder(source: string, props: EditorConfigProperties): string {
   let current = source;
-  // `false` only says how usings are ordered when they are sorted (the "Sort usings" setting).
-  if (optionValue(props, 'dotnet_sort_system_directives_first') === 'true') {
-    current = sortUsingDirectives(current, true);
+  const systemFirst = optionValue(props, 'dotnet_sort_system_directives_first');
+  if (systemFirst === 'true' || systemFirst === 'false') {
+    current = sortUsingDirectives(current, systemFirst === 'true');
   }
 
-  if (optionValue(props, 'dotnet_separate_import_directive_groups') === 'true') {
+  const separate = optionValue(props, 'dotnet_separate_import_directive_groups');
+  if (separate === 'true') {
     current = separateUsingGroups(current);
+  } else if (separate === 'false') {
+    current = joinUsingGroups(current);
   }
 
   return current;
+}
+
+/** Adjacent using directives of each container (compilation unit or namespace body). */
+function adjacentUsings(root: Node): [Node, Node][] {
+  const pairs: [Node, Node][] = [];
+  const containers = [
+    root,
+    ...findAll(root, ['namespace_declaration', 'file_scoped_namespace_declaration']).map((namespaceNode) => namespaceNode.childForFieldName('body') ?? namespaceNode),
+  ];
+
+  for (const container of containers) {
+    const children = container.namedChildren;
+    for (let i = 1; i < children.length; i++) {
+      if (children[i - 1].type === 'using_directive' && children[i].type === 'using_directive') {
+        pairs.push([children[i - 1], children[i]]);
+      }
+    }
+  }
+
+  return pairs;
+}
+
+/** Removes the blank lines between adjacent using directives (not across comments or directives). */
+function joinUsingGroups(source: string): string {
+  const tree = parseCSharp(source);
+
+  try {
+    const edits: TextEdit[] = [];
+    for (const [previous, current] of adjacentUsings(tree.rootNode)) {
+      const gap = source.slice(previous.endIndex, current.startIndex);
+      if (isBlank(gap) && (gap.match(/\n/g) ?? []).length > 1) {
+        const firstBreak = previous.endIndex + gap.indexOf('\n') + 1;
+        edits.push({ start: firstBreak, end: current.startIndex, text: source.slice(lineIndentStart(source, current.startIndex), current.startIndex) });
+      }
+    }
+
+    return applyEdits(source, edits);
+  } finally {
+    tree.delete();
+  }
+}
+
+/** Start of the whitespace that indents the line containing `index`. */
+function lineIndentStart(source: string, index: number): number {
+  let start = index;
+  while (start > 0 && (source[start - 1] === ' ' || source[start - 1] === '\t')) {
+    start--;
+  }
+
+  return start;
 }
 
 /** Inserts a blank line between adjacent using directives whose first namespace segment differs. */
@@ -103,30 +160,14 @@ function separateUsingGroups(source: string): string {
 
   try {
     const edits: TextEdit[] = [];
-    const containers = [
-      tree.rootNode,
-      ...findAll(tree.rootNode, ['namespace_declaration', 'file_scoped_namespace_declaration']).map(
-        (namespaceNode) => namespaceNode.childForFieldName('body') ?? namespaceNode
-      ),
-    ];
-
-    for (const container of containers) {
-      const children = container.namedChildren;
-      for (let i = 1; i < children.length; i++) {
-        const previous = children[i - 1];
-        const current = children[i];
-        if (previous.type !== 'using_directive' || current.type !== 'using_directive') {
-          continue;
-        }
-
-        const gap = source.slice(previous.endIndex, current.startIndex);
-        if (usingGroup(previous.text) === usingGroup(current.text) || (gap.match(/\n/g) ?? []).length !== 1 || !isBlank(gap)) {
-          continue;
-        }
-
-        const lineBreak = previous.endIndex + gap.indexOf('\n') + 1;
-        edits.push({ start: lineBreak, end: lineBreak, text: newlineOf(source) });
+    for (const [previous, current] of adjacentUsings(tree.rootNode)) {
+      const gap = source.slice(previous.endIndex, current.startIndex);
+      if (usingGroup(previous.text) === usingGroup(current.text) || (gap.match(/\n/g) ?? []).length !== 1 || !isBlank(gap)) {
+        continue;
       }
+
+      const lineBreak = previous.endIndex + gap.indexOf('\n') + 1;
+      edits.push({ start: lineBreak, end: lineBreak, text: newlineOf(source) });
     }
 
     return applyEdits(source, edits);

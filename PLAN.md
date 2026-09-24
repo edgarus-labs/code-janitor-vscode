@@ -63,15 +63,28 @@ commands as `EditorConfigIssue`s: `unresolved` violations (counted in the cleanu
   `editorConfigExpressionPreferences.ts` (target-typed `new`, `default`, index/range, `is null`,
   `nameof`, UTF-8 literals, implicit lambdas), `editorConfigStatementPreferences.ts` (`throw`
   expressions, tuple swap, local functions, deconstruction, conditional assignment/return,
-  object and collection initializers), `editorConfigTypePreferences.ts` (`System.Threading.Lock`,
+  object and collection initializers, switch expressions, `is` patterns over `as`/casts), `editorConfigTypePreferences.ts` (`System.Threading.Lock`,
   primary constructors), `editorConfigOperatorPreferences.ts` (parentheses, predefined types,
   compound assignment, simplified booleans, `??`, `?.`, delegate calls, `is null`/`not`/combined
-  patterns, inferred names), `editorConfigMemberPreferences.ts` (modifier order, `readonly`
-  structs, `static` local functions, auto properties; namespace/folder and unused parameters
-  reported) and `editorConfigExpressionBodies.ts` (expression-bodied members). The rules run in
+  patterns, inferred names, explicit tuple names, simplified interpolation, extended property
+  patterns, method groups), `editorConfigPrecedence.ts` (shared precedence and null-check helpers), `editorConfigMemberPreferences.ts` (modifier order, `readonly`
+  structs and struct members, `static` local functions, auto properties; namespace/folder and unused parameters
+  reported) and `editorConfigExpressionBodies.ts` (expression-bodied members and lambdas). The rules run in
   passes until one changes nothing (at most three), and only the last pass reports.
   `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks) for rules that
   depend on it.
+- `transformations/editorConfigQualityRules.ts`: the code-quality (CA) rules and the IDE rules
+  without a code-style option (`SUPPORTED_DIAGNOSTICS` in the registry), run by the code-style
+  stage before the member preferences, each gated on its diagnostic's severity (including the
+  category bulk severity). `editorConfigQualityRulesMembers.ts` (CA1822 `static`, IDE0051/IDE0052
+  unused/unread private members, repeated until stable), `editorConfigQualityRulesSealing.ts`
+  (CA1852), `editorConfigQualityRulesExpressions.ts` (CA1805, CA1825, CA1827-CA1829, CA1860, CA1507,
+  CA1834, CA1847, CA1865-CA1867, CA2249, IDE0004, IDE0005), `editorConfigQualityRulesSupport.ts`
+  (suppressions, generated code, `dotnet_code_quality` options, visibility, target-framework API
+  checks, declared-type lookup on the naming `SourceModel`) and `editorConfigQualityRulesProject.ts`
+  (facts from the project's other C# files - derived types, member-access names, interfaces,
+  `InternalsVisibleTo` - cached per file version; a project whose files cannot all be listed or read
+  makes CA1822/CA1852 report instead of fixing).
 - `transformations/editorConfigFormatting.ts`: core EditorConfig properties and using order, and the
   C# formatting options gated on IDE0055, in this order: `editorConfigWrapping.ts` (single-line
   blocks and statements, initializer and anonymous-type members), brace and keyword new lines,
@@ -140,6 +153,13 @@ source directory you are authorized to inspect:
 ```sh
 npm run smoke-test -- <source-directory>
 ```
+
+`npm run generate:editorconfig -- [path]` writes an `.editorconfig` (default `./.editorconfig`)
+with every C# code-style, formatting and naming option Microsoft documents at its documented
+default. Its severities come from the `.editorconfig` registry: what cleanup applies is a
+`warning`, the other documented style rules are `suggestion`s. The option data and its
+documentation links are in `scripts/editorConfigTemplate.ts`; `test/editorConfigTemplate.test.ts`
+checks that the file makes every supported setting take effect.
 
 ## AI behavior
 

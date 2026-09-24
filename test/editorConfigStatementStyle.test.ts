@@ -91,3 +91,47 @@ describe('IDE0028 dotnet_style_collection_initializer', () => {
     expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning\ndotnet_style_prefer_collection_expression = true:warning')).toBe(source);
   });
 });
+
+describe('IDE0066 csharp_style_prefer_switch_expression', () => {
+  it('turns a switch that returns in every section into a switch expression', () => {
+    expectRewrite(
+      'csharp_style_prefer_switch_expression = true',
+      method('string', 'switch (i)', '{', '    case 1:', '    case 2:', '        return "low";', '    case int n when n > 9:', '        return "high";', '    default:', '        throw new ArgumentOutOfRangeException();', '}'),
+      method('string', 'return i switch', '{', '    1 or 2 => "low",', '    int n when n > 9 => "high",', '    _ => throw new ArgumentOutOfRangeException(),', '};')
+    );
+  });
+
+  it('assigns a switch expression and uses a following return as the default arm', () => {
+    expectRewrite(
+      'csharp_style_prefer_switch_expression = true',
+      method('int', 'int n;', 'switch (i)', '{', '    case 1:', '        n = 10;', '        break;', '    default:', '        n = 0;', '        break;', '}', 'switch (i)', '{', '    case 3: return 30;', '}', 'return n;'),
+      method('int', 'int n = i switch', '{', '    1 => 10,', '    _ => 0,', '};', 'return i switch', '{', '    3 => 30,', '    _ => n,', '};')
+    );
+  });
+
+  it('leaves switches with other statements, or of types the arms could change, alone', () => {
+    const source = method('object', 'switch (i)', '{', '    case 1: return 1;', '    default: return 2L;', '}');
+
+    expect(codeStyle(source, 'csharp_style_prefer_switch_expression = true:warning')).toBe(source);
+  });
+});
+
+describe('IDE0019 csharp_style_pattern_matching_over_as_with_null_check', () => {
+  it('uses a type pattern instead of as and a null check', () => {
+    expectRewrite(
+      'csharp_style_pattern_matching_over_as_with_null_check = true',
+      method('void', 'var s = o as string;', 'if (s != null && s.Length > 0)', '{', '    Use(s);', '    Use(s.Length);', '}', 'var u = o as Uri;', 'if (u != null) Use(u);', 'Use(u);'),
+      method('void', 'if (o is string s && s.Length > 0)', '{', '    Use(s);', '    Use(s.Length);', '}', 'var u = o as Uri;', 'if (u != null) Use(u);', 'Use(u);')
+    );
+  });
+});
+
+describe('IDE0020 csharp_style_pattern_matching_over_is_with_cast_check', () => {
+  it('declares the pattern variable instead of casting after a type check', () => {
+    expectRewrite(
+      'csharp_style_pattern_matching_over_is_with_cast_check = true',
+      method('void', 'if (o is string)', '{', '    var s = (string)o;', '    Use(s);', '}'),
+      method('void', 'if (o is string s)', '{', '    Use(s);', '}')
+    );
+  });
+});

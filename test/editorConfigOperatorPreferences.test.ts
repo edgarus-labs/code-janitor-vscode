@@ -197,3 +197,100 @@ describe('IDE0049 dotnet_style_predefined_type_for_*', () => {
     expect(codeStyle(source, 'dotnet_style_predefined_type_for_member_access = true:warning\ndotnet_style_predefined_type_for_locals_parameters_members = true:warning')).toBe(source);
   });
 });
+
+function issuesOf(source: string, rules: string): string[] {
+  const props = resolveEditorConfigProperties([{ directory: '/repo', text: `root = true\n[*.cs]\n${rules}\n` }], '/repo/Sample.cs');
+  const issues: string[] = [];
+  createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue)).apply(source);
+
+  return issues;
+}
+
+describe('IDE0033 dotnet_style_explicit_tuple_names', () => {
+  it('uses declared element names instead of ItemN', () => {
+    expectRewrite(
+      'dotnet_style_explicit_tuple_names = true',
+      method('(int count, string label) t = Get();', 'Use(t.Item1, t.Item2);', '(int, string) u = Get();', 'Use(u.Item1);'),
+      method('(int count, string label) t = Get();', 'Use(t.count, t.label);', '(int, string) u = Get();', 'Use(u.Item1);')
+    );
+  });
+});
+
+describe('IDE0053 csharp_style_expression_bodied_lambdas', () => {
+  it('uses expression bodies for lambdas that return a value and reports statement lambdas', () => {
+    const before = method('Func<int, int> f = x => { return x + 1; };', 'Action a = () => { Use(s); };');
+    const rules = 'csharp_style_expression_bodied_lambdas = true';
+
+    expectRewrite(rules, before, method('Func<int, int> f = x => x + 1;', 'Action a = () => { Use(s); };'));
+    expect(issuesOf(before, `${rules}:warning`)).toEqual([expect.stringMatching(/^IDE0053 .* line 10: the lambda body was not changed/)]);
+  });
+});
+
+describe('IDE0071 dotnet_style_prefer_simplified_interpolation', () => {
+  it('drops ToString calls in the holes of interpolated strings typed as string', () => {
+    expectRewrite(
+      'dotnet_style_prefer_simplified_interpolation = true',
+      method('var a = $"{s.ToString()} and {i.ToString("N2")}";', 'Use($"{i.ToString()}");'),
+      method('var a = $"{s} and {i:N2}";', 'Use($"{i.ToString()}");')
+    );
+  });
+});
+
+describe('IDE0170 csharp_style_prefer_extended_property_pattern', () => {
+  it('uses extended property patterns for nested single-property patterns', () => {
+    expectRewrite(
+      'csharp_style_prefer_extended_property_pattern = true',
+      method('var a = o is Uri { Host: { Length: 5 } };', 'var d = o is Uri { Host: { Length: 5, } h };'),
+      method('var a = o is Uri { Host.Length: 5 };', 'var d = o is Uri { Host: { Length: 5, } h };')
+    );
+  });
+});
+
+describe('IDE0200 csharp_style_prefer_method_group_conversion', () => {
+  const source = lines(
+    'class Sample',
+    '{',
+    '    static void Log(string text) { }',
+    '    static int Twice(int x) => x * 2;',
+    '',
+    '    void M(List<string> items)',
+    '    {',
+    '        Action<string> a = x => Log(x);',
+    '        Func<int, int> f = (int x) => Twice(x);',
+    '        items.ForEach(x => Log(x));',
+    '    }',
+    '}'
+  );
+
+  it('uses method groups where the delegate type is written and matches', () => {
+    expectRewrite(
+      'csharp_style_prefer_method_group_conversion = true',
+      source,
+      source.replace('a = x => Log(x);', 'a = Log;').replace('f = (int x) => Twice(x);', 'f = Twice;')
+    );
+    expect(issuesOf(source, 'csharp_style_prefer_method_group_conversion = true:warning')).toEqual([
+      expect.stringMatching(/^IDE0200 .* line 10: the lambda was not replaced by 'Log'/),
+    ]);
+  });
+});
+
+describe('IDE0251 csharp_style_prefer_readonly_struct_member', () => {
+  it('marks struct members that only read the instance readonly', () => {
+    const source = lines(
+      'struct Point',
+      '{',
+      '    private int _x;',
+      '    public int X => _x;',
+      '    public int Twice() { return _x * 2; }',
+      '    public void Reset() { _x = 0; }',
+      '    public int Next() => Twice() + 1;',
+      '}'
+    );
+
+    expectRewrite(
+      'csharp_style_prefer_readonly_struct_member = true',
+      source,
+      source.replace('public int X', 'public readonly int X').replace('public int Twice', 'public readonly int Twice').replace('public int Next', 'public readonly int Next')
+    );
+  });
+});

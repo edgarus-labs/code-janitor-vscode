@@ -1,18 +1,20 @@
 import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { Rule } from './editorConfigCodeStyle';
-import { isSimpleReceiver, subjectTypeText } from './editorConfigExpressionPreferences';
-import { hasComment, tupleElements } from './editorConfigStatementPreferences';
+import { declaredTypeNode, delegateParameterTypes, isSimpleReceiver, subjectTypeText } from './editorConfigExpressionPreferences';
+import { hasComment, returnType, tupleElements } from './editorConfigStatementPreferences';
 import {
   RELATIONAL,
   UNARY,
+  NullTest,
+  nullTest,
   operatorOf,
   precedenceOf,
   requiredPrecedence,
   unparenthesized,
   withParentheses,
 } from './editorConfigPrecedence';
-import { hasParseErrors } from './editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, hasParseErrors } from './editorConfigSupport';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
 
 /**
@@ -112,32 +114,6 @@ function isPlainReferenceType(type: string | undefined, root: Node): boolean {
 }
 
 const NULLABLE_VALUE_TYPE = /^(?:bool|byte|sbyte|char|decimal|double|float|short|ushort|int|uint|long|ulong|nint|nuint|DateTime|DateTimeOffset|TimeSpan|Guid)\?$/;
-
-interface NullTest {
-  readonly subject: Node;
-  /** True for `x == null` / `x is null`, false for `x != null` / `x is not null`. */
-  readonly isNull: boolean;
-  /** True when the test is a pattern (`is null`), which never calls a user-defined operator. */
-  readonly byPattern: boolean;
-}
-
-/** `x == null`, `null != x`, `x is null`, `x is not null` (with optional parentheses). */
-export function nullTest(condition: Node): NullTest | undefined {
-  const test = unparenthesized(condition);
-  if (test.type === 'binary_expression') {
-    const operator = operatorOf(test);
-    const left = test.childForFieldName('left');
-    const right = test.childForFieldName('right');
-    const subject = right?.type === 'null_literal' ? left : left?.type === 'null_literal' ? right : undefined;
-
-    return (operator === '==' || operator === '!=') && subject ? { subject, isNull: operator === '==', byPattern: false } : undefined;
-  }
-
-  const pattern = test.type === 'is_pattern_expression' ? test.childForFieldName('pattern')?.text.replace(/\s+/g, ' ') : undefined;
-  const subject = test.childForFieldName('expression');
-
-  return (pattern === 'null' || pattern === 'not null') && subject ? { subject, isNull: pattern === 'null', byPattern: true } : undefined;
-}
 
 /** `condition ? whenTrue : whenFalse` of a fully parsed conditional expression. */
 function conditionalParts(conditional: Node): { condition: Node; whenTrue: Node; whenFalse: Node } | undefined {
@@ -1037,6 +1013,272 @@ function isInNameof(node: Node): boolean {
   return false;
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// IDE0033 dotnet_style_explicit_tuple_names
+// ---------------------------------------------------------------------------------------------
+
+/** `t.Item1` becomes `t.count` when `t` is declared in the file with the tuple type `(int count, ...)`. */
+const explicitTupleNames: Collect = (_source, root) => {
+  const edits: TextEdit[] = [];
+  for (const access of findAll(root, 'member_access_expression')) {
+    const receiver = access.childForFieldName('expression');
+    const name = access.childForFieldName('name');
+    const item = name ? /^Item(\d+)$/.exec(name.text) : null;
+    const type = receiver?.type === 'identifier' && item ? declaredTypeNode(receiver) : undefined;
+    const elements = type?.type === 'tuple_type' ? tupleElements(type) : undefined;
+    const element = elements?.[Number(item?.[1]) - 1];
+    if (element?.name && name) {
+      edits.push({ start: name.startIndex, end: name.endIndex, text: element.name });
+    }
+  }
+
+  return edits;
+};
+
+// ---------------------------------------------------------------------------------------------
+// IDE0071 dotnet_style_prefer_simplified_interpolation
+// ---------------------------------------------------------------------------------------------
+
+const STRING_TYPES = /^(?:string|String|System\.String)\??$/;
+
+/**
+ * True when the interpolated string is known to become a `string` (not a `FormattableString` or
+ * an interpolated string handler, which would receive the hole values themselves).
+ */
+function isStringInterpolation(interpolation: Node): boolean {
+  const parent = interpolation.parent;
+  if (parent?.type === 'binary_expression' && operatorOf(parent) === '+') {
+    return true;
+  }
+
+  if (parent?.type === 'return_statement') {
+    return STRING_TYPES.test(returnType(parent) ?? '');
+  }
+
+  const declaration = parent?.type === 'equals_value_clause' ? parent.parent?.parent : undefined;
+  const type = declaration?.type === 'variable_declaration' ? declaration.childForFieldName('type') : null;
+
+  return type !== null && type !== undefined && (type.type === 'implicit_type' || STRING_TYPES.test(type.text));
+}
+
+/** The `{...}` holes of a regular `$"..."` string: offsets of the hole content within `text`. */
+function interpolationHoles(text: string): { start: number; end: number }[] | undefined {
+  const holes: { start: number; end: number }[] = [];
+  for (let i = 2; i < text.length - 1; i++) {
+    if (text[i] === '\\') {
+      i++;
+    } else if (text[i] === '{' && text[i + 1] === '{') {
+      i++;
+    } else if (text[i] === '{') {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < text.length - 1; j++) {
+        const ch = text[j];
+        if (ch === '"' || ch === "'") {
+          const end = text.indexOf(ch, j + 1);
+          if (end < 0 || text.slice(j + 1, end).includes('\\')) {
+            return undefined;
+          }
+
+          j = end;
+        } else if (ch === '(' || ch === '[' || ch === '{') {
+          depth++;
+        } else if (ch === ')' || ch === ']' || (ch === '}' && depth > 0)) {
+          depth--;
+        } else if (ch === '}') {
+          break;
+        }
+      }
+
+      if (j >= text.length - 1) {
+        return undefined;
+      }
+
+      holes.push({ start: i + 1, end: j });
+      i = j;
+    }
+  }
+
+  return holes;
+}
+
+/** `$"{x.ToString()}"` becomes `$"{x}"` and `$"{x.ToString("N2")}"` becomes `$"{x:N2}"`. */
+const simplifiedInterpolations: Collect = (_source, root) => {
+  const edits: TextEdit[] = [];
+  for (const interpolation of findAll(root, 'interpolated_string_expression')) {
+    const text = interpolation.text;
+    const holes = text.startsWith('$"') && !text.startsWith('$"""') && isStringInterpolation(interpolation) ? interpolationHoles(text) : undefined;
+    for (const hole of holes ?? []) {
+      const content = text.slice(hole.start, hole.end);
+      const match = /^\s*((?:this|[A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)\.ToString\(\s*(?:"([^"\\{}]*)")?\s*\)\s*$/.exec(content);
+      if (match && match[2] !== '') {
+        const start = interpolation.startIndex + hole.start;
+        edits.push({ start, end: interpolation.startIndex + hole.end, text: match[2] === undefined ? match[1] : `${match[1]}:${match[2]}` });
+      }
+    }
+  }
+
+  return edits;
+};
+
+// ---------------------------------------------------------------------------------------------
+// IDE0170 csharp_style_prefer_extended_property_pattern
+// ---------------------------------------------------------------------------------------------
+
+/** Splits `text` at commas that are not nested in braces, brackets or parentheses. */
+function topLevelParts(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if ('{[('.includes(text[i])) {
+      depth++;
+    } else if ('}])'.includes(text[i])) {
+      depth--;
+    } else if (text[i] === ',' && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+
+  parts.push(text.slice(start));
+
+  return parts;
+}
+
+/** `{ A: { B: p } }` becomes `{ A.B: p }` when the nested pattern has no type, designation or other member. */
+function extendPropertyPatterns(pattern: string): string {
+  let current = pattern;
+  for (let changed = true; changed; ) {
+    changed = false;
+    const opener = /([{,]\s*)([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*:\s*\{/g;
+    for (let match = opener.exec(current); match; match = opener.exec(current)) {
+      const open = match.index + match[0].length - 1;
+      let depth = 0;
+      let close = open;
+      for (; close < current.length; close++) {
+        depth += current[close] === '{' ? 1 : current[close] === '}' ? -1 : 0;
+        if (depth === 0) {
+          break;
+        }
+      }
+
+      const inner = current.slice(open + 1, close);
+      const parts = topLevelParts(inner);
+      const member = parts.length === 1 ? /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*:\s*([\s\S]+?)\s*$/.exec(parts[0]) : null;
+      const after = current.slice(close + 1).trimStart();
+      if (!member || !/^[,}]/.test(after)) {
+        continue;
+      }
+
+      const nameStart = match.index + match[1].length;
+      current = `${current.slice(0, nameStart)}${match[2]}.${member[1]}: ${member[2]}${current.slice(close + 1)}`;
+      changed = true;
+      break;
+    }
+  }
+
+  return current;
+}
+
+const extendedPropertyPatterns: Collect = (_source, root) => {
+  const edits: TextEdit[] = [];
+  for (const pattern of findAll(root, 'pattern')) {
+    if (/["'/]/.test(pattern.text) || pattern.parent?.type !== 'is_pattern_expression' || hasParseErrors(pattern)) {
+      continue;
+    }
+
+    const rewritten = extendPropertyPatterns(pattern.text);
+    if (rewritten !== pattern.text) {
+      edits.push({ start: pattern.startIndex, end: pattern.endIndex, text: rewritten });
+    }
+  }
+
+  return edits;
+};
+
+// ---------------------------------------------------------------------------------------------
+// IDE0200 csharp_style_prefer_method_group_conversion
+// ---------------------------------------------------------------------------------------------
+
+const METHOD_GROUP_OPTION = 'csharp_style_prefer_method_group_conversion';
+
+/** The lambda's parameter names and explicit types, or `undefined` when one has a modifier. */
+function forwardedParameters(lambda: Node): { name: string; type?: string }[] | undefined {
+  const list = lambda.childForFieldName('parameters');
+  if (list?.type === 'identifier') {
+    return [{ name: list.text }];
+  }
+
+  const parameters = list?.namedChildren.filter((child) => child.type === 'parameter') ?? [];
+  if (!list || parameters.some((parameter) => parameter.children.length !== (parameter.childForFieldName('type') ? 2 : 1))) {
+    return undefined;
+  }
+
+  return parameters.map((parameter) => ({ name: parameter.childForFieldName('name')?.text ?? '', type: parameter.childForFieldName('type')?.text.replace(/\s+/g, '') }));
+}
+
+/**
+ * `x => M(x)` becomes `M` when `M` is the file's only method or local function of that name,
+ * not generic, and its parameter and return types equal the delegate's (written as `Func`/`Action`
+ * of the variable, or as the lambda's parameter types for a `void` method). Other lambdas that
+ * only forward their parameters are reported.
+ */
+function methodGroups(report: EditorConfigIssueReporter): Collect {
+  return (source, root) => {
+    const edits: TextEdit[] = [];
+    const methods = findAll(root, ['method_declaration', 'local_function_statement']);
+    for (const lambda of findAll(root, 'lambda_expression')) {
+      const body = lambda.childForFieldName('body');
+      const callee = body?.type === 'invocation_expression' ? body.childForFieldName('function') : null;
+      const args = body?.childForFieldName('arguments')?.namedChildren ?? [];
+      const parameters = forwardedParameters(lambda);
+      const forwards =
+        parameters !== undefined &&
+        args.length === parameters.length &&
+        args.every((argument, index) => argument.text === parameters[index].name) &&
+        (callee?.type === 'identifier' || callee?.type === 'member_access_expression');
+      const modifiers = /\b(?:async|static)\s*$/.test(source.slice(lineStartOf(source, lambda.startIndex), lambda.startIndex));
+      if (!forwards || modifiers || !callee || isInPossibleExpressionTree(lambda) || hasParseErrors(lambda)) {
+        continue;
+      }
+
+      const declared = lambda.parent?.type === 'equals_value_clause' ? lambda.parent.parent?.parent?.childForFieldName('type') : undefined;
+      const delegateTypes = delegateParameterTypes(declared ?? undefined)?.map((type) => type.replace(/\s+/g, ''));
+      const typeArgs = declared?.namedChildren.find((child) => child.type === 'type_argument_list')?.namedChildren ?? [];
+      const returns = declared?.namedChildren[0]?.text === 'Func' ? typeArgs[typeArgs.length - 1]?.text.replace(/\s+/g, '') : delegateTypes ? 'void' : undefined;
+      const parameterTypes = delegateTypes ?? (parameters!.every((parameter) => parameter.type) ? parameters!.map((parameter) => parameter.type!) : undefined);
+      const candidates = callee.type === 'identifier' ? methods.filter((method) => method.childForFieldName('name')?.text === callee.text) : [];
+      const method = candidates.length === 1 ? candidates[0] : undefined;
+      const methodParameters = method?.childForFieldName('parameters')?.namedChildren.filter((child) => child.type === 'parameter') ?? [];
+      const methodReturns = method?.childForFieldName('type')?.text.replace(/\s+/g, '');
+      const matches =
+        method !== undefined &&
+        !method.namedChildren.some((child) => child.type === 'type_parameter_list') &&
+        parameterTypes !== undefined &&
+        methodParameters.length === parameterTypes.length &&
+        methodParameters.every(
+          (parameter, index) => parameter.children.length === 2 && parameter.childForFieldName('type')?.text.replace(/\s+/g, '') === parameterTypes[index]
+        ) &&
+        (returns === undefined ? methodReturns === 'void' : methodReturns === returns);
+      if (matches) {
+        edits.push({ start: lambda.startIndex, end: lambda.endIndex, text: callee.text });
+      } else {
+        report(
+          describeIssue('IDE0200', METHOD_GROUP_OPTION, source, lambda.startIndex, `the lambda was not replaced by '${callee.text}': the delegate and method types are not both known from the file.`)
+        );
+      }
+    }
+
+    return edits;
+  };
+}
+
+function lineStartOf(source: string, index: number): number {
+  return source.lastIndexOf('\n', index - 1) + 1;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------------------------
@@ -1062,4 +1304,23 @@ export const OPERATOR_RULES: readonly Rule[] = [
     },
   },
   parenthesesRule(),
+  whenPreferred('dotnet_style_explicit_tuple_names', explicitTupleNames),
+  whenPreferred('dotnet_style_prefer_simplified_interpolation', simplifiedInterpolations),
+  whenPreferred('csharp_style_prefer_extended_property_pattern', extendedPropertyPatterns),
+  {
+    option: METHOD_GROUP_OPTION,
+    // Reports as it goes, so it makes one pass: the rewrite it does never enables another.
+    apply: (source, { props, report }) => {
+      if (effectiveEditorConfigValue(props, METHOD_GROUP_OPTION) !== 'true') {
+        return source;
+      }
+
+      const tree = parseCSharp(source);
+      try {
+        return applyEdits(source, methodGroups(report)(source, tree.rootNode));
+      } finally {
+        tree.delete();
+      }
+    },
+  },
 ];

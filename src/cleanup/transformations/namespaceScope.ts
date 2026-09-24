@@ -1,3 +1,4 @@
+import { STRING, classifyCSharp } from '../csharpScanner';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
 
@@ -155,7 +156,7 @@ export function convertToFileScoped(source: string): string {
     const header = current.slice(0, namespaceNode.startIndex);
     const body = current.slice(openBrace.endIndex, closeBrace.startIndex);
     const newline = body.includes('\r\n') ? '\r\n' : '\n';
-    const dedented = dedent(body, newline);
+    const dedented = dedent(current, openBrace.endIndex, closeBrace.startIndex);
 
     let result = `${header}namespace ${name};`;
     if (dedented.trim()) {
@@ -196,12 +197,29 @@ function findCloseBrace(namespaceNode: Node): Node | undefined {
   return undefined;
 }
 
-/** Removes one indentation level (four spaces or a tab) after trimming surrounding blank lines. */
-function dedent(body: string, newline: string): string {
-  const trimmed = body.replace(/^[\r\n]+/, '').replace(/[\r\n]+$/, '');
+/**
+ * `source` between `start` and `end` without its surrounding blank lines, with one indentation
+ * level (four spaces or a tab) removed from every line that starts in code. Lines that continue a
+ * string literal (verbatim, raw, multi-line interpolated) and every line break keep their text.
+ */
+function dedent(source: string, start: number, end: number): string {
+  const kinds = classifyCSharp(source);
+  const body = source.slice(start, end);
+  const first = body.search(/[^\r\n]/);
+  if (first < 0) {
+    return '';
+  }
 
-  return trimmed
-    .split(newline)
-    .map((line) => (line.startsWith('    ') ? line.slice(4) : line.startsWith('\t') ? line.slice(1) : line))
-    .join(newline);
+  let result = '';
+  let lineStart = first;
+  while (lineStart < body.length) {
+    const next = body.indexOf('\n', lineStart);
+    const lineEnd = next < 0 ? body.length : next + 1;
+    const line = body.slice(lineStart, lineEnd);
+    const inString = lineStart > 0 && kinds[start + lineStart - 1] === STRING;
+    result += inString ? line : line.startsWith('    ') ? line.slice(4) : line.startsWith('\t') ? line.slice(1) : line;
+    lineStart = lineEnd;
+  }
+
+  return result.replace(/[\r\n]+$/, '');
 }

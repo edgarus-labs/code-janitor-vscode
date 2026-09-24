@@ -48,11 +48,12 @@ import {
   removeTrailingWhitespaceConverter,
   updateEndRegionDirectivesConverter,
 } from './transformations/text';
-import { sortUsingDirectives, usingDirectiveOrganizer } from './transformations/usingDirectiveOrganizer';
+import { usingDirectiveOrganizer } from './transformations/usingDirectiveOrganizer';
 import { varWhenApparentConverter } from './transformations/varWhenApparent';
 import { createEditorConfigNamingConverter } from './transformations/editorConfigNaming';
 import { createEditorConfigCodeStyleConverter } from './transformations/editorConfigCodeStyle';
 import { createEditorConfigFormattingConverter } from './transformations/editorConfigFormatting';
+import { qualityRulesNeedProject } from './transformations/editorConfigQualityRules';
 import { EditorConfigIssueReporter, tabWidth } from './transformations/editorConfigSupport';
 
 /** The `.editorconfig` properties of the file being cleaned. */
@@ -120,11 +121,12 @@ export function getCleanupPipeline(
     report: (message) => onIssue?.({ kind: 'unresolved', message: `${filePath}: ${message}` }),
     fileName: filePath ? path.basename(filePath) : undefined,
     filePath: filePath || undefined,
-    // Only IDE0330 (System.Threading.Lock needs .NET 9) and IDE0130 (namespace matches folder)
-    // read the project file.
+    // IDE0330 (System.Threading.Lock needs .NET 9), IDE0130 (namespace matches folder) and the
+    // code-quality rules that check the project's other files or target frameworks read it.
     project:
       effectiveEditorConfigValue(properties, 'csharp_prefer_system_threading_lock') === 'true' ||
-      effectiveEditorConfigValue(properties, 'dotnet_style_namespace_match_folder') === 'true'
+      effectiveEditorConfigValue(properties, 'dotnet_style_namespace_match_folder') === 'true' ||
+      qualityRulesNeedProject(properties)
         ? findProject(filePath)
         : undefined,
   };
@@ -159,8 +161,6 @@ export function buildPipeline(
   const charsetDecides = decides('charset');
   const restoreByteOrderMark = charsetDecides && source.startsWith('\uFEFF');
 
-  // `dotnet_sort_system_directives_first` decides where System usings go when the setting sorts them.
-  const systemUsingsFirst = props === undefined || effectiveEditorConfigValue(props, 'dotnet_sort_system_directives_first') !== 'false';
   const hasEditorConfig = props !== undefined && props.entries.size > 0;
   const trimTrailingWhitespace = props && effectiveEditorConfigValue(props, 'trim_trailing_whitespace');
 
@@ -215,11 +215,8 @@ export function buildPipeline(
           })
         )
       : undefined,
-    settings.organizeUsings
-      ? systemUsingsFirst
-        ? usingDirectiveOrganizer
-        : delegateTransformation('Sort using directives', (text) => sortUsingDirectives(text, false))
-      : undefined,
+    // With `dotnet_sort_system_directives_first` set, the `.editorconfig` formatting sorts the usings.
+    settings.organizeUsings && !decides('dotnet_sort_system_directives_first') ? usingDirectiveOrganizer : undefined,
     // Trimmed here (not only by the formatting rules) so the blank-line steps below see empty lines.
     (trimTrailingWhitespace === undefined ? settings.removeEndOfLineWhitespace : trimTrailingWhitespace === 'true')
       ? removeTrailingWhitespaceConverter

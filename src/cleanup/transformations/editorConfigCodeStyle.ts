@@ -24,6 +24,7 @@ import { EXPRESSION_PREFERENCES, applyExpressionPreference } from './editorConfi
 import { EXPRESSION_BODY_RULES } from './editorConfigExpressionBodies';
 import { MEMBER_RULES } from './editorConfigMemberPreferences';
 import { OPERATOR_RULES } from './editorConfigOperatorPreferences';
+import { QUALITY_RULES } from './editorConfigQualityRules';
 import { STATEMENT_PREFERENCES, applyStatementPreference } from './editorConfigStatementPreferences';
 import { applySystemThreadingLock, reportPrimaryConstructors } from './editorConfigTypePreferences';
 import { applyVarPreferences } from './editorConfigVarPreference';
@@ -176,6 +177,8 @@ const RULES: readonly Rule[] = [
     apply: (source, { props, report }) => reportPrimaryConstructors(source, props, report),
   },
   ...OPERATOR_RULES,
+  // Before the member preferences, so that IDE0036 orders the modifiers CA1822/CA1852 add.
+  ...QUALITY_RULES,
   ...MEMBER_RULES,
   ...EXPRESSION_BODY_RULES,
   {

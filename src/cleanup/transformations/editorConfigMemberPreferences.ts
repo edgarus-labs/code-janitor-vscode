@@ -134,6 +134,144 @@ function isInside(node: Node, type: string): boolean {
 }
 
 // ---------------------------------------------------------------------------------------------
+// IDE0251 csharp_style_prefer_readonly_struct_member
+// ---------------------------------------------------------------------------------------------
+
+/** Field types whose methods cannot change the field itself (reference types). */
+const REFERENCE_FIELD_TYPE = /^(?:string|object|String|Object|(?:List|Dictionary|HashSet|Queue|Stack|SortedDictionary|SortedList|SortedSet|IList|ICollection|IEnumerable|IDictionary|IReadOnlyList|IReadOnlyCollection|IReadOnlyDictionary)<.+>|.+\[\])\??$/;
+
+/**
+ * Adds `readonly` to the methods and get-only properties of a non-readonly, non-partial struct
+ * that cannot change the instance: they assign nothing but their own locals, pass nothing by
+ * reference, use `this` only to read members, and call only static or `readonly` members of the
+ * struct and methods of fields of reference types. Anything else might mutate the instance
+ * through a defensive copy, so it is left alone.
+ */
+function readonlyStructMembers(source: string): string {
+  return edit(source, (root) => {
+    const edits: TextEdit[] = [];
+    for (const struct of findAll(root, 'struct_declaration')) {
+      const members = struct.childForFieldName('body')?.namedChildren ?? [];
+      if (hasModifier(struct, 'readonly') || hasModifier(struct, 'partial') || hasParseErrors(struct)) {
+        continue;
+      }
+
+      const fieldTypes = new Map<string, string>();
+      const safeMembers = new Set<string>();
+      for (const member of members) {
+        const declaration = member.namedChildren.find((child) => child.type === 'variable_declaration');
+        for (const declarator of member.type === 'field_declaration' ? declaration?.namedChildren.filter((child) => child.type === 'variable_declarator') ?? [] : []) {
+          fieldTypes.set(declarator.childForFieldName('name')?.text ?? '', declaration?.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '');
+        }
+
+        const name = member.childForFieldName('name')?.text;
+        const accessors = member.childForFieldName('accessors')?.namedChildren ?? [];
+        const autoProperty = member.type === 'property_declaration' && accessors.length > 0 && accessors.every((accessor) => !accessor.childForFieldName('body'));
+        if (name && (hasModifier(member, 'static') || hasModifier(member, 'readonly') || hasModifier(member, 'const') || autoProperty)) {
+          safeMembers.add(name);
+        }
+      }
+
+      const memberNames = new Set(members.map((member) => member.childForFieldName('name')?.text).filter((name): name is string => name !== undefined));
+      for (const member of members) {
+        const name = member.childForFieldName('name');
+        const body = member.childForFieldName('body') ?? member.childForFieldName('value');
+        const accessors = member.childForFieldName('accessors')?.namedChildren ?? [];
+        const getterOnly = member.type === 'property_declaration' && (member.childForFieldName('value') !== null || (accessors.length === 1 && accessors[0].text.trimStart().startsWith('get') && accessors[0].childForFieldName('body') !== null));
+        if (
+          !name ||
+          !(member.type === 'method_declaration' || getterOnly) ||
+          safeMembers.has(name.text) ||
+          ['static', 'readonly', 'abstract', 'extern', 'partial', 'unsafe'].some((modifier) => hasModifier(member, modifier)) ||
+          !(body ?? accessors[0])
+        ) {
+          continue;
+        }
+
+        if (isNonMutating(member, memberNames, safeMembers, fieldTypes)) {
+          const type = member.childForFieldName('type');
+          if (type) {
+            edits.push({ start: type.startIndex, end: type.startIndex, text: 'readonly ' });
+          }
+        }
+      }
+    }
+
+    return edits;
+  });
+}
+
+function isNonMutating(member: Node, memberNames: Set<string>, safeMembers: Set<string>, fieldTypes: Map<string, string>): boolean {
+  const locals = new Set(member.descendantsOfType(['variable_declarator', 'parameter', 'declaration_expression']).map((node) => node.childForFieldName('name')?.text ?? ''));
+  const refersToMember = (node: Node): string | undefined => {
+    if (node.type === 'identifier' && memberNames.has(node.text) && !locals.has(node.text)) {
+      return node.text;
+    }
+
+    const name = node.childForFieldName('name');
+
+    return node.type === 'member_access_expression' && node.childForFieldName('expression')?.type === 'this_expression' && name ? name.text : undefined;
+  };
+
+  for (const node of member.descendantsOfType(['assignment_expression', 'postfix_unary_expression', 'prefix_unary_expression', 'argument', 'this_expression', 'invocation_expression', 'identifier'])) {
+    switch (node.type) {
+      case 'assignment_expression': {
+        const left = node.childForFieldName('left');
+        if (left?.type !== 'identifier' || !locals.has(left.text)) {
+          return false;
+        }
+
+        break;
+      }
+      case 'postfix_unary_expression':
+      case 'prefix_unary_expression': {
+        const operand = node.namedChildren[0];
+        if (/^(?:\+\+|--)|(?:\+\+|--)$/.test(node.text) && (operand?.type !== 'identifier' || !locals.has(operand.text))) {
+          return false;
+        }
+
+        break;
+      }
+      case 'argument':
+        if (/^(?:ref|out|in)\b/.test(node.text)) {
+          return false;
+        }
+
+        break;
+      case 'this_expression':
+        if (node.parent?.type !== 'member_access_expression' || node.parent.childForFieldName('expression') !== node) {
+          return false;
+        }
+
+        break;
+      case 'invocation_expression': {
+        const callee = node.childForFieldName('function');
+        const receiver = callee?.type === 'member_access_expression' ? callee.childForFieldName('expression') : null;
+        const called = callee ? refersToMember(callee) : undefined;
+        const field = receiver ? refersToMember(receiver) : undefined;
+        if ((called && !safeMembers.has(called)) || (field && !REFERENCE_FIELD_TYPE.test(fieldTypes.get(field) ?? ''))) {
+          return false;
+        }
+
+        break;
+      }
+      case 'identifier': {
+        // A property with a getter body may mutate; reading it from a readonly member copies the instance.
+        const isDeclaredName = node.parent?.childForFieldName('name') === node && node.parent.type !== 'member_access_expression';
+        const used = isDeclaredName ? undefined : refersToMember(node);
+        if (used && !fieldTypes.has(used) && !safeMembers.has(used) && node.parent?.type !== 'invocation_expression') {
+          return false;
+        }
+
+        break;
+      }
+    }
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------
 // IDE0062 csharp_prefer_static_local_function
 // ---------------------------------------------------------------------------------------------
 
@@ -487,6 +625,10 @@ export const MEMBER_RULES: readonly Rule[] = [
   {
     option: 'csharp_style_prefer_readonly_struct',
     apply: (source, { props }) => (effectiveEditorConfigValue(props, 'csharp_style_prefer_readonly_struct') === 'true' ? readonlyStructs(source) : source),
+  },
+  {
+    option: 'csharp_style_prefer_readonly_struct_member',
+    apply: (source, { props }) => (effectiveEditorConfigValue(props, 'csharp_style_prefer_readonly_struct_member') === 'true' ? readonlyStructMembers(source) : source),
   },
   {
     option: 'csharp_prefer_static_local_function',

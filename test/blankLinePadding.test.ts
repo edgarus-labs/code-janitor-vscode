@@ -153,6 +153,14 @@ describe('blankLinePaddingConverter', () => {
     ).toContain('break;\n\n            case 2:');
   });
 
+  it('pads the right members of a CRLF file whose verbatim strings hold bare LF line breaks', () => {
+    const source = 'class C\r\n{\r\n    string _s = @"\na\nb";\r\n    int _x;\r\n    void M() { }\r\n}\r\n';
+
+    expect(apply(source, 'insertBlankLinePaddingBeforeMethods')).toBe(
+      'class C\r\n{\r\n    string _s = @"\na\nb";\r\n    int _x;\r\n\r\n    void M() { }\r\n}\r\n'
+    );
+  });
+
   it('is named', () => {
     expect(createBlankLinePaddingConverter(createDefaultSettings()).name).toBe('Insert blank line padding');
   });

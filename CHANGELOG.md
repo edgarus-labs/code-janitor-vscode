@@ -75,12 +75,30 @@ First release of the Visual Studio Code port.
   anonymous member names (IDE0037), conditional assignment/return (IDE0045, IDE0046), object and
   collection initializers (IDE0017, IDE0028), auto properties (IDE0032), expression-bodied members
   (IDE0021 - IDE0027, IDE0061), `readonly` structs (IDE0250), `static` local functions (IDE0062)
-  and modifier order (IDE0036), with primary constructors (IDE0290), namespaces that do not match
+  and modifier order (IDE0036), switch expressions (IDE0066), pattern matching over `as`/casts
+  (IDE0019, IDE0020), explicit tuple names (IDE0033), expression-bodied lambdas (IDE0053),
+  simplified interpolation (IDE0071), extended property patterns (IDE0170), method groups (IDE0200)
+  and `readonly` struct members (IDE0251), with primary constructors (IDE0290), namespaces that do not match
   their folder (IDE0130) and unused parameters (IDE0060) reported only. Code-style rules apply only when
   their severity is `suggestion`, `warning` or `error`; C# formatting options only while `IDE0055`
   is; the core EditorConfig properties and the using order options whenever they are set. They run after the other cleanup steps, change code only when the result is certain from the
   syntax, and list the violations they could not fix in the Code Janitor output channel and the
   cleanup summary. See the README for the supported options.
+- **Using order from `.editorconfig`**: when `dotnet_sort_system_directives_first` is set, cleanup
+  always sorts usings (`System` first only for `true`), whatever the "Sort usings" setting says;
+  `dotnet_separate_import_directive_groups` adds (`true`) or removes (`false`) the blank lines
+  between using groups.
+- **Code-quality rules from `.editorconfig`**: while `dotnet_diagnostic.<ID>.severity` (or the
+  `Performance`/`Usage`/`Maintainability`/`Style` category or global bulk severity) enforces them,
+  cleanup marks members that use no instance data `static` (CA1822, honoring `api_surface`), seals
+  internal types nothing in the project derives from (CA1852, honoring `InternalsVisibleTo` and
+  `ignore_internalsvisibleto`), removes default-value initializers (CA1805) and unused private
+  members (IDE0051), and uses `Array.Empty<T>()` (CA1825), `Any()`/`AnyAsync()` (CA1827, CA1828),
+  `Length`/`Count` (CA1829, CA1860), `nameof` (CA1507), char overloads (CA1834, CA1847, CA1865),
+  `Contains` (CA2249), no identity casts (IDE0004) and no duplicate or own-namespace usings
+  (IDE0005). CA1822 and CA1852 read the project's other C# files to prove the change is safe;
+  unread private members (IDE0052), CA1866/CA1867 and every violation that cannot be proven safe are
+  listed in the Code Janitor output channel and the cleanup summary.
 - **`.editorconfig` naming rules for C#**: cleanup renames symbols that violate the
   `dotnet_naming_rule`/`dotnet_naming_symbols`/`dotnet_naming_style` rules whose severity is
   `suggestion`, `warning` or `error`, choosing the same name as the Visual Studio naming fix and
@@ -145,6 +163,14 @@ First release of the Visual Studio Code port.
   spacing normalizer matched any line starting with `//`, so a doc comment's third slash was read
   as the start of the comment text and got a space inserted in front of it; it now captures the
   whole run of slashes (`//`, `///`, `////`, ...) and only normalizes the spacing after it.
+- **Import Settings from .codejanitor** no longer fails in VS Code with "... is not a registered
+  configuration": it wrote each blank-line-padding and explicit-access-modifier key on its own,
+  although only their group settings exist, and the repository-only padding keys (single-line
+  fields, properties and comments). Grouped keys are imported through their group setting, and
+  repository-only keys stay in `.codejanitor`, which the import message now says.
+- Blank-line padding and the blank line before `return`/`throw` inserted blank lines at the wrong
+  place - and a new one on every run - in a CRLF file whose verbatim strings contain bare LF line
+  breaks: lines were counted on CRLF while the syntax tree counts them on LF.
 - The editor context submenu no longer splits Generate and Remove XML Documentation across two
   groups separated by an unrelated divider. They are adjacent, in their own group - not folded into
   the AI actions group either, since removal never calls AI.
@@ -166,6 +192,13 @@ First release of the Visual Studio Code port.
   XML documentation planner against every `.cs` file in an arbitrary real-world repository,
   read-only, no `vscode` host needed. Catches parser/pipeline crashes that hand-written unit test
   fixtures do not reach.
+- `test/e2e/editorConfig.test.ts`: in the real VS Code host, a fixture folder with its own
+  `.editorconfig` checks that cleanup applies naming, code-style and formatting rules, lists the
+  settings it does not apply in the Code Janitor output channel, moves extra types to their own
+  files (SA1402) and applies the rules on save.
+- `npm run generate:editorconfig`: writes an `.editorconfig` with every documented C# code-style,
+  formatting and naming option at its documented default, enforcing as warnings what cleanup
+  applies (see `PLAN.md`).
 - Extended `test/e2e/` to a full pass over the three places a user actually interacts with the
   extension: every declared setting is read from the real Settings system and checked against its
   declared JSON type/enum, plus a real update/clear round-trip; every declared command is executed

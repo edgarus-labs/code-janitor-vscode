@@ -110,7 +110,7 @@ export function discoverDisqualifiedTypeNames(sources: Iterable<string>): Set<st
 }
 
 /** Every type name a single syntax tree disqualifies from sealing: base types and generic constraint targets. */
-function collectDisqualifiedTypeNames(root: Node): Set<string> {
+export function collectDisqualifiedTypeNames(root: Node): Set<string> {
   const names = new Set<string>();
 
   for (const baseList of findAll(root, 'base_list')) {
@@ -167,7 +167,7 @@ function isSafeToSeal(declaration: Node, disqualifiedTypeNames: ReadonlySet<stri
 }
 
 /** True when the type directly declares a `virtual` method, property, indexer, event or event field (CS0549 once sealed). */
-function hasOverridableMember(declaration: Node): boolean {
+export function hasOverridableMember(declaration: Node): boolean {
   const body = declaration.childForFieldName('body');
 
   return (body?.namedChildren ?? []).some(

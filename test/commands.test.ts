@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -29,6 +29,22 @@ const XML_DOCUMENTED = '/// <summary>Doc.</summary>\ninternal class C\n{\n}\n';
 
 beforeEach(() => {
   resetMock();
+});
+
+/** Temporary folders created by the running test, removed after it whether it passes or fails. */
+const tempRoots: string[] = [];
+
+function tempRoot(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+  tempRoots.push(root);
+
+  return root;
+}
+
+afterEach(() => {
+  for (const root of tempRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function run(command: string, ...args: unknown[]): Promise<unknown> {
@@ -97,7 +113,7 @@ describe('readCleanupSettings', () => {
   });
 
   it('loads cleanup policy from a .codejanitor file in the repository root', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({ cleanup: { removeRegions: false, organizeUsings: true, insertBlankLinePadding: false } })
@@ -112,7 +128,7 @@ describe('readCleanupSettings', () => {
   });
 
   it('lets explicit VS Code cleanup settings override the repository policy', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
     state.configuration.set('codeJanitor.cleanup.removeRegions', true);
 
@@ -122,7 +138,7 @@ describe('readCleanupSettings', () => {
 
 describe('repository settings commands', () => {
   it('exports cleanup settings as a .codejanitor file', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     state.configuration.set('codeJanitor.cleanup.removeRegions', false);
     state.configuration.set('codeJanitor.cleanup.organizeUsings', true);
 
@@ -137,7 +153,7 @@ describe('repository settings commands', () => {
   });
 
   it('imports repository settings into workspace settings', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false, organizeUsings: true } }));
 
     await importRepositorySettings(root);
@@ -156,7 +172,7 @@ describe('repository settings commands', () => {
   });
 
   it('exports with file header position and update mode', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     state.configuration.set('codeJanitor.cleanup.fileHeaderPosition', 'afterUsings');
     state.configuration.set('codeJanitor.cleanup.fileHeaderUpdateMode', 'replace');
 
@@ -170,7 +186,7 @@ describe('repository settings commands', () => {
   });
 
   it('exports grouped blank line padding setting', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     state.configuration.set('codeJanitor.cleanup.insertBlankLinePadding', false);
 
     await exportRepositorySettings(root);
@@ -183,7 +199,7 @@ describe('repository settings commands', () => {
   });
 
   it('exports grouped explicit access modifiers setting', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     state.configuration.set('codeJanitor.cleanup.insertExplicitAccessModifiers', false);
 
     await exportRepositorySettings(root);
@@ -196,7 +212,7 @@ describe('repository settings commands', () => {
   });
 
   it('omits grouped settings when not configured', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
 
     await exportRepositorySettings(root);
 
@@ -208,7 +224,7 @@ describe('repository settings commands', () => {
   });
 
   it('asks before overwriting an existing .codejanitor', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(path.join(root, '.codejanitor'), '{"cleanup":{}}');
     state.modalChoice = undefined; // dismiss
 
@@ -219,7 +235,7 @@ describe('repository settings commands', () => {
   });
 
   it('overwrites when the user confirms', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(path.join(root, '.codejanitor'), '{"cleanup":{}}');
     state.modalChoice = 'Overwrite';
 
@@ -242,7 +258,7 @@ describe('repository settings commands', () => {
   });
 
   it('reports when .codejanitor is not found for import', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
 
     await importRepositorySettings(root);
 
@@ -250,7 +266,7 @@ describe('repository settings commands', () => {
   });
 
   it('imports file header position and update mode', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({ cleanup: { fileHeaderPosition: 'afterUsings', fileHeaderUpdateMode: 'replace' } })
@@ -263,7 +279,7 @@ describe('repository settings commands', () => {
   });
 
   it('imports grouped settings when all values match', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({
@@ -304,8 +320,27 @@ describe('repository settings commands', () => {
     expect(state.configuration.get('codeJanitor.cleanup.insertBlankLinePadding')).toBe(false);
   });
 
+  it('writes only settings VS Code declares, importing grouped keys through their group setting', async () => {
+    const declared = new Set(
+      (JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')) as {
+        contributes: { configuration: { properties: Record<string, unknown> }[] };
+      }).contributes.configuration.flatMap((section) => Object.keys(section.properties))
+    );
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { insertBlankLinePadding: false, insertBlankLinePaddingBeforeFieldsSingleLine: false, removeRegions: false } })
+    );
+
+    await importRepositorySettings(root);
+
+    expect(state.configurationUpdates.map((update) => update.key).filter((key) => !declared.has(key))).toEqual([]);
+    expect(state.configuration.get('codeJanitor.cleanup.insertBlankLinePadding')).toBe(false);
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
+  });
+
   it('does not import grouped settings when values differ', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({
@@ -542,7 +577,7 @@ describe('cleanup commands', () => {
   });
 
   it('applies .editorconfig code style without a setting and warns about violations it could not fix', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     try {
       fs.writeFileSync(
         path.join(root, '.editorconfig'),
@@ -566,7 +601,7 @@ describe('cleanup commands', () => {
   });
 
   it('moves extra types to their own files when .editorconfig enforces one type per file', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     try {
       fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
       const filePath = path.join(root, 'Foo.cs');
@@ -584,7 +619,7 @@ describe('cleanup commands', () => {
   });
 
   it('leaves the file whole and reports the violation when a target file already exists', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     try {
       fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.MA0048.severity = error\n');
       const filePath = path.join(root, 'Foo.cs');
@@ -603,7 +638,7 @@ describe('cleanup commands', () => {
   });
 
   it('splits on save too, writing the new file and removing the type from the saved document', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     try {
       fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
       state.configuration.set('codeJanitor.cleanup.onSave', true);
@@ -629,7 +664,7 @@ describe('cleanup commands', () => {
   });
 
   it('does not count unsupported .editorconfig settings as violations', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codejanitor-'));
+    const root = tempRoot();
     try {
       fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\nmax_line_length = 120\n');
       state.files.set(path.join(root, 'A.cs'), 'internal class A\n{\n}\n');

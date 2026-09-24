@@ -114,6 +114,53 @@ describe('convertToFileScoped', () => {
     expect(convertToFileScoped(input)).toBe(input);
   });
 
+  it('never changes the lines inside verbatim, raw and interpolated multi-line strings', () => {
+    const input = [
+      'namespace N',
+      '{',
+      '    class C',
+      '    {',
+      '        string a = @"',
+      '    verbatim',
+      '        ";',
+      '        string b = """',
+      '            raw',
+      '            """;',
+      '        string c = $@"',
+      '    {a}',
+      '    tail";',
+      '    }',
+      '}',
+      '',
+    ].join('\r\n');
+
+    expect(convertToFileScoped(input)).toBe(
+      [
+        'namespace N;',
+        '',
+        'class C',
+        '{',
+        '    string a = @"',
+        '    verbatim',
+        '        ";',
+        '    string b = """',
+        '            raw',
+        '            """;',
+        '    string c = $@"',
+        '    {a}',
+        '    tail";',
+        '}',
+        '',
+      ].join('\r\n')
+    );
+  });
+
+  it('keeps the bare LF line breaks inside a string of a CRLF file', () => {
+    const input = 'namespace N\r\n{\r\n    class C\r\n    {\r\n        string s = @"\n    x\n";\r\n    }\r\n}\r\n';
+
+    expect(convertToFileScoped(input)).toBe('namespace N;\r\n\r\nclass C\r\n{\r\n    string s = @"\n    x\n";\r\n}\r\n');
+  });
+
   it('preserves the file header and outer usings', () => {
     expect(
       convertToFileScoped(

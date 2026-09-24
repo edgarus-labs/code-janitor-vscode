@@ -102,7 +102,7 @@ applies, the rule is enforced. Code Janitor settings keep applying to everything
 | Inline `out` variable declarations | `csharp_style_inlined_variable_declaration`; `csharp_style_var_*` = `false` | Inlining only for `true`; with explicit types preferred, `out T x` instead of `out var x`. |
 | Insert explicit access modifiers | `dotnet_style_require_accessibility_modifiers` | Modifiers are added or removed as the option says. |
 | File header | `file_header_template` (with IDE0073 enforced) | The template is used. |
-| Sort usings | `dotnet_sort_system_directives_first` | `false` sorts alphabetically without putting `System` first. |
+| Sort usings | `dotnet_sort_system_directives_first`, `dotnet_separate_import_directive_groups` | Whenever the option is set, usings are sorted (`System` first only for `true`), even with the setting off; groups get a blank line between them (`true`) or none (`false`). |
 | Remove end-of-line whitespace | `trim_trailing_whitespace` | Trailing whitespace is removed only for `true`. |
 | Remove byte order mark | `charset` | `utf-8` removes it, `utf-8-bom` keeps it. |
 | (final newline, always added) | `insert_final_newline` | Added for `true`, removed for `false`. |
@@ -169,10 +169,19 @@ Supported code-style options:
 | `dotnet_style_prefer_conditional_expression_over_assignment`, `_over_return` | IDE0045, IDE0046 | `if (c) x = a; else x = b;` becomes `x = c ? a : b;` (a preceding `T x;` takes the initializer), `if (c) return a; [else] return b;` becomes `return c ? a : b;`, when the type is `bool`, `int`, `long`, `decimal` or `string` (for other types the conditional could change a value's type) and the result fits on one line. |
 | `dotnet_style_object_initializer`, `dotnet_style_collection_initializer` | IDE0017, IDE0028 | Member assignments (`c.A = 1;`) and `Add` calls on `List`, `HashSet`, `SortedSet`, `Collection`, `ObservableCollection`, `Dictionary`, `SortedDictionary`, `SortedList` right after `var c = new T(...);` move into an initializer, as long as they do not use `c`. |
 | `dotnet_style_prefer_auto_properties` | IDE0032 | A property that only returns (and sets) a private field used nowhere else becomes an auto property, with the field initializer; a field used elsewhere is reported. |
-| `csharp_style_expression_bodied_methods`, `_constructors`, `_operators`, `_properties`, `_indexers`, `_accessors`, `_local_functions` | IDE0021 – IDE0027, IDE0061 | `true` turns a body holding a single `return`, expression or `throw` statement into `=> ...;`, `false` does the reverse, `when_on_single_line` only for one-line expressions. Lambdas are not changed. |
+| `csharp_style_expression_bodied_methods`, `_constructors`, `_operators`, `_properties`, `_indexers`, `_accessors`, `_local_functions` | IDE0021 – IDE0027, IDE0061 | `true` turns a body holding a single `return`, expression or `throw` statement into `=> ...;`, `false` does the reverse, `when_on_single_line` only for one-line expressions (lambdas: see IDE0053). |
 | `csharp_style_prefer_readonly_struct` | IDE0250 | Adds `readonly` to non-partial structs with only `readonly` instance fields, no settable auto property or field-like event, that never assign `this` outside a constructor. |
 | `csharp_prefer_static_local_function` | IDE0062 | Adds `static` to local functions that use no `this`, instance member, local or parameter of the enclosing code (types with a base class are skipped: inherited members are unknown). |
 | `csharp_preferred_modifier_order` | IDE0036 | Reorders modifiers to the listed order (`partial` stays last); declarations with a modifier outside the list are left alone. |
+| `csharp_style_prefer_switch_expression` | IDE0066 | A `switch` whose sections only `return` (or `throw`), or only assign one variable and `break`, becomes a switch expression (`case 1: case 2:` gives `1 or 2`); without `default`, a `return` right after the switch becomes the `_` arm. Only for the target types of IDE0045 and enums declared in the file. |
+| `csharp_style_pattern_matching_over_as_with_null_check` | IDE0019 | `var s = o as T; if (s != null ...)` becomes `if (o is T s ...)` when `s` is used only inside the `if` and never assigned. |
+| `csharp_style_pattern_matching_over_is_with_cast_check` | IDE0020 | `if (o is T) { var t = (T)o; ... }` becomes `if (o is T t) { ... }` when `t` is never assigned. |
+| `dotnet_style_explicit_tuple_names` | IDE0033 | `t.Item1` becomes `t.count` when `t` is declared in the file with a named tuple type. |
+| `dotnet_style_prefer_simplified_interpolation` | IDE0071 | `{x.ToString()}` becomes `{x}` and `{x.ToString("N2")}` becomes `{x:N2}` in `$"..."` strings that are provably `string` (a `var`/`string` initializer, a `string` return, a `+` operand). |
+| `csharp_style_prefer_extended_property_pattern` | IDE0170 | `{ A: { B: p } }` becomes `{ A.B: p }` in `is` patterns. |
+| `csharp_style_prefer_method_group_conversion` | IDE0200 | `x => M(x)` becomes `M` when `M` is the file's only method of that name and its parameter and return types match the written `Func`/`Action` type (or the lambda's parameter types, for a `void` method); other forwarding lambdas are reported. |
+| `csharp_style_expression_bodied_lambdas` | IDE0053 | `x => { return e; }` becomes `x => e`; lambdas whose conversion could change the delegate type they bind to are reported. |
+| `csharp_style_prefer_readonly_struct_member` | IDE0251 | Adds `readonly` to struct methods and get-only properties that assign nothing but their locals, pass nothing by reference, and call only `static`/`readonly` members of the struct or methods of reference-type fields. |
 | `dotnet_style_namespace_match_folder` | IDE0130 | Reported only: a namespace other than the project's `RootNamespace` (or project file name) plus the file's folders. |
 | `dotnet_code_quality_unused_parameters` | IDE0060 | Reported only: parameters a method, constructor or local function never uses (overrides, virtual, abstract, partial, event handlers, methods that only throw, and public methods of types with a base list are skipped). |
 
@@ -187,8 +196,9 @@ to the unsupported-settings list too.
 
 Formatting: `indent_style` (with `tab_width`/`indent_size`), `end_of_line`, `insert_final_newline`,
 `trim_trailing_whitespace` and `charset` (`utf-8` removes a byte order mark, `utf-8-bom` keeps
-one) always apply, as do `dotnet_sort_system_directives_first = true` (sorts usings, `System`
-first) and `dotnet_separate_import_directive_groups = true`, which have no diagnostic of their own.
+one) always apply, as do `dotnet_sort_system_directives_first` (sorts usings, `System` first for
+`true`) and `dotnet_separate_import_directive_groups` (a blank line between groups for `true`, none
+for `false`), which have no diagnostic of their own.
 As in Visual Studio, the C# formatting options have no severity of their own and apply only while
 `IDE0055` is `suggestion`, `warning` or `error`: `csharp_new_line_before_open_brace`,
 `csharp_new_line_before_else`, `csharp_new_line_before_catch`, `csharp_new_line_before_finally`,
@@ -205,16 +215,49 @@ keep their layout. Formatting works token by token and never changes strings (in
 inside interpolations), comments or preprocessor directives; lines the parser cannot fully read
 keep their spacing, and their relative indentation (logged to the output channel).
 
-Not supported (reported when enforced): `csharp_style_pattern_matching_over_as_with_null_check`
-(IDE0019), `csharp_style_pattern_matching_over_is_with_cast_check` (IDE0020),
-`csharp_style_prefer_switch_expression` (IDE0066), `csharp_style_prefer_extended_property_pattern`
-(IDE0170), `csharp_style_prefer_method_group_conversion` (IDE0200),
-`csharp_style_prefer_readonly_struct_member` (IDE0251), `dotnet_style_explicit_tuple_names`
-(IDE0033), `dotnet_style_prefer_simplified_interpolation` (IDE0071),
-`csharp_style_expression_bodied_lambdas` (IDE0053: which delegate type a lambda converts to can
-depend on its body), moving usings into a namespace, adding a byte order mark, renaming symbols
-other files may reference, and other code-style options. Unlike the Visual Studio extension,
-fixes from third-party analyzers are not applied.
+Not supported (reported when enforced): `csharp_prefer_static_anonymous_function` (IDE0320),
+`csharp_style_prefer_top_level_statements` (IDE0210/IDE0211), `csharp_style_unused_value_*`
+(IDE0058, IDE0059), `dotnet_style_prefer_foreach_explicit_cast_in_source` (IDE0220), the
+experimental blank-line options (IDE2000 - IDE2006), moving usings into a namespace, adding a byte
+order mark, renaming symbols other files may reference, and other code-style options. Unlike the
+Visual Studio extension, fixes from third-party analyzers are not applied: their
+`dotnet_diagnostic.<ID>.severity` entries (e.g. Roslynator's `RCS1079`) are listed as third-party
+rules that cleanup does not apply.
+
+### Code-quality rules and diagnostics without an option
+
+These rules have no code-style option. Each applies while its diagnostic is `suggestion`, `warning`
+or `error` through `dotnet_diagnostic.<ID>.severity`, its category's
+`dotnet_analyzer_diagnostic.category-<Category>.severity` (`Performance`, `Usage`,
+`Maintainability` or `Style`) or `dotnet_analyzer_diagnostic.severity`; unset, `silent` and `none`
+leave the code alone. Like the .NET analyzers they skip generated code and code suppressed with
+`#pragma warning disable` or `[SuppressMessage]`. They run in the code-style stage, before the
+member preferences (so `csharp_preferred_modifier_order` orders the `static`/`sealed` they add).
+
+| Diagnostic | Behavior |
+| --- | --- |
+| CA1822 | Makes methods and non-auto, get-only properties `static` when they use no instance data (no `this`/`base`, instance member, member of `object` or primary-constructor parameter) and drops `this.` from their calls in the file, repeating until nothing more changes. Follows Roslyn's exclusions (virtual, override, abstract, interface implementations, test methods, `[Obsolete]`, event handlers, members that only throw, members used as delegates) and `dotnet_code_quality.api_surface` (default: all). Reported instead: public API (a breaking change), members used through another instance or through a member access in another project file, members of partial types, uses of names that may be inherited from an unknown base type, public members that may implement an interface declared outside the project, `readonly` members, properties with setters and members with other attributes. |
+| CA1852 | Seals classes and records that are not visible outside the assembly and that no type of the project derives from or uses as a generic constraint. With `InternalsVisibleTo` the rule is off unless `dotnet_code_quality.CA1852.ignore_internalsvisibleto = true`, and then only reported. Partial types, types with `virtual` or `protected` members, files without a project and projects whose files cannot all be read are reported. |
+| CA1805 | Removes field and auto-property initializers that assign the default value (`0`, `false`, `'\0'`, `null`, `default`); instance fields of structs are skipped, as in Roslyn. Reported: `0` for a type it cannot resolve (an enum?) and fields nothing else assigns (removing the initializer would raise CS0649). |
+| CA1825 | `new T[0]` and `new T[] { }` become `Array.Empty<T>()` (`System.Array` without `using System` or implicit usings); attributes are skipped. Reported: an unknown target framework, or a lambda that may be an expression tree. |
+| CA1827, CA1828 | `Count()`/`LongCount()` compared with `0` or `1` becomes `Any()`; an awaited `CountAsync()`/`LongCountAsync()` becomes `AnyAsync()` in files using Entity Framework. Receivers of unknown type are reported. |
+| CA1829, CA1860 | `Count()` becomes `Length`/`Count` and `Any()` becomes `Length != 0`/`Count != 0` (`== 0` for `!Any()`) on arrays, strings and the .NET collections. |
+| CA1507 | A string literal naming a parameter in scope, passed as `paramName` (`ArgumentException`, `ArgumentNullException`, `ArgumentOutOfRangeException`, their `ThrowIf` helpers, any `paramName:` argument), or a property of the type passed as `propertyName` (`PropertyChangedEventArgs`, `PropertyChangingEventArgs`, `propertyName:`), becomes `nameof(...)`. |
+| CA1834, CA1847 | `StringBuilder.Append("x")` becomes `Append('x')`; `string.Contains("x")` becomes `Contains('x')`. |
+| CA1865, CA1866, CA1867 | `StartsWith`, `EndsWith`, `IndexOf` and `LastIndexOf` with a one-character string and an ordinal comparison (or the invariant culture and a printable ASCII character) use the char overload (CA1865). Without a comparison (CA1866) or with another one (CA1867) they are reported: the char overloads compare ordinally. |
+| CA2249 | `s.IndexOf(x) >= 0`, `!= -1` and `== -1` become `s.Contains(x)`/`!s.Contains(x)` with the same comparison (`StringComparison.CurrentCulture` for a string without one, as in Roslyn's fix). |
+| IDE0004 | Removes casts to the type the value already has: a literal, or a local, parameter, field or property declared with that exact type. |
+| IDE0005 | Removes duplicate using directives and file-level usings of the file's own namespace or of one containing it. Other unnecessary usings need the compiler's binding and are neither removed nor reported. |
+| IDE0051 | Removes private fields, properties, methods and events that no identifier in the file refers to, with their doc comments, repeating until nothing more changes. Reported: members of partial types, members with attributes, names that appear in a string literal or comment, fields of structs and `[Serializable]` types, and initializers that may have side effects. |
+| IDE0052 | Reported only: private fields and properties that are assigned but never read. |
+
+The rules that depend on a receiver's type need it from the file: a literal, `new T(...)`, or a
+local, parameter, field or property declared with an explicit type (or with `var` and one of
+those). The string rules and CA1825 need a target framework with the API they introduce, read from
+the nearest `.csproj` (the analyzers are off for older frameworks); an unknown framework is
+reported. CA1822 (for members visible to the whole project) and CA1852 read every C# file of the
+project - the SDK's default items (outside `bin`, `obj` and nested projects) plus
+`<Compile Include>` items - to prove that nothing else needs the old declaration.
 
 ### Naming rules
 
