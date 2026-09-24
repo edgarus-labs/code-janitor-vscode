@@ -163,7 +163,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
       }
 
       await runWithProgress(`Cleaning up ${changed.length} changed file(s)...`, () =>
-        runCleanupOnUris(context, changed)
+        runCleanupOnUris(context, changed, { honorOnlyChangedLines: true })
       );
     }),
 

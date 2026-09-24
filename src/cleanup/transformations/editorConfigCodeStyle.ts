@@ -1,10 +1,12 @@
 import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
-import { diagnosticIdsOfOption, effectiveEditorConfigValue } from '../editorConfigRegistry';
+import { diagnosticIdsOfOption, effectiveEditorConfigValue, isDiagnosticEnforced } from '../editorConfigRegistry';
 import { countChangedRegions } from '../lineDiff';
 import { ProjectInfo } from '../projectInfo';
 import { RuleChange, SourceTransformation } from '../types';
+import { BLANK_LINE_RULES } from './editorConfigBlankLineRules';
+import { COLLECTION_EXPRESSION_RULES } from './editorConfigCollectionExpressions';
 import { applyBracePreference } from './editorConfigBraces';
 import { applyQualificationPreferences } from './editorConfigQualification';
 import {
@@ -25,8 +27,10 @@ import {
 } from './editorConfigSupport';
 import { EXPRESSION_PREFERENCES, applyExpressionPreference } from './editorConfigExpressionPreferences';
 import { EXPRESSION_BODY_RULES } from './editorConfigExpressionBodies';
+import { LANGUAGE_RULES } from './editorConfigLanguageRules';
 import { MEMBER_RULES } from './editorConfigMemberPreferences';
 import { OPERATOR_RULES } from './editorConfigOperatorPreferences';
+import { SIMPLIFICATION_RULES } from './editorConfigSimplificationRules';
 import { QUALITY_RULES } from './editorConfigQualityRules';
 import { STATEMENT_PREFERENCES, applyStatementPreference } from './editorConfigStatementPreferences';
 import { applySystemThreadingLock, reportPrimaryConstructors } from './editorConfigTypePreferences';
@@ -180,6 +184,12 @@ const LANGUAGE_REQUIREMENTS: Record<string, LanguageRequirement> = {
   csharp_style_expression_bodied_constructors: { version: 7 },
   csharp_style_expression_bodied_accessors: { version: 7 },
   csharp_style_expression_bodied_local_functions: { version: 7 },
+  dotnet_style_prefer_collection_expression: { version: 12 },
+  csharp_prefer_static_anonymous_function: { version: 9 },
+  csharp_style_prefer_simple_property_accessors: { version: 14 },
+  IDE0082: { version: 6 },
+  IDE0280: { version: 11 },
+  IDE0110: { version: 9 },
 };
 
 /** The requirement of `rule` for the option's current value (file-scoped namespaces need C# 10). */
@@ -195,7 +205,11 @@ function requirementOf(rule: Rule, props: EditorConfigProperties): LanguageRequi
 function unsupportedByProject(rule: Rule, context: RuleContext): string | undefined {
   const requirement = requirementOf(rule, context.props);
   const project = context.project;
-  if (!requirement || !project || effectiveEditorConfigValue(context.props, rule.option) === undefined) {
+  // A rule keyed by its diagnostic (no option) applies while the diagnostic is enforced.
+  const applies = /^(?:IDE|CA)\d{4}$/.test(rule.option)
+    ? isDiagnosticEnforced(context.props, rule.option)
+    : effectiveEditorConfigValue(context.props, rule.option) !== undefined;
+  if (!requirement || !project || !applies) {
     return undefined;
   }
 
@@ -288,6 +302,9 @@ const RULES: readonly Rule[] = [
     apply: (source, { props, report }) => reportPrimaryConstructors(source, props, report),
   },
   ...OPERATOR_RULES,
+  ...SIMPLIFICATION_RULES,
+  ...COLLECTION_EXPRESSION_RULES,
+  ...LANGUAGE_RULES,
   // Before the member preferences, so that IDE0036 orders the modifiers CA1822/CA1852 add.
   ...QUALITY_RULES,
   ...MEMBER_RULES,
@@ -296,6 +313,8 @@ const RULES: readonly Rule[] = [
     option: 'csharp_prefer_braces',
     apply: (source, { props, report, indent }) => applyBracePreference(source, props, report, indent),
   },
+  // Last: they only move whitespace, around the code the other rules wrote.
+  ...BLANK_LINE_RULES,
 ];
 
 /** True when a boolean option is set to `true` and its diagnostic is enforced. */

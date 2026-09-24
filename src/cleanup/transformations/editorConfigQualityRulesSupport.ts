@@ -340,7 +340,28 @@ export type FrameworkApi =
   /** `Array.Empty<T>()`: .NET Framework 4.6, .NET Standard 2.0, .NET Core. */
   | 'arrayEmpty'
   /** `string` char overloads and `Contains(string, StringComparison)`: .NET Core 2.1, .NET Standard 2.1. */
-  | 'stringCharOverloads';
+  | 'stringCharOverloads'
+  /** `Dictionary<TKey, TValue>.TryAdd` and `Enum.Parse<TEnum>`: .NET Core 2.0, .NET Standard 2.1. */
+  | 'coreApis'
+  /** `Marshal.SizeOf<T>()`: .NET Framework 4.5.1, .NET Standard 2.0, .NET Core. */
+  | 'marshalSizeOfGeneric'
+  /** `HttpClient.GetStringAsync(string, CancellationToken)` and friends: .NET 5. */
+  | 'net5'
+  /** `TextReader.ReadLineAsync(CancellationToken)`/`ReadToEndAsync(CancellationToken)`: .NET 7. */
+  | 'net7';
+
+/**
+ * The first version of each framework family with the API (`[.NET Core, .NET Standard, .NET
+ * Framework, .NET 5+]`, versions as `major * 100 + minor * 10 + patch`); `undefined`: never.
+ */
+const API_VERSIONS: Record<FrameworkApi, readonly [number | undefined, number | undefined, number | undefined, number]> = {
+  arrayEmpty: [100, 200, 460, 500],
+  stringCharOverloads: [210, 210, undefined, 500],
+  coreApis: [200, 210, undefined, 500],
+  marshalSizeOfGeneric: [100, 200, 451, 500],
+  net5: [undefined, undefined, undefined, 500],
+  net7: [undefined, undefined, undefined, 700],
+};
 
 /** True/false when every target framework has/lacks the API; `undefined` when a framework is unknown. */
 export function frameworksSupport(frameworks: readonly string[] | undefined, api: FrameworkApi): boolean | undefined {
@@ -362,24 +383,28 @@ export function frameworksSupport(frameworks: readonly string[] | undefined, api
 }
 
 function frameworkSupports(framework: string, api: FrameworkApi): boolean | undefined {
-  const modern = /^net(\d+)\.(\d+)/.exec(framework);
-  if (modern) {
-    return Number(modern[1]) >= 5 ? true : undefined;
+  const [core, standard, netFramework, modern] = API_VERSIONS[api];
+  const atLeast = (version: number, first: number | undefined): boolean => first !== undefined && version >= first;
+  const modernMatch = /^net(\d+)\.(\d+)/.exec(framework);
+  if (modernMatch) {
+    const major = Number(modernMatch[1]);
+
+    return major >= 5 ? atLeast(major * 100, modern) : undefined;
   }
 
-  const core = /^netcoreapp(\d+)\.(\d+)/.exec(framework);
-  if (core) {
-    return api === 'arrayEmpty' || Number(core[1]) * 100 + Number(core[2]) >= 201;
+  const coreMatch = /^netcoreapp(\d+)\.(\d+)/.exec(framework);
+  if (coreMatch) {
+    return atLeast(Number(coreMatch[1]) * 100 + Number(coreMatch[2]) * 10, core);
   }
 
-  const standard = /^netstandard(\d+)\.(\d+)/.exec(framework);
-  if (standard) {
-    return Number(standard[1]) * 100 + Number(standard[2]) >= (api === 'arrayEmpty' ? 200 : 201);
+  const standardMatch = /^netstandard(\d+)\.(\d+)/.exec(framework);
+  if (standardMatch) {
+    return atLeast(Number(standardMatch[1]) * 100 + Number(standardMatch[2]) * 10, standard);
   }
 
-  const netFramework = /^net(\d)(\d)(\d?)$/.exec(framework);
-  if (netFramework) {
-    return api === 'arrayEmpty' && Number(netFramework[1]) * 10 + Number(netFramework[2]) >= 46;
+  const frameworkMatch = /^net(\d)(\d)(\d?)$/.exec(framework);
+  if (frameworkMatch) {
+    return atLeast(Number(frameworkMatch[1]) * 100 + Number(frameworkMatch[2]) * 10 + Number(frameworkMatch[3] || 0), netFramework);
   }
 
   return undefined;

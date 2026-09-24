@@ -214,7 +214,7 @@ describe('.editorconfig precedence over the cleanup settings', () => {
   it('reports unsupported settings once each and separately from violations', () => {
     const source = lines('internal class Sample', '{', '    private Widget widget = Create();', '}');
     const editorConfig = [
-      'csharp_prefer_static_anonymous_function = true:warning',
+      'dotnet_style_prefer_non_hidden_explicit_cast_in_source = true:warning',
       'max_line_length = 120',
       'dotnet_diagnostic.CA1062.severity = warning',
       'dotnet_diagnostic.RCS1079.severity = error',
@@ -226,7 +226,7 @@ describe('.editorconfig precedence over the cleanup settings', () => {
     const { issues } = clean(source, editorConfig);
 
     expect(issues).toEqual([
-      { kind: 'unsupported', filePath, detail: `"csharp_prefer_static_anonymous_function = true:warning" is not supported and was not applied.` },
+      { kind: 'unsupported', filePath, detail: `"dotnet_style_prefer_non_hidden_explicit_cast_in_source = true:warning" is not supported and was not applied.` },
       { kind: 'unsupported', filePath, detail: `"max_line_length = 120" is not supported and was not applied.` },
       { kind: 'unsupported', filePath, detail: `"dotnet_diagnostic.ca1062.severity = warning" is not supported and was not applied.` },
       {
@@ -285,7 +285,7 @@ describe('unsupportedEditorConfigSettings', () => {
 
   it('treats the Style category severity as enforcing unsupported code-style options', () => {
     expect(
-      unsupported('csharp_prefer_static_anonymous_function = true\ndotnet_analyzer_diagnostic.category-Style.severity = warning')
-    ).toEqual(['"csharp_prefer_static_anonymous_function = true" is not supported and was not applied.']);
+      unsupported('dotnet_style_prefer_non_hidden_explicit_cast_in_source = true\ndotnet_analyzer_diagnostic.category-Style.severity = warning')
+    ).toEqual(['"dotnet_style_prefer_non_hidden_explicit_cast_in_source = true" is not supported and was not applied.']);
   });
 });

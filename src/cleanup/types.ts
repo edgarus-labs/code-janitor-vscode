@@ -5,6 +5,8 @@
  */
 export interface SourceTransformation {
   readonly name: string;
+  /** For a step that is one `.editorconfig` diagnostic (`IDE1006` naming, `IDE0055` formatting): its id. */
+  readonly diagnosticId?: string;
   apply(source: string): string;
   /**
    * For a transformation made of several rules (the `.editorconfig` code-style rules): applies it
@@ -89,6 +91,11 @@ export interface CleanupSettings {
    * every file of their project and of the projects referencing it, after a preview.
    */
   renamePublicSymbolsAcrossWorkspace: boolean;
+  /**
+   * Cleanup on save and Cleanup Changed Files only: keep the changes on lines changed since the
+   * last commit (HEAD); renames and type splits are not made.
+   */
+  onlyChangedLines: boolean;
   insertBlankLineBeforeReturnAndThrowStatements: boolean;
   convertToCollectionExpressions: boolean;
   reuseJsonSerializerOptionsForCA1869: boolean;
@@ -174,6 +181,7 @@ export function createDefaultSettings(): CleanupSettings {
     makeFieldsReadonlyWhenSafe: false,
     sealClassesWhenSafe: false,
     renamePublicSymbolsAcrossWorkspace: false,
+    onlyChangedLines: false,
     insertBlankLineBeforeReturnAndThrowStatements: false,
     convertToCollectionExpressions: false,
     reuseJsonSerializerOptionsForCA1869: false,

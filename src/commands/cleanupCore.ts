@@ -12,6 +12,9 @@ import { createTopLevelTypeSplitPlan } from '../cleanup/topLevelTypeSplit';
 import { suggestNamespace } from './editorCommands';
 import { logError, logInfo } from '../logging';
 import { readCleanupSettings } from './settings';
+import { changedLinesSince, runCleanupOnChangedLines } from '../cleanup/changedLines';
+import { Baseline, readHeadVersion } from '../cleanup/gitBaseline';
+import { CleanupSettings } from '../cleanup/types';
 import { renameSymbolsAcrossWorkspace } from './workspaceRename';
 
 export interface CollectedFile {
@@ -121,7 +124,11 @@ async function runBatch(
 export async function runCleanupOnUris(
   _context: vscode.ExtensionContext,
   uris: vscode.Uri[],
-  options: { renameAcrossWorkspace?: boolean } = {}
+  options: {
+    renameAcrossWorkspace?: boolean;
+    /** Cleanup Changed Files: with `codeJanitor.cleanup.onlyChangedLines`, only the lines changed since HEAD are cleaned. */
+    honorOnlyChangedLines?: boolean;
+  } = {}
 ): Promise<{ changed: number; failed: number; unresolved: number; created: number }> {
   const targets = uris.filter(isSupportedFile);
   const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
@@ -144,19 +151,32 @@ export async function runCleanupOnUris(
     }
   };
 
+  // Only the lines changed since HEAD: no type split, and other file types are left as they are.
+  const onlyChangedLines = options.honorOnlyChangedLines === true && settings.onlyChangedLines;
+  const baselines = new Map<string, Baseline>();
+  if (onlyChangedLines) {
+    for (const uri of targets.filter(isCSharp)) {
+      baselines.set(uri.fsPath, await readHeadVersion(uri.fsPath));
+    }
+  }
+
   let outcome: BatchOutcome = { changed: 0, failed: 0, created: 0 };
   let unresolved = 0;
   try {
     outcome = await runBatch(
       targets,
       (content, uri, disqualifiedTypeNames) =>
-        isCSharp(uri)
-          ? runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames, batchReport)
-          : runLayoutCleanup(content, uri.fsPath, settings),
+        !isCSharp(uri)
+          ? onlyChangedLines
+            ? content
+            : runLayoutCleanup(content, uri.fsPath, settings)
+          : onlyChangedLines
+            ? cleanupChangedLines(content, uri.fsPath, settings, baselines.get(uri.fsPath)!, disqualifiedTypeNames, batchReport)
+            : runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames, batchReport),
       'Cleanup',
       'Code Janitor: no files to clean up.',
       true,
-      (file) => splitTypesForEditorConfig(file, report, plannedFiles)
+      onlyChangedLines ? undefined : (file) => splitTypesForEditorConfig(file, report, plannedFiles)
     );
 
     if (renameAcrossWorkspace) {
@@ -183,6 +203,31 @@ export async function runCleanupOnUris(
   }
 
   return { ...outcome, unresolved };
+}
+
+/**
+ * Cleanup of the lines of a C# file changed since its last commit (`baseline`): every line of a new
+ * file; throws when the baseline is unavailable, as nothing tells which lines changed.
+ */
+export function cleanupChangedLines(
+  content: string,
+  filePath: string,
+  settings: CleanupSettings,
+  baseline: Baseline,
+  disqualifiedTypeNames: ReadonlySet<string>,
+  report: EditorConfigIssueListener
+): string {
+  if (baseline.kind === 'unavailable') {
+    throw new Error(`only the lines changed since the last commit are cleaned (codeJanitor.cleanup.onlyChangedLines) and ${baseline.reason}`);
+  }
+
+  const changed = changedLinesSince(baseline.kind === 'tracked' ? baseline.text : undefined, content);
+  const { output, skippedSettings } = runCleanupOnChangedLines(content, filePath, settings, changed, disqualifiedTypeNames, report);
+  for (const setting of skippedSettings) {
+    logInfo(`Cleanup of changed lines: '${setting}' was not applied to ${filePath}, its changes span lines not changed since the last commit.`);
+  }
+
+  return output;
 }
 
 /**
@@ -391,7 +436,7 @@ async function reservedFileNames(uri: vscode.Uri, plannedFiles: ReadonlySet<stri
 }
 
 /** Existing `.cs` file names in the same directory, used to avoid overwriting a file when planning new names. */
-async function siblingCSharpFileNames(uri: vscode.Uri): Promise<Set<string>> {
+export async function siblingCSharpFileNames(uri: vscode.Uri): Promise<Set<string>> {
   const directory = vscode.Uri.file(path.dirname(uri.fsPath));
 
   try {

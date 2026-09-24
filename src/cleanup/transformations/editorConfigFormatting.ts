@@ -32,6 +32,7 @@ export function createEditorConfigFormattingConverter(
 ): SourceTransformation {
   return {
     name: 'Apply .editorconfig formatting',
+    diagnosticId: 'IDE0055',
     apply(source: string): string {
       if (!source) {
         return source;

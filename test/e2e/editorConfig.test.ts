@@ -107,8 +107,8 @@ suite('.editorconfig cleanup (real VS Code host)', () => {
     await vscode.commands.executeCommand('codeJanitor.cleanupActiveFile');
 
     // Listed once per session and settings file, with the number of files it applies to.
-    const line = await outputChannelLine(/\.editorconfig setting not supported: .*dotnet_style_allow_multiple_blank_lines_experimental/);
-    assert.match(line, /"dotnet_style_allow_multiple_blank_lines_experimental = false:warning" is not supported and was not applied\./);
+    const line = await outputChannelLine(/\.editorconfig setting not supported: .*dotnet_style_prefer_non_hidden_explicit_cast_in_source/);
+    assert.match(line, /"dotnet_style_prefer_non_hidden_explicit_cast_in_source = true:warning" is not supported and was not applied\./);
   });
 
   test('Cleanup Selected Files moves extra top-level types to their own files (SA1402)', async () => {
@@ -152,4 +152,50 @@ suite('.editorconfig cleanup (real VS Code host)', () => {
     assert.match(saved, /^    private int _count;$/m);
     assert.match(saved, /^        if \(value > 0\)$/m);
   });
+
+  test('shows the .editorconfig violations as diagnostics with a quick fix for each occurrence', async () => {
+    const filePath = path.join(folder, 'Tally.cs');
+    fs.writeFileSync(filePath, ['namespace Demo;', '', 'internal class Tally', '{', '    private int count;', '', '    public int Next() => ++count;', '}', ''].join('\n'), 'utf8');
+    const document = await vscode.workspace.openTextDocument(filePath);
+    await vscode.window.showTextDocument(document);
+
+    const diagnostic = await codeJanitorDiagnostic(document.uri, 'IDE1006');
+    assert.equal(diagnostic.severity, vscode.DiagnosticSeverity.Warning);
+    assert.equal(diagnostic.range.start.line, 4);
+    const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', document.uri, diagnostic.range);
+    const fix = actions.find((action) => action.title === 'Fix IDE1006');
+    assert.ok(fix?.edit, `A "Fix IDE1006" quick fix should be offered, got: ${actions.map((action) => action.title).join(', ')}.`);
+    assert.ok(actions.some((action) => action.title === 'Fix all IDE1006 in file'));
+
+    assert.ok(await vscode.workspace.applyEdit(fix.edit));
+
+    assert.match(document.getText(), /^    private int _count;$/m);
+    assert.match(document.getText(), /\+\+_count;/);
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+  });
 });
+
+/** Resolves with the Code Janitor diagnostic `code` of `uri` once it is published. */
+async function codeJanitorDiagnostic(uri: vscode.Uri, code: string): Promise<vscode.Diagnostic> {
+  const find = () =>
+    vscode.languages
+      .getDiagnostics(uri)
+      .find((diagnostic) => diagnostic.source === 'Code Janitor' && typeof diagnostic.code === 'object' && diagnostic.code.value === code);
+  const { promise, resolve } = Promise.withResolvers<vscode.Diagnostic>();
+  const subscription = vscode.languages.onDidChangeDiagnostics(() => {
+    const found = find();
+    if (found) {
+      resolve(found);
+    }
+  });
+  try {
+    const found = find();
+    if (found) {
+      resolve(found);
+    }
+
+    return await promise;
+  } finally {
+    subscription.dispose();
+  }
+}

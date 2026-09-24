@@ -2294,6 +2294,20 @@ class CSharpParser {
       return this.parseAnonymousMethod();
     }
 
+    // `static x => ...`, `static async (a) => ...`, `static delegate (...) { ... }` (C# 9): the
+    // modifier becomes the first token of the anonymous function itself.
+    if (type === 'static' && (this.peek(1).type === '(' || this.peek(1).type === 'identifier' || this.peek(1).type === 'delegate')) {
+      const save = this.pos;
+      const startToken = this.pos;
+      const staticToken = this.leaf();
+      const inner = this.parsePrimary();
+      if (inner && (inner.type === 'lambda_expression' || inner.type === 'anonymous_method_expression')) {
+        return this.finish(inner.type, true, startToken, [staticToken, ...inner.children], inner.fields as Map<string, Node> | undefined);
+      }
+
+      this.pos = save;
+    }
+
     if (type === 'this' || type === 'base') {
       const startToken = this.pos;
       const children = [this.leaf()];

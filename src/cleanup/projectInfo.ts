@@ -19,7 +19,16 @@ export interface ProjectInfo {
   readonly languageVersion?: number;
   /** True when every target has the .NET Core 3.0+ runtime types (`Index`, `Range`, `Span<T>`). */
   readonly modernRuntime?: boolean;
+  /**
+   * The project's nullable context: `<Nullable>` of the project or a `Directory.Build.props` above
+   * it, `disable` when neither sets it; `undefined` when set to something else (an MSBuild property).
+   */
+  readonly nullable?: NullableContext;
 }
+
+export type NullableContext = 'enable' | 'disable' | 'annotations' | 'warnings';
+
+const NULLABLE_CONTEXTS: Record<string, true> = { enable: true, disable: true, annotations: true, warnings: true };
 
 /**
  * The project of a C# file: the single `.csproj` in the nearest folder (from the file's folder up)
@@ -80,13 +89,16 @@ function readProject(directory: string, fileName: string): ProjectInfo | undefin
   const targets = targetFrameworks ?? (element('TargetFrameworkVersion') ? ['net4'] : undefined);
   const defaults = targets?.map(defaultLanguageVersion);
   const defaultVersion = defaults && defaults.every((version) => version !== undefined) ? Math.min(...(defaults as number[])) : undefined;
-  const declared = element('LangVersion') ?? langVersionSetOutside(directory);
+  const declared = element('LangVersion') ?? propertySetOutside(directory, 'LangVersion');
   const languageVersion = declared === undefined || /^default$/i.test(declared) ? defaultVersion : parseLanguageVersion(declared);
+
+  const nullable = (element('Nullable') ?? propertySetOutside(directory, 'Nullable'))?.toLowerCase();
 
   return {
     directory,
     rootNamespace,
     targetFrameworks,
+    ...(nullable === undefined || NULLABLE_CONTEXTS[nullable] === true ? { nullable: (nullable ?? 'disable') as NullableContext } : {}),
     ...(languageVersion !== undefined ? { languageVersion } : {}),
     ...(targets ? { modernRuntime: targets.every(hasModernRuntime) } : {}),
   };
@@ -126,10 +138,10 @@ function hasModernRuntime(framework: string): boolean {
 }
 
 /** `<LangVersion>` of a `Directory.Build.props` above the project, when one sets it. */
-function langVersionSetOutside(directory: string): string | undefined {
+function propertySetOutside(directory: string, name: string): string | undefined {
   for (let current = directory; ; current = path.dirname(current)) {
     try {
-      const value = /<LangVersion>\s*([^<]*?)\s*<\/LangVersion>/i.exec(fs.readFileSync(path.join(current, 'Directory.Build.props'), 'utf8'))?.[1];
+      const value = new RegExp(`<${name}>\\s*([^<]*?)\\s*</${name}>`, 'i').exec(fs.readFileSync(path.join(current, 'Directory.Build.props'), 'utf8'))?.[1];
       if (value !== undefined) {
         return value;
       }

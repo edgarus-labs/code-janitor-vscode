@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { EditorConfigProperties, loadEditorConfigProperties } from './editorconfig';
+import { EditorConfigProperties, hasAnalyzerConfiguration, loadEditorConfigProperties } from './editorconfig';
 import { effectiveEditorConfigValue, enforcedOptionValue, isDiagnosticEnforced, unsupportedEditorConfigSettings } from './editorConfigRegistry';
 import { SourceTransformationPipeline, delegateTransformation } from './pipeline';
 import { ProjectInfo, findProject } from './projectInfo';
@@ -127,7 +127,7 @@ export function getCleanupPipeline(
     fileName: filePath ? path.basename(filePath) : undefined,
     filePath: filePath || undefined,
     // Every rule depends on the project's C# version; some also on its folder or frameworks.
-    project: properties.entries.size > 0 ? findProject(filePath) : undefined,
+    project: hasAnalyzerConfiguration(properties) ? findProject(filePath) : undefined,
   };
 
   return buildPipeline(source, settings, rules, externalDisqualifiedTypeNames);
@@ -160,7 +160,7 @@ export function buildPipeline(
   const charsetDecides = decides('charset');
   const restoreByteOrderMark = charsetDecides && source.startsWith('\uFEFF');
 
-  const hasEditorConfig = props !== undefined && props.entries.size > 0;
+  const hasEditorConfig = props !== undefined && hasAnalyzerConfiguration(props);
   // The final newline is ensured by a later step (unless `insert_final_newline = false`): removing
   // the blank lines at the bottom keeps it, rather than dropping it to have it added back.
   const keepFinalNewline = !decides('insert_final_newline') || effectiveEditorConfigValue(props!, 'insert_final_newline') === 'true';

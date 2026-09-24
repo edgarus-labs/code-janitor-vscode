@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -1582,5 +1583,72 @@ describe('workspace-wide rename of non-private symbols (renamePublicSymbolsAcros
 
     expect(state.warningMessages.filter((message) => message.includes('rename'))).toEqual([]);
     expect(state.files.get(programFile)).toBe(program);
+  });
+});
+
+describe('cleaning only the lines changed since the last commit (onlyChangedLines)', () => {
+  const committed = 'namespace Demo;\n\ninternal class Counter\n{\n    public void Add(int value)\n    {\n        if (value > 0)\n            Add(value - 1);\n    }\n}\n';
+  const edited = committed.replace('    }\n}\n', '    }\n\n    public void Remove(int value)\n    {\n        if (value > 0)\n            Remove(value - 1);\n    }\n}\n');
+  const bracedRemove = '        if (value > 0)\n        {\n            Remove(value - 1);\n        }\n';
+  const unbracedAdd = '        if (value > 0)\n            Add(value - 1);\n';
+
+  /** A Git repository with Counter.cs committed, and an `.editorconfig` enforcing braces. */
+  function repository(): string {
+    const root = tempRoot();
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: root, stdio: 'pipe' });
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ncsharp_prefer_braces = true:warning\n');
+    fs.writeFileSync(path.join(root, 'Counter.cs'), committed);
+    git('init', '-q');
+    git('add', '.');
+    git('commit', '-q', '-m', 'initial');
+    state.configuration.set('codeJanitor.cleanup.onlyChangedLines', true);
+
+    return path.join(root, 'Counter.cs');
+  }
+
+  it('cleans only the changed lines on save', async () => {
+    const filePath = repository();
+    state.configuration.set('codeJanitor.cleanup.onSave', true);
+    registerFormatOnSave(createContext());
+    let captured: Promise<TextEdit[]> | undefined;
+    for (const handler of state.willSaveHandlers) {
+      handler({
+        document: new TextDocument(Uri.file(filePath), edited, 'csharp'),
+        waitUntil: (edits) => {
+          captured = edits as Promise<TextEdit[]>;
+        },
+      });
+    }
+
+    const [edit] = await captured!;
+
+    expect(edit.newText).toContain(bracedRemove);
+    expect(edit.newText).toContain(unbracedAdd);
+  });
+
+  it('cleans only the changed lines in Cleanup Changed Files, and every line when the setting is off', async () => {
+    const filePath = repository();
+    state.files.set(filePath, edited);
+
+    await runCleanupOnUris(createContext(), [Uri.file(filePath)], { honorOnlyChangedLines: true });
+    expect(state.files.get(filePath)).toContain(bracedRemove);
+    expect(state.files.get(filePath)).toContain(unbracedAdd);
+
+    state.configuration.set('codeJanitor.cleanup.onlyChangedLines', false);
+    await runCleanupOnUris(createContext(), [Uri.file(filePath)], { honorOnlyChangedLines: true });
+    expect(state.files.get(filePath)).not.toContain(unbracedAdd);
+  });
+
+  it('leaves a file outside Git as it is and counts it as failed', async () => {
+    const root = tempRoot();
+    const filePath = path.join(root, 'Counter.cs');
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ncsharp_prefer_braces = true:warning\n');
+    state.files.set(filePath, edited);
+    state.configuration.set('codeJanitor.cleanup.onlyChangedLines', true);
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)], { honorOnlyChangedLines: true });
+
+    expect(result.failed).toBe(1);
+    expect(state.files.get(filePath)).toBe(edited);
   });
 });

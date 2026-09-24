@@ -22,6 +22,15 @@ views, member reorganization and third-party IDE integrations are outside this p
 - `src/cleanup/transformations/`: cleanup rules expressed as source-text edits.
 - `src/cleanup/naming/`: `.editorconfig` naming rules - Roslyn naming style/rule ports, the
   syntactic symbol and scope model, and the safe in-file renamer.
+- `src/cleanup/analysis.ts`: cleanup in analyze mode - runs the pipeline step by step and locates
+  each rule's changes (`lineDiff.ts` hunks mapped back to the original lines) and the violations
+  reported, and fixes one rule or one occurrence (kept only when the rest of the rule's fix still
+  gives the same file). Used by `commands/diagnostics.ts` (diagnostics, quick fixes, debounced and
+  versioned per document) and `src/cli/check.ts` (check mode, `scripts/check.ts`, no VS Code; the
+  `.codejanitor` reader is `cleanup/repositoryOverrides.ts` for that reason).
+- `src/cleanup/changedLines.ts` and `gitBaseline.ts`: `onlyChangedLines` - the lines changed since
+  `git show HEAD:<path>`, and a pipeline run that keeps each step's (or rule's) hunks on those
+  lines, skipping a unit whose change spans unchanged lines or whose dropped hunks it needs.
 - `src/ai/`: GitHub Copilot and custom endpoint clients.
 - `src/commands/`: commands, settings integration and cleanup-on-save.
 - `src/extension.ts`: extension activation.
@@ -82,11 +91,17 @@ counts those places.
   patterns, inferred names, explicit tuple names, simplified interpolation, extended property
   patterns, method groups), `editorConfigPrecedence.ts` (shared precedence and null-check helpers), `editorConfigMemberPreferences.ts` (modifier order, `readonly`
   structs and struct members, `static` local functions, auto properties; namespace/folder and unused parameters
-  reported) and `editorConfigExpressionBodies.ts` (expression-bodied members and lambdas). The rules run in
-  passes until one changes nothing (at most three), and only the last pass reports.
+  reported) and `editorConfigExpressionBodies.ts` (expression-bodied members and lambdas),
+  `editorConfigSimplificationRules.ts` (IDE0035, IDE0080, IDE0082, IDE0100, IDE0110; IDE0050,
+  IDE0070, IDE0072, IDE0076, IDE0077 reported), `editorConfigCollectionExpressions.ts`
+  (IDE0300 - IDE0306), `editorConfigLanguageRules.ts` (IDE0001/0002, IDE0058/0059, IDE0064,
+  IDE0120/0121, IDE0240/0241, IDE0260, IDE0270, IDE0280, IDE0320, IDE0360, IDE0380; IDE0079,
+  IDE0210/0211, IDE0220, IDE0390/0391 reported) and `editorConfigBlankLineRules.ts` (IDE2000 -
+  IDE2006, run last). The rules run in passes until one changes nothing (at most three), and only
+  the last pass reports.
   `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks, C# language
-  version and whether the runtime has `System.Index`/`Range`) for rules that depend on it; a rule
-  whose rewrite needs a newer C# version or runtime is skipped and reported.
+  version, `<Nullable>` context and whether the runtime has `System.Index`/`Range`) for rules that
+  depend on it; a rule whose rewrite needs a newer C# version or runtime is skipped and reported.
   `typeFacts.ts` holds what the file proves about a type (reference types without `operator ==`,
   non-nullable value types, plain null comparisons, variables, the written delegate type of a
   lambda), shared by the code-style rules and the legacy converters.
@@ -101,7 +116,21 @@ counts those places.
   checks, declared-type lookup on the naming `SourceModel`) and `editorConfigQualityRulesProject.ts`
   (facts from the project's other C# files - derived types, member-access names, interfaces,
   `InternalsVisibleTo` - cached per file version; a project whose files cannot all be listed or read
-  makes CA1822/CA1852 report instead of fixing).
+  makes CA1822/CA1852 report instead of fixing). `editorConfigQualityRulesCollections.ts` (CA1836,
+  CA1841, CA1854, CA1864, CA1868), `editorConfigQualityRulesStrings.ts` (CA1858, CA1862; CA1305,
+  CA1307, CA1310 reported) and `editorConfigQualityRulesCalls.ts` (CA1861, CA1869 - both add
+  `private static readonly` fields named by the naming rules -, CA2016, CA2263).
+- Severity sources: `editorconfig.ts` `loadEditorConfigProperties` merges the `.editorconfig` entries
+  over the project's global AnalyzerConfig files and attaches the project's `ProjectAnalysis`
+  (`analyzerConfig.ts`: `.globalconfig`/`GlobalAnalyzerConfigFiles` resolved by `global_level`;
+  `NoWarn`, `WarningsAsErrors`, `TreatWarningsAsErrors`, `CodeAnalysisTreatWarningsAsErrors`;
+  `AnalysisLevel`/`AnalysisMode` and their per-category variants). `msbuildProperties.ts` reads the
+  unconditional properties and items of the `.csproj` and the nearest `Directory.Build.props`/
+  `.targets`. `analyzerRules.ts` holds the CA rules' category, default severity and the SDK rule sets
+  (copied from .NET SDK 10.0.112 `analysislevel_*.globalconfig` and `analysislevelstyle_*`); the
+  registry's `SUPPORTED_DIAGNOSTICS` takes the CA entries from it. `resolveDiagnosticSeverity`
+  applies them in the compiler's order; `isDiagnosticEnforced` ignores a CA rule's implicit default
+  severity, so cleanup only rewrites what is enabled explicitly.
 - `transformations/editorConfigFormatting.ts`: core EditorConfig properties and using order, and the
   C# formatting options gated on IDE0055, in this order: `editorConfigWrapping.ts` (single-line
   blocks and statements, initializer and anonymous-type members), brace and keyword new lines,

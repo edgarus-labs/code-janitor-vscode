@@ -40,6 +40,13 @@ export class Uri {
     return new Uri('file', fsPath);
   }
 
+  /** Only what the extension parses: `scheme://path`. */
+  static parse(value: string): Uri {
+    const match = /^([a-z][\w+.-]*):\/\/(.*)$/i.exec(value);
+
+    return match ? new Uri(match[1], match[2]) : new Uri('file', value);
+  }
+
   toString(): string {
     return `${this.scheme}://${this.fsPath.replace(/\\/g, '/')}`;
   }
@@ -257,6 +264,63 @@ function applyRangeEdits(document: TextDocument, edits: readonly RecordedEdit[])
   document.setText(content);
 }
 
+// ---------------------------------------------------------------- languages
+
+export const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 } as const;
+
+export class Diagnostic {
+  source?: string;
+  code?: string | { value: string; target: Uri };
+
+  constructor(
+    readonly range: Range,
+    readonly message: string,
+    readonly severity: number
+  ) {}
+}
+
+export class CodeActionKind {
+  static readonly QuickFix = new CodeActionKind('quickfix');
+
+  constructor(readonly value: string) {}
+}
+
+export class CodeAction {
+  edit?: WorkspaceEdit;
+  diagnostics?: Diagnostic[];
+  isPreferred?: boolean;
+  command?: { title: string; command: string; arguments?: unknown[] };
+
+  constructor(
+    readonly title: string,
+    readonly kind: CodeActionKind
+  ) {}
+}
+
+export interface MockCodeActionProvider {
+  provideCodeActions(document: TextDocument, range: Range, context: { diagnostics: readonly Diagnostic[] }): CodeAction[];
+}
+
+export const languages = {
+  createDiagnosticCollection(_name: string) {
+    return {
+      set: (uri: Uri, diagnostics: readonly Diagnostic[]) => {
+        state.diagnostics.set(uri.toString(), [...diagnostics]);
+      },
+      delete: (uri: Uri) => {
+        state.diagnostics.delete(uri.toString());
+      },
+      dispose: () => undefined,
+    };
+  },
+
+  registerCodeActionsProvider(_selector: unknown, provider: MockCodeActionProvider, _metadata?: unknown): { dispose(): void } {
+    state.codeActionProviders.push(provider);
+
+    return { dispose: () => undefined };
+  },
+};
+
 export interface WorkspaceFolder {
   uri: Uri;
   name: string;
@@ -298,6 +362,11 @@ export const state = {
   failingWrites: new Set<string>(),
   /** What `workspace.applyEdit` returns; `false` applies nothing, as when VS Code rejects the edit. */
   applyEditResult: true,
+  /** Published diagnostics, by document uri. */
+  diagnostics: new Map<string, Diagnostic[]>(),
+  codeActionProviders: [] as MockCodeActionProvider[],
+  /** Handlers of `workspace.onDid(Open|Change|Close|Save)TextDocument`. */
+  documentListeners: { open: [], change: [], close: [], save: [] } as Record<'open' | 'change' | 'close' | 'save', ((argument: unknown) => void)[]>,
 };
 
 export function resetMock(): void {
@@ -328,6 +397,9 @@ export function resetMock(): void {
   state.outputChannelLines = [];
   state.failingWrites = new Set();
   state.applyEditResult = true;
+  state.diagnostics = new Map();
+  state.codeActionProviders = [];
+  state.documentListeners = { open: [], change: [], close: [], save: [] };
   window.activeTextEditor = undefined;
 }
 
@@ -532,6 +604,30 @@ export const workspace = {
     }
 
     return Promise.resolve(true);
+  },
+
+  onDidOpenTextDocument(handler: (document: TextDocument) => void): { dispose(): void } {
+    state.documentListeners.open.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidChangeTextDocument(handler: (event: { document: TextDocument }) => void): { dispose(): void } {
+    state.documentListeners.change.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidCloseTextDocument(handler: (document: TextDocument) => void): { dispose(): void } {
+    state.documentListeners.close.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidSaveTextDocument(handler: (document: TextDocument) => void): { dispose(): void } {
+    state.documentListeners.save.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
   },
 
   onWillSaveTextDocument(handler: (event: WillSaveEvent) => void): { dispose(): void } {

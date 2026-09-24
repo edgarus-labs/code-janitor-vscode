@@ -32,7 +32,7 @@ import {
  */
 
 /** A parsed file with the lookups the rules share. */
-interface FileView {
+export interface FileView {
   readonly source: string;
   readonly model: SourceModel;
   readonly types: DeclaredTypes;
@@ -41,7 +41,7 @@ interface FileView {
   report(diagnosticId: string, node: Node, message: string): void;
 }
 
-function viewOf(source: string, context: RuleContext): FileView {
+export function viewOf(source: string, context: RuleContext): FileView {
   const model = buildSourceModel(source);
   const project = context.project ? loadProjectFacts(context.project, context.filePath) : undefined;
 
@@ -55,11 +55,11 @@ function viewOf(source: string, context: RuleContext): FileView {
   };
 }
 
-/** The node's argument expressions, or `undefined` when one is named or passed by reference. */
-function positionalArguments(call: Node): Node[] | undefined {
+/** The node's argument expressions, or `undefined` when one is named, passed by reference or has no expression. */
+export function positionalArguments(call: Node): Node[] | undefined {
   const list = call.childForFieldName('arguments');
   const argumentNodes = list?.namedChildren.filter((child) => child.type === 'argument') ?? [];
-  if (!list || argumentNodes.some((argument) => argument.childForFieldName('name') || /^(?:ref|out|in)\b/.test(argument.text))) {
+  if (!list || argumentNodes.some((argument) => argument.childForFieldName('name') || /^(?:ref|out|in)\b/.test(argument.text) || argument.namedChildren.length === 0)) {
     return undefined;
   }
 
@@ -67,7 +67,7 @@ function positionalArguments(call: Node): Node[] | undefined {
 }
 
 /** Imports of a namespace in the file (`using System;`), or by every file of the project. */
-function importsNamespace(view: FileView, context: RuleContext, name: string): boolean {
+export function importsNamespace(view: FileView, context: RuleContext, name: string): boolean {
   const imported = view.model.root.descendantsOfType('using_directive').some((directive) => {
     const text = directive.text.replace(/\s+/g, ' ').replace(/;$/, '').trim();
 
@@ -82,9 +82,9 @@ function importsNamespace(view: FileView, context: RuleContext, name: string): b
   return name === 'System' ? project?.importsSystem === true : project?.others.globalUsings.has(name) === true;
 }
 
-const STRING_TYPES: Record<string, true> = { string: true, String: true, 'System.String': true };
+export const STRING_TYPES: Record<string, true> = { string: true, String: true, 'System.String': true };
 
-function isString(view: FileView, expression: Node): boolean {
+export function isString(view: FileView, expression: Node): boolean {
   const type = view.types.typeOf(expression);
 
   return type !== undefined && STRING_TYPES[type] === true && (type === 'string' || !view.types.declaresType('String'));
@@ -399,7 +399,7 @@ function collectionKind(view: FileView, expression: Node): CollectionKind | unde
 }
 
 /** `Count() > 0` and its equivalents: the comparison and whether it tests for emptiness. */
-function countComparison(expression: Node): { readonly comparison: Node; readonly empty: boolean } | undefined {
+export function countComparison(expression: Node): { readonly comparison: Node; readonly empty: boolean } | undefined {
   const { parent, child } = parentSkippingParentheses(expression);
   if (parent?.type !== 'binary_expression') {
     return undefined;
@@ -444,7 +444,7 @@ const LOOSE_CONTEXTS: Record<string, true> = {
   expression_statement: true,
 };
 
-function inContext(node: Node, text: string): string {
+export function inContext(node: Node, text: string): string {
   const parent = node.parent;
   if (!parent || LOOSE_CONTEXTS[parent.type] === true) {
     return text;

@@ -271,6 +271,7 @@ describe('IDE0330 csharp_prefer_system_threading_lock', () => {
         targetFrameworks: ['net9.0', 'net10.0'],
         languageVersion: 13,
         modernRuntime: true,
+        nullable: 'disable',
       });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -289,8 +290,9 @@ describe('IDE0330 csharp_prefer_system_threading_lock', () => {
       expect(findProject(project('Framework', '<TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>'))).toMatchObject({ languageVersion: 7.3, modernRuntime: false });
       expect(findProject(project('Latest', '<TargetFramework>net472</TargetFramework><LangVersion>latest</LangVersion>'))).toMatchObject({ languageVersion: 99, modernRuntime: false });
       expect(findProject(project('Pinned', '<TargetFramework>net8.0</TargetFramework><LangVersion>9.0</LangVersion>'))).toMatchObject({ languageVersion: 9, modernRuntime: true });
-      fs.writeFileSync(path.join(root, 'Directory.Build.props'), '<Project><PropertyGroup><LangVersion>10</LangVersion></PropertyGroup></Project>');
-      expect(findProject(project('Props', '<TargetFramework>netstandard2.0</TargetFramework>'))).toMatchObject({ languageVersion: 10, modernRuntime: false });
+      fs.writeFileSync(path.join(root, 'Directory.Build.props'), '<Project><PropertyGroup><LangVersion>10</LangVersion><Nullable>enable</Nullable></PropertyGroup></Project>');
+      expect(findProject(project('Props', '<TargetFramework>netstandard2.0</TargetFramework>'))).toMatchObject({ languageVersion: 10, modernRuntime: false, nullable: 'enable' });
+      expect(findProject(project('Own', '<TargetFramework>net8.0</TargetFramework><Nullable>disable</Nullable>'))).toMatchObject({ nullable: 'disable' });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -320,15 +322,15 @@ describe('unsupported settings and rule severities', () => {
       [
         {
           directory: '/repo',
-          text: 'root = true\n[*.cs]\ncsharp_style_unused_value_assignment_preference = discard_variable:suggestion\ndotnet_diagnostic.IDE0059.severity = none\ncsharp_prefer_static_anonymous_function = true\ndotnet_diagnostic.IDE0320.severity = warning\n',
+          text: 'root = true\n[*.cs]\ncsharp_style_unused_value_assignment_preference = discard_variable:suggestion\ndotnet_diagnostic.IDE0059.severity = none\ndotnet_style_prefer_non_hidden_explicit_cast_in_source = true\ndotnet_diagnostic.IDE0221.severity = warning\n',
         },
       ],
       '/repo/A.cs'
     );
 
     expect(unsupportedEditorConfigSettings(props)).toEqual([
-      '"csharp_prefer_static_anonymous_function = true" is not supported and was not applied.',
-      '"dotnet_diagnostic.ide0320.severity = warning" is not supported and was not applied.',
+      '"dotnet_style_prefer_non_hidden_explicit_cast_in_source = true" is not supported and was not applied.',
+      '"dotnet_diagnostic.ide0221.severity = warning" is not supported and was not applied.',
     ]);
   });
 });

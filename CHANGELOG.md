@@ -8,6 +8,29 @@ First release of the Visual Studio Code port.
 
 ### Added
 
+- **Severities from the project, as the compiler reads them**: `.globalconfig` files and
+  `<GlobalAnalyzerConfigFiles>` (resolved by `global_level`, below the `.editorconfig`), `NoWarn`,
+  `WarningsAsErrors`/`TreatWarningsAsErrors`/`CodeAnalysisTreatWarningsAsErrors`, and the SDK rule
+  sets of `AnalysisLevel`/`AnalysisMode` (including compound levels and per-category properties),
+  read from the `.csproj` and `Directory.Build.props`/`.targets`. The CA rules' implicit default
+  severity is shown by the diagnostics but never triggers a rewrite.
+- **More code-quality rules**: CA1836, CA1841, CA1854, CA1858, CA1861, CA1862, CA1864, CA1868,
+  CA1869, CA2016 and CA2263 fix the cases the syntax proves safe and report the rest; CA1305,
+  CA1307 and CA1310 are reported only.
+- **Diagnostics and quick fixes for `.editorconfig` rules**: open C# files show, in the editor
+  and the Problems panel, each place an enforced rule would change and each violation cleanup
+  cannot fix, with the `.editorconfig` severity and a link to the rule. Quick fixes fix one
+  occurrence (when it can be fixed on its own), every occurrence of the rule in the file, or run
+  the cleanup. Analysis waits for a pause in typing, drops results for text that changed since, and
+  skips files over `codeJanitor.diagnostics.maxFileSizeKB`; `codeJanitor.diagnostics.enabled`
+  turns it off.
+- **Check mode for CI** (`npm run check -- <paths>`): cleanup as a dry run without VS Code, printing
+  `file:line: rule (severity): message` and exiting with 1 when a file would change or has an
+  enforced violation cleanup cannot fix.
+- **Only changed lines** (`codeJanitor.cleanup.onlyChangedLines`, off by default): cleanup on save
+  and Cleanup Changed Files keep only the changes on lines changed since the last commit; rules
+  whose change spans unchanged lines are skipped and reported, and no renames or type splits are
+  made.
 - **Marketplace icon** (`assets/icon.png`, 128x128) and a rewritten, user-facing `README.md`: what
   the extension does, the problem it solves, and how to use it, instead of internal architecture
   notes (those moved to `PLAN.md`, the porting/dev history document).
@@ -84,6 +107,15 @@ First release of the Visual Studio Code port.
   is; the core EditorConfig properties and the using order options whenever they are set. They run after the other cleanup steps, change code only when the result is certain from the
   syntax, and list the violations they could not fix in the Code Janitor output channel and the
   cleanup summary. See the README for the supported options.
+- **Newer `.editorconfig` code-style rules for C#**: collection expressions (IDE0300 - IDE0306),
+  `static` anonymous functions (IDE0320), `field`-backed simple accessors (IDE0360), `?? throw`
+  null checks (IDE0270), `is` over `as` compared with null (IDE0260), `nameof` in attributes
+  (IDE0280), discarded return values and overwritten initializers (IDE0058, IDE0059), the
+  experimental blank-line options (IDE2000 - IDE2006), and the rules without an option IDE0001,
+  IDE0002, IDE0035, IDE0064, IDE0080, IDE0082, IDE0100, IDE0110, IDE0120, IDE0121, IDE0240 and
+  IDE0380. Reported only: IDE0050, IDE0070, IDE0072, IDE0076, IDE0077, IDE0079, IDE0210/IDE0211,
+  IDE0220, IDE0241 and IDE0390/IDE0391. Each is gated by its severity and by the project's C#
+  version (from `<LangVersion>`/`Directory.Build.props`/target framework) and `<Nullable>`.
 - **Using order from `.editorconfig`**: when `dotnet_sort_system_directives_first` is set, cleanup
   always sorts usings (`System` first only for `true`), whatever the "Sort usings" setting says;
   `dotnet_separate_import_directive_groups` adds (`true`) or removes (`false`) the blank lines

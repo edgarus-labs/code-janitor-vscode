@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { ProjectAnalysis, loadProjectAnalyzerConfig } from './analyzerConfig';
 import { memoizeBySource } from './sourceCache';
 
 export type EditorConfigSeverity = 'none' | 'silent' | 'suggestion' | 'warning' | 'error';
@@ -9,6 +10,8 @@ export interface EditorConfigProperties {
   /** Looks up a property by (case-insensitive) key; the nearest file and the later section win. */
   get(key: string): string | undefined;
   readonly entries: ReadonlyMap<string, string>;
+  /** The severity settings of the file's project (MSBuild properties); absent without a project. */
+  readonly analysis?: ProjectAnalysis;
 }
 
 export interface EditorConfigFile {
@@ -18,9 +21,11 @@ export interface EditorConfigFile {
 }
 
 /**
- * Resolves the `.editorconfig` properties for `filePath` from the files on disk: every
- * `.editorconfig` from the file's directory up to (and including) the first one declaring
- * `root = true`. An unreadable file is skipped; it must never fail the cleanup.
+ * Resolves the analyzer configuration for `filePath` from the files on disk: every `.editorconfig`
+ * from the file's directory up to (and including) the first one declaring `root = true`, over the
+ * global AnalyzerConfig files (`.globalconfig`, `<GlobalAnalyzerConfigFiles>`) of its project, plus
+ * the project's severity settings (see {@link loadProjectAnalyzerConfig}). An unreadable file is
+ * skipped; it must never fail the cleanup.
  */
 export function loadEditorConfigProperties(filePath: string): EditorConfigProperties {
   if (!filePath || !filePath.trim()) {
@@ -48,7 +53,19 @@ export function loadEditorConfigProperties(filePath: string): EditorConfigProper
     directory = parent;
   }
 
-  return resolveEditorConfigProperties(files, filePath);
+  const editorConfig = resolveEditorConfigProperties(files, filePath);
+  const project = loadProjectAnalyzerConfig(filePath);
+  if (!project) {
+    return editorConfig;
+  }
+
+  // An `.editorconfig` entry wins over a global one for the same key.
+  const entries = new Map(project.entries);
+  for (const [key, value] of editorConfig.entries) {
+    entries.set(key, value);
+  }
+
+  return new PropertyMap(entries, project.analysis);
 }
 
 /**
@@ -136,29 +153,60 @@ export function splitOptionSeverity(raw: string): { value: string; severity?: Ed
 }
 
 /**
- * Effective severity of a diagnostic, with Roslyn's precedence: `dotnet_diagnostic.<id>.severity`,
- * then `dotnet_analyzer_diagnostic.category-<category>.severity`, then
- * `dotnet_analyzer_diagnostic.severity`, then the severity the option itself carries
- * (`option = value:severity`, or a naming rule's `severity`). `dotnet_diagnostic.<id>.severity =
- * default` keeps the option's own severity. IDE code-style and naming diagnostics use the `Style`
- * category, the default here.
+ * Effective severity of a diagnostic, with Roslyn's precedence:
+ *
+ * 1. `NoWarn` of the project turns it off;
+ * 2. `dotnet_diagnostic.<id>.severity` (`.editorconfig`, then global config files; `default` keeps
+ *    the option's own severity, else the rule's default);
+ * 3. the analysis-level rule set of the project (`AnalysisLevel`/`AnalysisMode`);
+ * 4. `dotnet_analyzer_diagnostic.category-<category>.severity`, then
+ *    `dotnet_analyzer_diagnostic.severity`;
+ * 5. the severity the option itself carries (`option = value:severity`, or a naming rule's);
+ * 6. with `includeRuleDefault`, the rule's own default where the .NET analyzers run (CA rules).
+ *
+ * A resulting `warning` is an `error` under `WarningsAsErrors`/`TreatWarningsAsErrors`. IDE
+ * code-style and naming diagnostics use the `Style` category, the default here. Cleanup passes
+ * `includeRuleDefault = false`: an implicit default never triggers a rewrite by itself.
  */
 export function resolveDiagnosticSeverity(
   props: EditorConfigProperties,
   diagnosticId: string,
   optionSeverity?: EditorConfigSeverity,
-  category = 'Style'
+  category = 'Style',
+  includeRuleDefault = true
+): EditorConfigSeverity | undefined {
+  const analysis = props.analysis;
+  if (analysis?.isSuppressed(diagnosticId)) {
+    return 'none';
+  }
+
+  const ruleDefault = includeRuleDefault ? analysis?.defaultSeverity(diagnosticId) : undefined;
+  const severity = configuredSeverity(props, diagnosticId, optionSeverity, category) ?? ruleDefault;
+
+  return severity === 'warning' && analysis?.isWarningAsError(diagnosticId) ? 'error' : severity;
+}
+
+function configuredSeverity(
+  props: EditorConfigProperties,
+  diagnosticId: string,
+  optionSeverity: EditorConfigSeverity | undefined,
+  category: string
 ): EditorConfigSeverity | undefined {
   const specific = props.get(`dotnet_diagnostic.${diagnosticId}.severity`);
   if (specific !== undefined) {
     if (specific.trim().toLowerCase() === 'default') {
-      return optionSeverity;
+      return optionSeverity ?? props.analysis?.defaultSeverity(diagnosticId);
     }
 
     const severity = parseSeverity(specific);
     if (severity) {
       return severity;
     }
+  }
+
+  const ruleSet = props.analysis?.ruleSetSeverity(diagnosticId);
+  if (ruleSet) {
+    return ruleSet;
   }
 
   const bulk =
@@ -168,13 +216,24 @@ export function resolveDiagnosticSeverity(
   return bulk ?? optionSeverity;
 }
 
+/**
+ * Whether analyzer configuration applies to the file: `.editorconfig` or global config entries, or
+ * rule sets the project enables explicitly (`AnalysisMode` `Minimum`, `Recommended` or `All`).
+ */
+export function hasAnalyzerConfiguration(props: EditorConfigProperties): boolean {
+  return props.entries.size > 0 || props.analysis?.enablesRules === true;
+}
+
 /** Only `suggestion`, `warning` and `error` rules are applied by cleanup. */
 export function isEnforced(severity: EditorConfigSeverity | undefined): boolean {
   return severity === 'suggestion' || severity === 'warning' || severity === 'error';
 }
 
 class PropertyMap implements EditorConfigProperties {
-  constructor(readonly entries: ReadonlyMap<string, string>) {}
+  constructor(
+    readonly entries: ReadonlyMap<string, string>,
+    readonly analysis?: ProjectAnalysis
+  ) {}
 
   get(key: string): string | undefined {
     return this.entries.get(key.toLowerCase());

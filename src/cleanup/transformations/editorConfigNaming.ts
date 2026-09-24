@@ -31,6 +31,7 @@ export function createEditorConfigNamingConverter(props: EditorConfigProperties,
 
   return {
     name: 'Apply .editorconfig naming rules',
+    diagnosticId: NAMING_DIAGNOSTIC_ID,
     apply: (source) => (rules.length === 0 || !source ? source : applyNamingRules(source, rules, props, report)),
   };
 }

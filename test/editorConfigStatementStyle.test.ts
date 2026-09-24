@@ -85,10 +85,12 @@ describe('IDE0028 dotnet_style_collection_initializer', () => {
     );
   });
 
-  it('leaves explicitly typed locals to collection expressions when those are preferred', () => {
+  it('leaves explicitly typed locals to collection expressions (IDE0306) when those are preferred', () => {
     const source = method('void', 'List<int> list = new List<int>();', 'list.Add(1);');
 
-    expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning\ndotnet_style_prefer_collection_expression = true:warning')).toBe(source);
+    expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning\ndotnet_style_prefer_collection_expression = true:warning')).toBe(
+      method('void', 'List<int> list = [];', 'list.Add(1);')
+    );
   });
 });
 

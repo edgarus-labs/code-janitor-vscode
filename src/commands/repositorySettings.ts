@@ -2,7 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CleanupSettings, createDefaultSettings } from '../cleanup/types';
-import { readRepoCleanupOverrides } from './settings';
+import { readRepoCleanupOverrides } from '../cleanup/repositoryOverrides';
+import { logInfo } from '../logging';
 
 export const REPOSITORY_CONFIG_FILE = '.codejanitor';
 
@@ -80,7 +81,7 @@ export async function exportRepositorySettings(workspaceRoot?: string): Promise<
   const config = vscode.workspace.getConfiguration('codeJanitor');
   const cleanup: Record<string, unknown> = {};
   const defaults = createDefaultSettings();
-  const effective = { ...defaults, ...readRepoCleanupOverrides(root) };
+  const effective = { ...defaults, ...readRepoCleanupOverrides(root, logInfo) };
 
   for (const key of Object.keys(defaults) as (keyof CleanupSettings)[]) {
     if (GROUPED_SETTING_KEYS.has(key)) {
@@ -125,7 +126,7 @@ export async function importRepositorySettings(workspaceRoot?: string): Promise<
     return;
   }
 
-  const overrides = readRepoCleanupOverrides(root);
+  const overrides = readRepoCleanupOverrides(root, logInfo);
   const config = vscode.workspace.getConfiguration('codeJanitor');
   let imported = 0;
   let repositoryOnly = 0;
