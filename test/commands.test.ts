@@ -1639,6 +1639,26 @@ describe('cleaning only the lines changed since the last commit (onlyChangedLine
     expect(state.files.get(filePath)).not.toContain(unbracedAdd);
   });
 
+  it('cleans the other changed files when one is missing on disk or outside the repository', async () => {
+    const filePath = repository();
+    // Open in the editor only: not on disk, so not in HEAD either - every line of it is new.
+    const unsaved = path.join(path.dirname(filePath), 'Unsaved.cs');
+    const lost = path.join(path.dirname(filePath), 'gone', 'Lost.cs');
+    for (const file of [filePath, unsaved, lost]) {
+      state.files.set(file, edited);
+    }
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(lost), Uri.file(unsaved), Uri.file(filePath)], {
+      honorOnlyChangedLines: true,
+    });
+
+    expect(result.failed).toBe(1);
+    expect(state.files.get(lost)).toBe(edited);
+    expect(state.files.get(unsaved)).not.toContain(unbracedAdd);
+    expect(state.files.get(filePath)).toContain(bracedRemove);
+    expect(state.files.get(filePath)).toContain(unbracedAdd);
+  });
+
   it('leaves a file outside Git as it is and counts it as failed', async () => {
     const root = tempRoot();
     const filePath = path.join(root, 'Counter.cs');

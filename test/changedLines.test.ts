@@ -123,4 +123,15 @@ describe('readHeadVersion', () => {
     expect(await readHeadVersion(path.join(root, 'src', 'Counter.cs'))).toEqual({ kind: 'tracked', text: BASE });
     expect(await readHeadVersion(path.join(root, 'src', 'New.cs'))).toEqual({ kind: 'new' });
   });
+
+  it('reads a tracked file deleted from disk, and reports a file of a missing folder as unavailable instead of throwing', async () => {
+    git('init', '-q');
+    fs.writeFileSync(path.join(root, 'Counter.cs'), BASE);
+    git('add', '.');
+    git('commit', '-q', '-m', 'initial');
+    fs.rmSync(path.join(root, 'Counter.cs'));
+
+    expect(await readHeadVersion(path.join(root, 'Counter.cs'))).toEqual({ kind: 'tracked', text: BASE });
+    expect((await readHeadVersion(path.join(root, 'gone', 'Other.cs'))).kind).toBe('unavailable');
+  });
 });

@@ -101,7 +101,9 @@ counts those places.
   the last pass reports.
   `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks, C# language
   version, `<Nullable>` context and whether the runtime has `System.Index`/`Range`) for rules that
-  depend on it; a rule whose rewrite needs a newer C# version or runtime is skipped and reported.
+  depend on it, through the static evaluator of `msbuildProperties.ts` (`Directory.Build.props`,
+  the project, resolvable imports, `Directory.Build.targets`; a value a `Condition`, `<Choose>`,
+  unknown import or property decides is unknown, never guessed); a rule whose rewrite needs a newer C# version or runtime is skipped and reported.
   `typeFacts.ts` holds what the file proves about a type (reference types without `operator ==`,
   non-nullable value types, plain null comparisons, variables, the written delegate type of a
   lambda), shared by the code-style rules and the legacy converters.

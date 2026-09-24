@@ -116,6 +116,53 @@ describe('newer rules', () => {
     expect(codeStyle(derived, 'csharp_prefer_static_anonymous_function = true:warning').output).toBe(derived.replace('a = x => x + 1', 'a = static x => x + 1').replace('e = delegate (int x)', 'e = static delegate (int x)'));
   });
 
+  it('IDE0320 treats an accessor\'s value as captured and recognizes static async lambdas', () => {
+    const source = lines(
+      'using System;',
+      'using System.Threading.Tasks;',
+      '',
+      'class C',
+      '{',
+      '    int P',
+      '    {',
+      '        get => 0;',
+      '        set { Action a = () => Console.WriteLine(value); a(); }',
+      '    }',
+      '    void M()',
+      '    {',
+      '        Func<int, Task> h = static async x => await Task.Delay(x);',
+      '        Func<int, Task> i = static async x => { await Task.Delay(x); };',
+      '        Func<int, int> k = x => x;',
+      '    }',
+      '}'
+    );
+    const { output, issues } = codeStyle(source, 'csharp_prefer_static_anonymous_function = true:warning');
+
+    expect(output).toBe(source.replace('k = x => x', 'k = static x => x'));
+    expect(issues).toEqual([]);
+  });
+
+  it('IDE0059 keeps an initializer a local function or lambda of the member may read', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    int M()',
+      '    {',
+      '        int x = 0;',
+      '        x = Next();',
+      '        int y = 0;',
+      '        y = 5;',
+      '        System.Func<int> read = () => y;',
+      '        return x + read();',
+      '        int Next() => x + 1;',
+      '    }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_assignment_preference = discard_variable:warning');
+
+    expect(output).toBe(source);
+  });
+
   it('IDE0360 simplifies accessors that only read or write field (C# 14)', () => {
     const before = lines('class C', '{', '    int P { get { return field; } set { field = value; } }', '    int Q { get => field; set => field = value > 0 ? value : 0; }', '}');
     const after = lines('class C', '{', '    int P { get; set; }', '    int Q { get; set => field = value > 0 ? value : 0; }', '}');

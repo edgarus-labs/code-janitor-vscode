@@ -73,6 +73,27 @@ const LITERAL_ELEMENT_TYPES: Record<string, string> = {
 const ADDABLE_COLLECTIONS = /^(?:List|HashSet|SortedSet|Collection|ObservableCollection)<.+>$/;
 const IMMUTABLE_CREATE = /^(ImmutableArray|ImmutableList)\.Create(?:<.+>)?$/;
 
+/** The element type of a collection created in place: `new T[] { ... }`, `new[] { literals }`, `new C<T>(...)`. */
+function elementTypeOf(creation: Node): string | undefined {
+  const initializer = creation.namedChildren.find((child) => child.type === 'initializer_expression');
+  switch (creation.type) {
+    case 'array_creation_expression': {
+      const type = creation.namedChildren.find((child) => child.type === 'array_type');
+
+      return type && !/,/.test(type.text) ? normalize(type.text).replace(/\[[^\]]*\]$/, '') : undefined;
+    }
+    case 'implicit_array_creation_expression': {
+      const types = new Set(initializer?.namedChildren.map((element) => LITERAL_ELEMENT_TYPES[element.type]));
+
+      return types.size === 1 ? [...types][0] : undefined;
+    }
+    case 'object_creation_expression':
+      return /^[\w.]+<([^<>,]+)>$/.exec(normalize(creation.childForFieldName('type')?.text ?? ''))?.[1];
+    default:
+      return undefined;
+  }
+}
+
 interface Candidate {
   readonly id: string;
   readonly node: Node;
@@ -147,14 +168,19 @@ function candidates(root: Node, report: (id: string, node: Node, message: string
           add('IDE0301', node, '[]');
         } else if (IMMUTABLE_CREATE.test(calleeText) && target.startsWith(`${IMMUTABLE_CREATE.exec(calleeText)![1]}<`) && frameworksAllowImmutable) {
           const single = args.length === 1 && !/_literal$/.test(args[0].namedChildren[0]?.type ?? '');
-          if (!single && args.every((arg) => arg.namedChildCount === 1 && !/^(?:ref|out|in)\b/.test(arg.text))) {
+          // `Create(items, start, length)` copies a range of an array: three arguments are elements
+          // only when all are literals of the element type.
+          const range = args.length === 3 && !args.every((arg) => LITERAL_ELEMENT_TYPES[arg.namedChildren[0]?.type ?? ''] === element);
+          if (!single && !range && args.every((arg) => arg.namedChildCount === 1 && !/^(?:ref|out|in)\b/.test(arg.text))) {
             add('IDE0303', node, `[${args.map((arg) => arg.text).join(', ')}]`);
           }
         } else if (callee?.type === 'member_access_expression' && args.length === 0) {
           const method = callee.childForFieldName('name')?.text;
           const receiver = callee.childForFieldName('expression');
-          const matches = (method === 'ToList' && /^List<.+>$/.test(target)) || (method === 'ToArray' && target.endsWith('[]'));
-          if (!matches || !receiver) {
+          const targetElement = method === 'ToList' ? /^List<(.+)>$/.exec(target)?.[1] : method === 'ToArray' ? /^(.+)\[\]$/.exec(target)?.[1] : undefined;
+          // `[.. xs]` creates the target's type: `object[] a = new[] { "a" }.ToArray()` holds a `string[]`.
+          const createdHere = receiver !== null && ['array_creation_expression', 'implicit_array_creation_expression', 'object_creation_expression'].includes(receiver.type);
+          if (!targetElement || !receiver || (createdHere && elementTypeOf(receiver) !== targetElement)) {
             break;
           }
 

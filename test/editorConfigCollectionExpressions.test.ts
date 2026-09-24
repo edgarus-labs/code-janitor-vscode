@@ -79,6 +79,27 @@ describe('collection expressions (IDE0300 - IDE0306)', () => {
     expect(codeStyle(before, ENFORCED, { ...NET8, targetFrameworks: ['net6.0'] }).output).toBe(before);
   });
 
+  it('IDE0303 keeps the range overloads of ImmutableArray.Create (items, start, length)', () => {
+    const source = members(
+      'static readonly int[] Items = [1, 2, 3];',
+      'ImmutableArray<int> _a = ImmutableArray.Create(Items, 0, 2);',
+      'ImmutableArray<int> _b = ImmutableArray.Create(1, 2, 3);'
+    );
+
+    expect(codeStyle(source, ENFORCED).output).toBe(source.replace('_b = ImmutableArray.Create(1, 2, 3);', '_b = [1, 2, 3];'));
+  });
+
+  it('IDE0305 keeps ToArray/ToList whose elements have another type than the target', () => {
+    const source = members(
+      'object[] _a = new[] { "a" }.ToArray();',
+      'object[] _b = new string[] { "b" }.ToArray();',
+      'List<object> _c = new List<string> { "c" }.ToList();',
+      'string[] _d = new[] { "d" }.ToArray();'
+    );
+
+    expect(codeStyle(source, ENFORCED).output).toBe(source.replace('_d = new[] { "d" }.ToArray();', '_d = ["d"];'));
+  });
+
   it('IDE0305 uses [...] for ToList/ToArray of a new collection, and reports other receivers, which may be null', () => {
     const before = members('List<int> _a = new[] { 1, 2 }.ToList();', 'int[] _b = new List<int> { 3 }.ToArray();', 'List<int> Copy(IEnumerable<int> xs) => xs.ToList();');
     const { output, issues } = codeStyle(before, ENFORCED);

@@ -7,7 +7,9 @@ import {
   TopLevelTypeKind,
   TopLevelTypeSplitSkipReason,
   createTopLevelTypeSplitPlan,
+  fileStemOf,
   listTopLevelTypes,
+  matchesFileStem,
 } from './topLevelTypeSplit';
 
 /**
@@ -79,7 +81,7 @@ export function planOneTypePerFile(
     plan.hasChanges && !moveTypes ? plan.newFiles.map((planned) => path.basename(planned.filePath).toUpperCase()) : []
   );
   // Like both analyzers, compare with the name up to the first dot (`Form.Designer.cs`, `View.xaml.cs`).
-  const fileStem = path.basename(filePath).split('.')[0];
+  const fileStem = fileStemOf(filePath);
   const issues: string[] = [];
   const describe = (id: string, type: TopLevelTypeInfo, message: string) =>
     issues.push(`${id} (${severities.get(id)}) line ${type.line}: ${message}`);
@@ -97,8 +99,9 @@ export function planOneTypePerFile(
     describe(id, type, `the file name does not match type '${type.name}' (expected '${type.fileName}'); files are not renamed.`);
 
   if (severities.has('SA1402')) {
+    // As in the split: a type named like the file stays whatever its kind, else the first class.
     const classes = remaining.filter((type) => type.kind === 'class');
-    const kept = classes.find((type) => matchesFileName(type, fileStem)) ?? classes[0];
+    const kept = remaining.find((type) => matchesFileName(type, fileStem)) ?? classes[0];
     classes.filter((type) => type !== kept).forEach((type) => notMoved('SA1402', type));
   }
 
@@ -120,14 +123,8 @@ export function planOneTypePerFile(
   return { plan: moveTypes ? plan : createTopLevelTypeSplitPlan('', filePath), issues };
 }
 
-/** `Box`, `Box{T}` (StyleCop) and ``Box`1`` (metadata) all name the generic type `Box<T>`. */
 function matchesFileName(type: TopLevelTypeInfo, fileStem: string): boolean {
-  const accepted = [type.name, path.basename(type.fileName, '.cs')];
-  if (type.typeParameterCount > 0) {
-    accepted.push(`${type.name}\`${type.typeParameterCount}`);
-  }
-
-  return accepted.some((name) => name.toUpperCase() === fileStem.toUpperCase());
+  return matchesFileStem(type.name, type.typeParameters, fileStem);
 }
 
 function whyNotMoved(type: TopLevelTypeInfo, plan: SplitPlan): string {

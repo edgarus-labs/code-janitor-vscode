@@ -1,27 +1,30 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readMSBuildProject } from './msbuildProperties';
 
 /** What cleanup reads from the project file a C# file belongs to. */
 export interface ProjectInfo {
   /** Folder of the project file. */
   readonly directory: string;
   /**
-   * `<RootNamespace>` of the project file, else its file name (spaces become `_`, as in the .NET
-   * SDK). `undefined` when a `Directory.Build.props` or MSBuild property decides it instead.
+   * `<RootNamespace>` of the project (or the files it imports), else its file name (spaces become
+   * `_`, as in the .NET SDK). `undefined` when a condition or an unknown property decides it.
    */
   readonly rootNamespace?: string;
-  /** `<TargetFramework>` or `<TargetFrameworks>`, when written in the project file itself. */
+  /** `<TargetFrameworks>`, else `<TargetFramework>`, when evaluated without MSBuild conditions. */
   readonly targetFrameworks?: readonly string[];
   /**
-   * The C# language version: `<LangVersion>` of the project or a `Directory.Build.props` above it,
+   * The C# language version: `<LangVersion>` (project, `Directory.Build.props`/`.targets`, imports),
    * else the default of its target frameworks (the lowest one). `latest`/`preview` read as 99.
+   * `undefined` when a condition or an unknown property decides it.
    */
   readonly languageVersion?: number;
   /** True when every target has the .NET Core 3.0+ runtime types (`Index`, `Range`, `Span<T>`). */
   readonly modernRuntime?: boolean;
   /**
-   * The project's nullable context: `<Nullable>` of the project or a `Directory.Build.props` above
-   * it, `disable` when neither sets it; `undefined` when set to something else (an MSBuild property).
+   * The project's nullable context: `<Nullable>` (project, `Directory.Build.props`/`.targets`,
+   * imports), `disable` when nothing sets it; `undefined` when a condition, an unknown import or
+   * property decides it, or its value is not a nullable context.
    */
   readonly nullable?: NullableContext;
 }
@@ -62,43 +65,39 @@ export function findProject(filePath: string): ProjectInfo | undefined {
 }
 
 function readProject(directory: string, fileName: string): ProjectInfo | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(directory, fileName), 'utf8');
-  } catch {
+  const project = readMSBuildProject(path.join(directory, fileName));
+  if (!project) {
     return undefined;
   }
 
-  const element = (name: string): string | undefined => new RegExp(`<${name}>\\s*([^<]*?)\\s*</${name}>`, 'i').exec(text)?.[1];
-  const frameworks = (element('TargetFrameworks') ?? element('TargetFramework'))
+  // A property MSBuild alone can decide (a condition, an unknown import or property) stays unknown.
+  const certain = (name: string): { value?: string } | undefined => (project.isCertain(name) ? { value: project.property(name) || undefined } : undefined);
+  // A non-empty TargetFrameworks wins over TargetFramework, as in the SDK.
+  const multiTargeting = certain('TargetFrameworks');
+  const frameworksProperty = multiTargeting === undefined || multiTargeting.value !== undefined ? multiTargeting : certain('TargetFramework');
+  const frameworks = frameworksProperty?.value
     ?.split(';')
     .map((framework) => framework.trim())
     .filter(Boolean);
-  const declaredRoot = element('RootNamespace');
-  const rootNamespace =
-    declaredRoot !== undefined
-      ? declaredRoot.includes('$(')
-        ? undefined
-        : declaredRoot
-      : rootNamespaceSetOutside(directory)
-        ? undefined
-        : path.basename(fileName, path.extname(fileName)).replace(/ /g, '_');
+  const targetFrameworks = frameworks && frameworks.length > 0 ? frameworks : undefined;
+  const rootNamespace = certain('RootNamespace');
 
-  const targetFrameworks = frameworks && frameworks.length > 0 && !frameworks.some((framework) => framework.includes('$(')) ? frameworks : undefined;
   // Old-style projects name a .NET Framework version instead (`v4.7.2`).
-  const targets = targetFrameworks ?? (element('TargetFrameworkVersion') ? ['net4'] : undefined);
+  const targets = targetFrameworks ?? (certain('TargetFrameworkVersion')?.value ? ['net4'] : undefined);
   const defaults = targets?.map(defaultLanguageVersion);
   const defaultVersion = defaults && defaults.every((version) => version !== undefined) ? Math.min(...(defaults as number[])) : undefined;
-  const declared = element('LangVersion') ?? propertySetOutside(directory, 'LangVersion');
-  const languageVersion = declared === undefined || /^default$/i.test(declared) ? defaultVersion : parseLanguageVersion(declared);
+  const declared = certain('LangVersion');
+  const languageVersion = declared === undefined ? undefined : declared.value === undefined || /^default$/i.test(declared.value) ? defaultVersion : parseLanguageVersion(declared.value);
 
-  const nullable = (element('Nullable') ?? propertySetOutside(directory, 'Nullable'))?.toLowerCase();
+  const nullableSetting = certain('Nullable');
+  const nullable = nullableSetting === undefined ? undefined : (nullableSetting.value ?? 'disable').toLowerCase();
 
   return {
     directory,
-    rootNamespace,
+    // The SDK defaults RootNamespace to the project name with spaces as `_`.
+    rootNamespace: rootNamespace === undefined ? undefined : (rootNamespace.value ?? path.basename(fileName, path.extname(fileName)).replace(/ /g, '_')),
     targetFrameworks,
-    ...(nullable === undefined || NULLABLE_CONTEXTS[nullable] === true ? { nullable: (nullable ?? 'disable') as NullableContext } : {}),
+    ...(nullable !== undefined && NULLABLE_CONTEXTS[nullable] === true ? { nullable: nullable as NullableContext } : {}),
     ...(languageVersion !== undefined ? { languageVersion } : {}),
     ...(targets ? { modernRuntime: targets.every(hasModernRuntime) } : {}),
   };
@@ -135,41 +134,6 @@ function defaultLanguageVersion(framework: string): number | undefined {
 
 function hasModernRuntime(framework: string): boolean {
   return /^(?:net(?:[5-9]|\d{2,})\.\d+|netcoreapp3\.|netstandard2\.1)/.test(framework.toLowerCase());
-}
-
-/** `<LangVersion>` of a `Directory.Build.props` above the project, when one sets it. */
-function propertySetOutside(directory: string, name: string): string | undefined {
-  for (let current = directory; ; current = path.dirname(current)) {
-    try {
-      const value = new RegExp(`<${name}>\\s*([^<]*?)\\s*</${name}>`, 'i').exec(fs.readFileSync(path.join(current, 'Directory.Build.props'), 'utf8'))?.[1];
-      if (value !== undefined) {
-        return value;
-      }
-    } catch {
-      // No Directory.Build.props in this folder.
-    }
-
-    if (path.dirname(current) === current) {
-      return undefined;
-    }
-  }
-}
-
-/** True when a `Directory.Build.props` above the project sets `RootNamespace`. */
-function rootNamespaceSetOutside(directory: string): boolean {
-  for (let current = directory; ; current = path.dirname(current)) {
-    try {
-      if (/<RootNamespace\b/i.test(fs.readFileSync(path.join(current, 'Directory.Build.props'), 'utf8'))) {
-        return true;
-      }
-    } catch {
-      // No Directory.Build.props in this folder.
-    }
-
-    if (path.dirname(current) === current) {
-      return false;
-    }
-  }
 }
 
 /** True when every framework is .NET `major` or later (`net9.0`, `net10.0-windows`, ...). */

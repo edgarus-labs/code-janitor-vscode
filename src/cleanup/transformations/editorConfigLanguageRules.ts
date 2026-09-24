@@ -242,6 +242,12 @@ function capturesNothing(lambda: Node, root: Node): boolean {
   const outer = declaredNames(member, lambda);
   // Primary constructor parameters are captured like locals.
   type?.childForFieldName('parameters')?.namedChildren.forEach((parameter) => outer.add(parameter.childForFieldName('name')?.text ?? ''));
+  // In a `set`/`init`/`add`/`remove` accessor, `value` is the accessor's implicit parameter.
+  for (let current = lambda.parent; current && current !== member; current = current.parent) {
+    if (current.type === 'accessor_declaration') {
+      outer.add('value');
+    }
+  }
   const inner = declaredNames(lambda);
   const members = type ? membersOf(type) : new Map<string, { isStatic: boolean }>();
   const hasBase = type !== undefined && type.type !== 'struct_declaration' && type.namedChildren.some((child) => child.type === 'base_list');
@@ -250,8 +256,8 @@ function capturesNothing(lambda: Node, root: Node): boolean {
     const name = identifier.text;
     const parent = identifier.parent;
     const isMemberName = parent?.type === 'member_access_expression' && parent.childForFieldName('name') === identifier;
-    const isKeyword = (isAsyncWrapper(parent) || parent?.type === 'await_expression') && parent!.children[0] === identifier;
-    if (isMemberName || isKeyword || inner.has(name) || name === 'var' || name === '_' || name === 'value') {
+    const isKeyword = (isAsyncWrapper(parent) && asyncKeyword(parent!) === identifier) || (parent?.type === 'await_expression' && parent.children[0] === identifier);
+    if (isMemberName || isKeyword || inner.has(name) || name === 'var' || name === '_') {
       continue;
     }
 
@@ -279,12 +285,21 @@ function capturesNothing(lambda: Node, root: Node): boolean {
   return true;
 }
 
-/** The parser reads `async x => ...` as a lambda holding `async` and the lambda it modifies. */
-const isAsyncWrapper = (node: Node | null): boolean => node?.type === 'lambda_expression' && node.children[0]?.type === 'identifier' && node.children[0].text === 'async';
+/**
+ * The parser reads `async x => ...` as a lambda holding `async` and the lambda it modifies, and
+ * `static async x => ...` as the same with `static` first.
+ */
+const asyncKeyword = (node: Node): Node | undefined => {
+  const keyword = node.children[node.children[0]?.type === 'static' ? 1 : 0];
+
+  return keyword?.type === 'identifier' && keyword.text === 'async' ? keyword : undefined;
+};
+const isAsyncWrapper = (node: Node | null): boolean => node?.type === 'lambda_expression' && asyncKeyword(node) !== undefined;
 
 function collectStaticLambdas(_source: string, root: Node): TextEdit[] {
   return findAll(root, ['lambda_expression', 'anonymous_method_expression']).flatMap((lambda): TextEdit[] => {
-    const isStatic = lambda.children[0]?.type === 'static' || (isAsyncWrapper(lambda.parent) && lambda.parent!.children[1] === lambda);
+    // The lambda an `async` wrapper modifies is decided with (and made static through) its wrapper.
+    const isStatic = lambda.children[0]?.type === 'static' || isAsyncWrapper(lambda.parent);
     if (isStatic || hasParseErrors(lambda) || isInPossibleExpressionTree(lambda) || !capturesNothing(lambda, root)) {
       return [];
     }
@@ -406,10 +421,11 @@ function nullableDirectives(source: string): NullableDirective[] | undefined {
 
 /**
  * IDE0240: a `#nullable enable|disable|restore` that sets the context it is already in goes. The
- * context starts as the project's `<Nullable>`; a directive with a target (`annotations`,
- * `warnings`) makes it unknown from there on.
+ * context starts as the project's `<Nullable>` (`restore` returns to it); a directive with a target
+ * (`annotations`, `warnings`) makes it unknown from there on. When the project's context is unknown
+ * (a condition or an import decides it), a directive that may repeat it is reported and kept.
  */
-const collectRedundantNullableDirectives: Collect = (source, _root, context) => {
+const collectRedundantNullableDirectives: Collect = (source, _root, context, { reportAt }) => {
   const project = context.project?.nullable;
   const projectState: NullableState = project === 'enable' || project === 'disable' ? project : undefined;
   const directives = nullableDirectives(source);
@@ -417,15 +433,23 @@ const collectRedundantNullableDirectives: Collect = (source, _root, context) => 
     return [];
   }
 
+  // 'project': the project's context, whatever it is; undefined: unknown.
+  type Context = 'enable' | 'disable' | 'project' | undefined;
+  const resolve = (state: Context): Context => (state === 'project' && projectState !== undefined ? projectState : state);
   const edits: TextEdit[] = [];
-  let state = projectState;
+  let state: Context = 'project';
   for (const directive of directives) {
-    const next: NullableState = directive.target ? undefined : directive.setting === 'restore' ? projectState : directive.setting === 'enable' || directive.setting === 'disable' ? directive.setting : undefined;
-    if (!directive.target && next !== undefined && next === state) {
-      edits.push({ start: directive.start, end: directive.lineEnd, text: '' });
+    const next: Context = directive.target ? undefined : directive.setting === 'restore' ? 'project' : directive.setting === 'enable' || directive.setting === 'disable' ? directive.setting : undefined;
+    const [before, after] = [resolve(state), resolve(next)];
+    if (!directive.target && before !== undefined && after !== undefined) {
+      if (before === after) {
+        edits.push({ start: directive.start, end: directive.lineEnd, text: '' });
+      } else if (before === 'project' || after === 'project') {
+        reportAt(directive.start, `the #nullable ${directive.setting} may repeat the project's nullable context, which is unknown (<Nullable> depends on a condition or an import, or is annotations/warnings); it was not removed.`);
+      }
     }
 
-    state = directive.target ? undefined : next;
+    state = next;
   }
 
   return edits;
@@ -684,7 +708,13 @@ function collectOverwrittenInitializers(source: string, root: Node, _context: Ru
         assignment.childForFieldName('left')?.text === name &&
         !findAll(assignment.childForFieldName('right') ?? assignment, 'identifier').some((identifier) => identifier.text === name);
       const modifiers = statements[i].namedChildren.some((child) => child.type === 'modifier');
-      if (!declaration || !clause || !initial || !name || !overwrites || modifiers || declaration.childForFieldName('type')?.type === 'implicit_type') {
+      // A local function or lambda of the member may read the variable before the assignment
+      // (`x = Next();` with `int Next() => x + 1;`): without the initializer, it is unassigned there.
+      const readByFunction = () =>
+        findAll(enclosingMember(block) ?? root, ['local_function_statement', 'lambda_expression', 'anonymous_method_expression']).some((fn) =>
+          findAll(fn, 'identifier').some((identifier) => identifier.text === name)
+        );
+      if (!declaration || !clause || !initial || !name || !overwrites || modifiers || declaration.childForFieldName('type')?.type === 'implicit_type' || readByFunction()) {
         continue;
       }
 

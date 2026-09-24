@@ -195,6 +195,17 @@ First release of the Visual Studio Code port.
 
 ### Fixed
 
+- **Project settings read as MSBuild evaluates them**: the target frameworks, C# version, root
+  namespace and `<Nullable>` ignore XML comments, follow `Directory.Build.targets` and resolvable
+  imports, and are unknown (never guessed) when a `Condition`, `<Choose>`, unresolved import or
+  unknown property decides them. IDE0240 no longer removes `#nullable` directives needed under a
+  conditional `<Nullable>`; it reports them.
+- **One type per file keeps the type named like the file**: names are compared up to the first dot
+  (`View.xaml.cs` keeps `View`), and a matching type that cannot move itself (a partial class) keeps
+  the file while the other types move, instead of the first movable type staying.
+- Cleanup Changed Files with `onlyChangedLines`: a file whose last commit cannot be read (not in a
+  repository, its folder removed, Git failing) fails alone and the other files are still cleaned; a
+  file that exists only in the editor counts as new instead of stopping the whole command.
 - An open file whose edit VS Code rejects (or that is closed during cleanup) now counts as failed
   instead of changed, in the cleanup commands, Split Top-Level Types and batch XML documentation.
 - Cleanup on save logs its failures in the Code Janitor output channel instead of ignoring them.

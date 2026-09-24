@@ -10,19 +10,23 @@ export type Baseline =
 
 /**
  * The text of `filePath` at `HEAD` of its Git repository (`git show HEAD:<path>`). A file of a
- * repository without commits, or not in `HEAD`, is new; without Git or a repository, the baseline
- * is unavailable.
+ * repository without commits, or not in `HEAD`, is new (also when it is not on disk: an unsaved
+ * editor buffer); without Git or a repository, or when Git cannot read it, the baseline is
+ * unavailable. Never throws.
  */
 export async function readHeadVersion(filePath: string): Promise<Baseline> {
   const directory = path.dirname(filePath);
   let root: string;
+  let relative: string;
   try {
     root = (await git(directory, 'rev-parse', '--show-toplevel')).trim();
+    // The folder, not the file, is resolved: the file may exist only in the editor or in HEAD.
+    const realFile = path.join(await fs.promises.realpath(directory), path.basename(filePath));
+    relative = path.relative(await fs.promises.realpath(root), realFile).split(path.sep).join('/');
   } catch (err) {
     return { kind: 'unavailable', reason: `${directory} is not in a Git repository (${firstLine(err)})` };
   }
 
-  const relative = path.relative(fs.realpathSync(root), fs.realpathSync(filePath)).split(path.sep).join('/');
   try {
     await git(root, 'cat-file', '-e', `HEAD:${relative}`);
   } catch {
@@ -30,7 +34,11 @@ export async function readHeadVersion(filePath: string): Promise<Baseline> {
     return { kind: 'new' };
   }
 
-  return { kind: 'tracked', text: await git(root, 'show', `HEAD:${relative}`) };
+  try {
+    return { kind: 'tracked', text: await git(root, 'show', `HEAD:${relative}`) };
+  } catch (err) {
+    return { kind: 'unavailable', reason: `Git could not read ${relative} at HEAD (${firstLine(err)})` };
+  }
 }
 
 function git(cwd: string, ...args: string[]): Promise<string> {

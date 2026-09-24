@@ -154,15 +154,15 @@ export async function runCleanupOnUris(
   // Only the lines changed since HEAD: no type split, and other file types are left as they are.
   const onlyChangedLines = options.honorOnlyChangedLines === true && settings.onlyChangedLines;
   const baselines = new Map<string, Baseline>();
-  if (onlyChangedLines) {
-    for (const uri of targets.filter(isCSharp)) {
-      baselines.set(uri.fsPath, await readHeadVersion(uri.fsPath));
-    }
-  }
 
   let outcome: BatchOutcome = { changed: 0, failed: 0, created: 0 };
   let unresolved = 0;
   try {
+    // A file whose last commit cannot be read fails alone (see cleanupChangedLines); the batch goes on.
+    for (const uri of onlyChangedLines ? targets.filter(isCSharp) : []) {
+      baselines.set(uri.fsPath, await readHeadVersion(uri.fsPath).catch((err: unknown): Baseline => ({ kind: 'unavailable', reason: String(err) })));
+    }
+
     outcome = await runBatch(
       targets,
       (content, uri, disqualifiedTypeNames) =>
@@ -171,7 +171,14 @@ export async function runCleanupOnUris(
             ? content
             : runLayoutCleanup(content, uri.fsPath, settings)
           : onlyChangedLines
-            ? cleanupChangedLines(content, uri.fsPath, settings, baselines.get(uri.fsPath)!, disqualifiedTypeNames, batchReport)
+            ? cleanupChangedLines(
+                content,
+                uri.fsPath,
+                settings,
+                baselines.get(uri.fsPath) ?? { kind: 'unavailable', reason: 'its last commit was not read' },
+                disqualifiedTypeNames,
+                batchReport
+              )
             : runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames, batchReport),
       'Cleanup',
       'Code Janitor: no files to clean up.',

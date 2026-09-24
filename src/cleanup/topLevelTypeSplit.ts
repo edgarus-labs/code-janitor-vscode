@@ -32,7 +32,8 @@ export interface TopLevelTypeInfo {
   readonly line: number;
   /** The file name (with `.cs`) the split gives the type, e.g. `Box{T}.cs`. */
   readonly fileName: string;
-  readonly typeParameterCount: number;
+  /** Names of the type parameters, as declared. */
+  readonly typeParameters: readonly string[];
 }
 
 export interface PlannedFile {
@@ -104,14 +105,14 @@ export function createTopLevelTypeSplitPlan(
       (entry) =>
         isEligibleTopLevelType(entry.member) && (options.movableKinds?.has(typeKind(entry.member)) ?? true)
     );
-    if (eligible.length <= 1) {
-      return emptyPlan(source, TopLevelTypeSplitSkipReason.NotMultipleEligibleTypes);
-    }
 
-    const originalFileName = path.basename(filePath);
-    const keep =
-      eligible.find((entry) => buildTypeFileName(entry.member).toUpperCase() === originalFileName.toUpperCase()) ??
-      eligible[0];
+    // The type named like the file (up to its first dot: `View.xaml.cs`) stays, movable or not;
+    // without one, the first movable type does.
+    const fileStem = fileStemOf(filePath);
+    const named = entries.find(
+      (entry) => TYPE_DECL_TYPES.has(entry.member.type) && matchesFileStem(entry.member.childForFieldName('name')?.text ?? '', getTypeParameterNames(entry.member), fileStem)
+    );
+    const keep = named ?? eligible[0];
     const moved = eligible.filter((entry) => entry !== keep);
 
     if (moved.length === 0) {
@@ -173,7 +174,7 @@ export function listTopLevelTypes(source: string): TopLevelTypeInfo[] {
             isPartial: hasPartialModifier(child),
             line: name.startPosition.row + 1,
             fileName: buildTypeFileName(child),
-            typeParameterCount: getTypeParameterNames(child).length,
+            typeParameters: getTypeParameterNames(child),
           });
         }
       }
@@ -321,6 +322,21 @@ function isEligibleTopLevelType(member: Node): boolean {
 
 function hasPartialModifier(member: Node): boolean {
   return member.children.some((child) => child.type === 'modifier' && child.text === 'partial');
+}
+
+/** The file name up to its first dot, which StyleCop and Meziantou compare type names with (`View.xaml.cs` -> `View`). */
+export function fileStemOf(filePath: string): string {
+  return path.basename(filePath).split('.')[0];
+}
+
+/** `Box`, `Box{T}` (StyleCop) and ``Box`1`` (metadata) all name the generic type `Box<T>`. */
+export function matchesFileStem(name: string, typeParameters: readonly string[], fileStem: string): boolean {
+  const accepted = [name];
+  if (typeParameters.length > 0) {
+    accepted.push(`${name}{${typeParameters.join(',')}}`, `${name}\`${typeParameters.length}`);
+  }
+
+  return accepted.some((candidate) => candidate.toUpperCase() === fileStem.toUpperCase());
 }
 
 function buildTypeFileName(member: Node): string {

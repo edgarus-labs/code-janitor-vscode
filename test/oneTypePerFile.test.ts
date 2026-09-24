@@ -109,4 +109,38 @@ describe('planOneTypePerFile', () => {
       "MA0048 (warning) line 5: type 'Point' was not moved to its own file because structs are not split.",
     ]);
   });
+
+  it('keeps the type named like the file stem, as in View.xaml.cs', () => {
+    const outcome = plan('namespace Demo;\n\ninternal class Helper\n{\n}\n\ninternal class View\n{\n}\n', 'dotnet_diagnostic.MA0048.severity = warning', '/w/View.xaml.cs')!;
+
+    expect(outcome.issues).toEqual([]);
+    expect(outcome.plan.updatedSource).toContain('class View');
+    expect(outcome.plan.updatedSource).not.toContain('Helper');
+    expect(outcome.plan.newFiles.map((file) => file.filePath)).toEqual(['/w/Helper.cs']);
+  });
+
+  it('keeps a matching type that cannot move and moves every other movable type', () => {
+    const partial = plan(
+      'namespace Demo;\n\ninternal partial class Foo\n{\n}\n\ninternal class Bar\n{\n}\n\ninternal class Baz\n{\n}\n',
+      'dotnet_diagnostic.SA1402.severity = warning'
+    )!;
+    expect(partial.issues).toEqual([]);
+    expect(partial.plan.updatedSource).toContain('partial class Foo');
+    expect(partial.plan.newFiles.map((file) => file.filePath)).toEqual(['/w/Bar.cs', '/w/Baz.cs']);
+
+    const single = plan('internal partial class Foo\n{\n}\n\ninternal class Bar\n{\n}\n', 'dotnet_diagnostic.MA0048.severity = warning')!;
+    expect(single.issues).toEqual([]);
+    expect(single.plan.newFiles.map((file) => file.filePath)).toEqual(['/w/Bar.cs']);
+
+    const struct = plan('internal struct Foo\n{\n}\n\ninternal class A\n{\n}\n\ninternal class B\n{\n}\n', 'dotnet_diagnostic.SA1402.severity = warning')!;
+    expect(struct.issues).toEqual([]);
+    expect(struct.plan.newFiles.map((file) => file.filePath)).toEqual(['/w/A.cs', '/w/B.cs']);
+  });
+
+  it('without moving (cleanup on save) reports every class but the one named like the file stem', () => {
+    const rules = readOneTypePerFileRules(props('dotnet_diagnostic.SA1402.severity = warning'))!;
+    const outcome = planOneTypePerFile('internal class Helper\n{\n}\n\ninternal class View\n{\n}\n', '/w/View.xaml.cs', rules, new Set(), false);
+
+    expect(outcome.issues).toEqual([expect.stringMatching(/^SA1402 \(warning\) line 1: type 'Helper' was not moved .*cleanup on save/)]);
+  });
 });
