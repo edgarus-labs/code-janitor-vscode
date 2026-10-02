@@ -46,4 +46,19 @@ describe('checkPaths (code-janitor check)', () => {
     ]);
     expect(report.exitCode).toBe(1);
   });
+
+  it('applies the nearest .codejanitor of each file, walking up from its folder', async () => {
+    const source = 'namespace Demo;\n\ninternal class Holder\n{\n}\n\n#region Helpers\n#endregion\n';
+    fs.mkdirSync(path.join(root, 'kept', 'deeper'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'removed'));
+    fs.writeFileSync(path.join(root, 'kept', '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+    fs.writeFileSync(path.join(root, 'kept', 'deeper', 'Holder.cs'), source);
+    fs.writeFileSync(path.join(root, 'removed', 'Holder.cs'), source);
+
+    const kept = await checkPaths([path.join(root, 'kept')], root);
+    const removed = await checkPaths([path.join(root, 'removed')], root);
+
+    expect(kept.lines.join('\n')).not.toContain('Remove region directives');
+    expect(removed.lines.join('\n')).toContain('removed/Holder.cs:7: Remove region directives');
+  });
 });

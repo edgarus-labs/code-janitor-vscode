@@ -1,0 +1,126 @@
+@page "/counter"
+@page "/counter/{Start:int}"
+@inject ICounterService CounterSvc
+@implements IDisposable
+
+<PageTitle>Counter</PageTitle>
+
+<h1>Counter</h1>
+
+<p role="status">Current count: @currentCount</p>
+
+@if (currentCount > 3)
+{
+    <p class="warn">High: @currentCount</p>
+}
+else if (currentCount > 1)
+{
+    <p>Medium</p>
+}
+else
+{
+    <p>Low</p>
+}
+
+@if (currentCount > 10)
+{
+    <p>Above ten</p>
+}
+else
+{
+    <p>Not above ten</p>
+}
+
+<button class="btn btn-primary" @onclick="IncrementCount">Click me</button>
+<button @onclick="async () => { await ResetAsync(); }">Reset</button>
+
+@foreach (var item in items)
+{
+    <div class="item @(item.Active?"active":"")" @key="item.Id">
+    <span>@item.Name</span>
+    <button @onclick="() => Select(item)">Select</button>
+    </div>
+}
+
+@switch (mode)
+{
+    case Mode.A:
+    <p>Mode A</p>
+    break;
+    case Mode.B:
+    <p>Mode B</p>
+    break;
+    default:
+    <p>other</p>
+    break;
+}
+
+@try
+{
+    var risky = Compute();
+    <p>@risky</p>
+}
+catch (InvalidOperationException ex)
+{
+    <p class="error">@ex.Message</p>
+}
+finally
+{
+    cleanups++;
+}
+
+@for (int i = 0; i < 3; i++)
+{
+    <span>@i</span>
+}
+@{ var local=1+1; }
+@while (count < 2)
+{
+    count++;
+}
+
+<p>Contact: support@example.com and literal @@code</p>
+
+@code{
+    [Parameter] public int Start { get; set; }
+    private int currentCount;
+    private List<Item> items = new();
+    private Mode mode = Mode.A;
+    private int cleanups;
+    private int count;
+    enum Mode
+    {
+        A,
+        B,
+        C
+    }
+    protected override async Task OnInitializedAsync()
+    {
+        items = (await CounterSvc.LoadAsync()).ToList();
+        currentCount = Start;
+    }
+    private void IncrementCount()
+    {
+        currentCount += CounterSvc.Next();
+    }
+    private async Task ResetAsync()
+    {
+        await Task.Delay(1);
+        currentCount = 0;
+    }
+    private void Select(Item item)
+    {
+        if (item.Active)
+        {
+            currentCount = item.Id;
+        }
+        else
+        {
+            currentCount = -1;
+        }
+    }
+    private int Compute() => currentCount * 2;
+    public void Dispose()
+    {
+    }
+}

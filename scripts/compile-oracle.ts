@@ -20,6 +20,7 @@ import { runCleanup } from '../src/cleanup/runCleanup';
 import { discoverDisqualifiedTypeNames } from '../src/cleanup/transformations/sealedClass';
 import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
 import { editorConfigCatalog } from '../src/cleanup/editorConfigRegistry';
+import { CODE_STYLE_RULES } from '../src/cleanup/codeStyleRules';
 import { CompilerError, compilerErrors, editorConfigVariant, newCompilerErrors, settingsVariant } from './compileOracle';
 import { renderEditorConfig } from './editorConfigTemplate';
 import { planWorkspaceRenames } from '../src/cleanup/naming/workspaceRenamer';
@@ -234,6 +235,43 @@ function checkTarget(target: Target, editorConfig: string): number {
   }
 }
 
+/**
+ * The Code Style rules opt-in layer: the same project cleaned with no `.editorconfig` rule and every rule of
+ * the layer enabled with the value it proposes (as the `codeJanitor.cleanup.codeStyleRules` setting or
+ * `.codejanitor` would), so the rules `.editorconfig` would enforce in the pass above are applied by the layer.
+ */
+function checkCodeStyleLayer(target: Target): number {
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-compile-oracle-'));
+  try {
+    fs.cpSync(target.folder, copy, { recursive: true, filter: (source) => !SKIPPED_FOLDERS.has(path.basename(source)) });
+    removeNestedEditorConfigs(copy);
+    fs.writeFileSync(path.join(copy, '.editorconfig'), 'root = true\n\n[*.cs]\n', 'utf8');
+    const projectDir = path.dirname(path.join(copy, target.project));
+
+    console.log(`\n=== ${target.folder} (${target.project}): Code Style rules opt-in layer`);
+    const baseline = build(copy, target.project, true);
+    if (!baseline.ok && baseline.errors.length === 0) {
+      console.log('  NOT BUILDABLE before cleanup (no compiler errors, the build itself failed)');
+
+      return 1;
+    }
+
+    const settings = { ...createDefaultSettings(), codeStyleRules: Object.fromEntries(CODE_STYLE_RULES.map((rule) => [rule.key, rule.defaultValue])) };
+    const outcome = cleanUp(copy, projectDir, settings);
+    const after = build(copy, target.project, false);
+    const added = newCompilerErrors(baseline.errors, after.errors);
+    console.log(`  cleanup changed ${outcome.changed.length} file(s), ${outcome.unresolved} violation(s) left unresolved`);
+    console.log(`  after cleanup: ${after.errors.length} compiler error(s), ${added.length} new`);
+    if (added.length > 0) {
+      console.log(describe(added, 20));
+    }
+
+    return added.length;
+  } finally {
+    fs.rmSync(copy, { recursive: true, force: true });
+  }
+}
+
 function targets(args: readonly string[]): Target[] {
   if (args.length > 0) {
     return args.map((arg) => {
@@ -259,6 +297,7 @@ const editorConfig = renderEditorConfig();
 let failures = 0;
 for (const target of targets(process.argv.slice(2))) {
   failures += checkTarget(target, editorConfig);
+  failures += checkCodeStyleLayer(target);
 }
 
 console.log(failures === 0 ? '\nCompile oracle: no new compiler errors.' : `\nCompile oracle: ${failures} new compiler error(s).`);

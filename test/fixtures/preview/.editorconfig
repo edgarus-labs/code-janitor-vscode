@@ -1,0 +1,5 @@
+root = true
+
+[*.cs]
+csharp_prefer_braces = true:warning
+csharp_style_implicit_object_creation_when_type_is_apparent = true:warning

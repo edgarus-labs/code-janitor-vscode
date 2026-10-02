@@ -37,6 +37,30 @@ views, member reorganization and third-party IDE integrations are outside this p
 - `test/`: unit and command tests; `test/e2e/` runs inside a real VS Code host.
 - `shared/tests/transformations/`: shared behavior fixtures for the VS and VS Code implementations.
 
+### Visual Studio parity modules
+
+- `src/cleanup/codeStyleRules.ts`: catalog of the 53 Code Style rules (key, group, label, diagnostic ids, values, default, `csharp_preferred_modifier_order` validation), the setting format and its package.json schema.
+- `src/cleanup/effectiveSettings.ts`: port of `EffectiveCleanupSettings.cs`: resolves per file which settings `.editorconfig` decides (severity resolution of the Visual Studio doc: `:none` stopper, diagnostic > category > global > suffix, CA1852 disabled by default, Roslyn default values for severity-only enforcement), merges the policy and the enabled Code Style rules over `.editorconfig` (the synthetic analyzer-config layer: rule with `suggestion`, diagnostics raised, sibling rules of a shared diagnostic silenced with `:none`; in memory only). `getCleanupPipeline` (`runCleanup.ts`) and `analysis.ts` use it; `buildPipeline` only sees the effective settings and properties.
+- `src/cleanup/repositoryOverrides.ts`: `.codejanitor` reader: `findRepositoryConfigFile` (walk up), `readRepositoryPolicy`, `parseRepositoryPolicy`, `applyRepositoryPolicy` (policy over user). `commands/settings.ts`: `readCleanupSettings(startDirectory)` / `readCleanupSettingsForUri(uri)`.
+- `src/cleanup/overrideNotes.ts`: the settings panel override notes (`editorConfigOverrideNotes`); `findDefiningEditorConfigPath` in `editorconfig.ts` names the file.
+- `test/oracle/CodeStyle/` (one file per group); `scripts/compile-oracle.ts` also runs every oracle project with all Code Style rules enabled and no `.editorconfig` rule (the opt-in layer).
+`src/cleanup/usings/` holds the using-directive placement: `layout.ts` (token-level layout of directives and namespaces), `declarations.ts` (per-file declaration summaries, the `DeclarationIndex` view and the generated `bclIndex.generated.ts` of the .NET reference assemblies, written by `scripts/bclIndex`), `workspaceIndex.ts` (project discovery, caches), `names.ts` (used names, what a directive imports), `placement.ts` (qualification, hazards, text edits, verification). `transformations/namespaceScope.ts` wires it and owns the namespace style conversions. Verified against the C# compiler by `test/usingPlacementCompile.test.ts` (corpora `test/oracle/Usings`, `test/oracle/UsingsGlobal`).
+- `src/commands/cleanupPreview.ts`: the plan (`buildCleanupPreviewPlan`, `PreviewFile` with per-rule outcomes recomputed from the original text, parse-problem guard via `parseErrorCount`), the virtual-document provider (`codejanitor-preview:`) and `applyCleanupPreviewPlan` (stale check per file, one `WorkspaceEdit`, per-file retry when VS Code rejects it). `cleanupPreviewUi.ts`: QuickPick review loop (`createQuickPick`, item buttons, `vscode.diff`), progress with cancellation, closing the diff tabs. `cleanupCommands.ts` registers the four preview commands and the optional options dialog. `switchFile.ts` / `navigation.ts`: Switch File (VS `SwitchFileCommand` ordering) and the workflow commands; `registerNavigationCommands(context)` must be called from `extension.ts`.
+- Tests: `test/cleanupPreview.test.ts`, `test/navigation.test.ts`, `test/cleanupPreviewCompile.test.ts` (real `dotnet build` before/after for every scope), helpers `test/helpers/previewMock.ts` (scriptable `createQuickPick`, virtual-document providers, tabs) and `previewFixtures.ts`; fixtures in `test/fixtures/preview/`.
+- Known differences from Visual Studio: the options dialog has no temporary-settings page; rule list shows the `.editorconfig` rules that change the file (as in the active-file preview); no disk-level rollback; closed files become unsaved buffers.
+- `src/reorganize/`: Reorganize, the port of `Logic/Reorganizing` of the Visual Studio extension on the syntax tree (no Roslyn).
+  `settings.ts` (the `Reorganizing_*` settings), `comparer.ts` (`CodeItemTypeComparer`), `structure.ts` (a container's members, comments,
+  `#if` blocks, regions and barriers as line-aligned entries), `memberInfo.ts` (kind, access, static/const/read-only, explicit
+  interface), `initializers.ts` (which initializers must keep their order), `regions.ts` (`GenerateRegionLogic` names),
+  `reorganize.ts` (sorting, region removal/insertion, emission, safety nets; `reorganizeSource`, `createReorganizeTransformation`),
+  `sortLines.ts`, `regionEdits.ts` (insert/remove region commands). `src/commands/reorganizeCommands.ts` are the commands.
+  A rewrite only ever permutes the lines of a body (plus region directives): a body whose lines differ, whose `#if`/`#region` nesting
+  broke, or a file that parses worse afterwards is left unchanged. What is left alone is reported (`ReorganizeResult.skipped`,
+  logged to the output channel). `test/oracle/Reorganize` is the real-compiler corpus (`test/reorganizeCompile.test.ts` builds it before
+  and after with 11 setting combinations and compares what `Program.cs` prints: the value of every static and instance field).
+- `src/razor/`: Razor/Blazor formatter (`razorScanner.ts`, `csharpLayout.ts` runs the repo's own formatting engine under fixed Roslyn-default rules, `razorFormatter.ts`, `razorOptions.ts`, `razorSettings.ts`); `commands/razorCommands.ts`. A layout is used only when the wrapped code parses cleanly and the token stream is unchanged; only whitespace changes. Verified by `test/razorOracle.test.ts` (a Razor SDK project built before and after).
+- Real-compiler tests: `test/helpers/dotnetBuild.ts` (`buildFiles`, `writeProject`, `buildProject`) builds fixtures before and after; wrap such tests in `describe.skipIf(!dotnetAvailable)`. Regenerate the framework index of the using placement with `dotnet run --project scripts/bclIndex -- src/cleanup/usings/bclIndex.generated.ts <Microsoft.NETCore.App.Ref dir> <Microsoft.AspNetCore.App.Ref dir>`.
+
 The parser supports the transformations implemented here; it is not a replacement for Roslyn's
 compiler or semantic model. Text edits preserve surrounding source formatting. When changing a
 transformation, test comments, literals, preprocessor directives and line endings as well as the
@@ -194,6 +218,34 @@ especially for constructs that could change compilation or runtime behavior.
 Unit tests use a VS Code API mock for command behavior. Real-host tests cover activation,
 command registration and settings integration. Both are needed when changing IDE integration.
 Update shared transformation fixtures when changing behavior shared with the VS extension.
+
+### The testbed
+
+[code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) is a solution of deliberately bad C#: one class per
+cleanup option, named after the option, plus `scenarios.json` saying what each cleanup must do. Without Roslyn it is the measure of
+whether a rewrite is right, so it covers everything the engine does and is checked for completeness:
+
+- every Code Style rule, every cleanup setting that changes text, every Reorganize option and every key and diagnostic of the
+  `.editorconfig` catalog (`editorConfigCatalog()`) needs a scenario; a missing one fails the test, and the few exemptions are listed in
+  `test/testbed.test.ts` with the reason (`onlyChangedLines` and the workspace rename need git history or a whole workspace);
+- each rule also runs through a real `.editorconfig`, with its value turned off, with its severity turned off, and, for the rules that
+  rewrite both ways, with the opposite value;
+- traps: code a rewrite must not touch (a field written in an interpolation, a lambda that captures, `string.Format` with side effects,
+  expression trees, string literals, `#if` blocks), run with every option on at once;
+- using placement and namespace style, the `.codejanitor` policy and its precedence, several `.editorconfig` files, layout cleanup of
+  other file types, Razor, the line commands (sort lines, insert and remove region) and the file commands (XML documentation, namespace,
+  split types, one type per file).
+
+`npm run test:testbed` (`test/testbed.test.ts`) runs every scenario alone, requires cleaning the result again to change nothing
+(except wrapping lines in a region, which is an action), and builds and runs the whole solution before and after the cleanups, each
+alone and then every option at once: a rewrite that does not compile or changes what a scenario prints fails the test. A scenario the
+engine gets wrong carries a `knownDefect` marker: its checks must fail, and the test tells you when it starts to pass.
+
+CI clones the testbed (branch `develop`) into `.testbed` and sets `CODE_JANITOR_REQUIRE_TESTBED=1`, so a missing testbed fails the
+build; locally set `CODE_JANITOR_TESTBED` or keep a sibling `code-janitor-testbed` folder, otherwise the test is skipped. Add a
+scenario there whenever an option is added or a rewrite that broke the build is fixed. Not covered, because they are not text
+transformations of one file: AI actions, the preview, diagnostics and quick fixes, `check` mode, `Join Lines` (its logic is in the
+editor command) and the navigation commands.
 
 An optional read-only smoke test can exercise cleanup and XML documentation planning on a
 source directory you are authorized to inspect:

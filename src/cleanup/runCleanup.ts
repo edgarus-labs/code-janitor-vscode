@@ -1,9 +1,11 @@
 import * as path from 'node:path';
+import { resolveEffectiveCleanupSettings } from './effectiveSettings';
 import { EditorConfigProperties, hasAnalyzerConfiguration, loadEditorConfigProperties } from './editorconfig';
 import { effectiveEditorConfigValue, enforcedOptionValue, isDiagnosticEnforced, unsupportedEditorConfigSettings } from './editorConfigRegistry';
 import { SourceTransformationPipeline, delegateTransformation } from './pipeline';
 import { ProjectInfo, findProject } from './projectInfo';
 import { CleanupSettings, SourceTransformation } from './types';
+import { createReorganizeTransformation } from '../reorganize/reorganize';
 import { updateAccessorsToBothBeSingleLineOrMultiLineConverter } from './transformations/accessorFormat';
 import { createBlankLinePaddingConverter } from './transformations/blankLinePadding';
 import { createExplicitAccessModifierConverter } from './transformations/explicitAccessModifier';
@@ -25,11 +27,7 @@ import {
   singleStatementLambdaConverter,
 } from './transformations/lambdaAndJson';
 import { nameOfOperatorConverter } from './transformations/namespaceAndNameOf';
-import {
-  fileScopedNamespaceConverter,
-  hasMultipleNamespaces,
-  moveUsingsOutsideNamespaceConverter,
-} from './transformations/namespaceScope';
+import { createFileScopedNamespaceConverter, createUsingPlacementConverter } from './transformations/namespaceScope';
 import { nullCheckPatternMatchingConverter } from './transformations/nullCheckPatternMatching';
 import { inlineOutVariableDeclarations, outVarInliningConverter } from './transformations/outVarInlining';
 import {
@@ -53,7 +51,7 @@ import { varWhenApparentConverter } from './transformations/varWhenApparent';
 import { createEditorConfigNamingConverter } from './transformations/editorConfigNaming';
 import { createEditorConfigCodeStyleConverter } from './transformations/editorConfigCodeStyle';
 import { createEditorConfigFormattingConverter } from './transformations/editorConfigFormatting';
-import { EditorConfigIssueReporter, tabWidth } from './transformations/editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, indentUnit, lineNumberAt, tabWidth } from './transformations/editorConfigSupport';
 
 /** The `.editorconfig` properties of the file being cleaned. */
 export interface EditorConfigRules {
@@ -116,21 +114,29 @@ export function getCleanupPipeline(
   externalDisqualifiedTypeNames?: ReadonlySet<string>,
   onIssue?: EditorConfigIssueListener
 ): SourceTransformationPipeline {
-  const properties = loadEditorConfigProperties(filePath);
-  for (const message of unsupportedEditorConfigSettings(properties)) {
+  const base = loadEditorConfigProperties(filePath);
+  for (const message of unsupportedEditorConfigSettings(base)) {
     onIssue?.({ kind: 'unsupported', filePath, detail: message });
   }
 
+  // `.editorconfig` decides over the settings; the enabled Code Style rules it does not enforce are
+  // layered over it (analysis only, nothing is written) so the rule engine applies them.
+  const effective = resolveEffectiveCleanupSettings(filePath, settings, base);
+  for (const message of effective.unresolvedRules) {
+    onIssue?.({ kind: 'unresolved', filePath, detail: message });
+  }
+
+  const properties = effective.properties;
   const rules: EditorConfigRules = {
     properties,
     report: (message, symbol) => onIssue?.({ kind: 'unresolved', filePath, detail: message, ...(symbol && { symbol }) }),
     fileName: filePath ? path.basename(filePath) : undefined,
     filePath: filePath || undefined,
     // Every rule depends on the project's C# version; some also on its folder or frameworks.
-    project: hasAnalyzerConfiguration(properties) ? findProject(filePath) : undefined,
+    project: hasAnalyzerConfiguration(properties) || effective.settings.convertToFileScopedNamespace ? findProject(filePath) : undefined,
   };
 
-  return buildPipeline(source, settings, rules, externalDisqualifiedTypeNames);
+  return buildPipeline(source, effective.settings, rules, externalDisqualifiedTypeNames);
 }
 
 /**
@@ -166,16 +172,36 @@ export function buildPipeline(
   const keepFinalNewline = !decides('insert_final_newline') || effectiveEditorConfigValue(props!, 'insert_final_newline') === 'true';
   const trimTrailingWhitespace = props && effectiveEditorConfigValue(props, 'trim_trailing_whitespace');
 
+  // Where the using directives go: what `.editorconfig` enforces, else the `moveUsingsOutsideNamespace` setting.
+  const placementValue = props && effectiveEditorConfigValue(props, 'csharp_using_directive_placement');
+  const placement =
+    placementValue === 'inside_namespace' ? 'inside' : placementValue === 'outside_namespace' ? 'outside' : settings.moveUsingsOutsideNamespace ? 'outside' : undefined;
+  const indentOf = (text: string): string => (props ? indentUnit(props, text) : '    ');
+
   const transformations: (SourceTransformation | undefined)[] = [
+    settings.reorganize.runAtStartOfCleanup ? createReorganizeTransformation(settings.reorganize, settings) : undefined,
     settings.removeRegions ? regionDirectiveRemover : undefined,
     settings.removeByteOrderMark || charsetDecides ? byteOrderMarkConverter : undefined,
-    settings.moveUsingsOutsideNamespace && !decides('csharp_using_directive_placement')
-      ? moveUsingsOutsideNamespaceConverter
+    placement
+      ? createUsingPlacementConverter({
+          direction: placement,
+          filePath: rules?.filePath,
+          fromEditorConfig: decides('csharp_using_directive_placement'),
+          indent: indentOf,
+          report: (message, text, offset) =>
+            rules?.report(
+              decides('csharp_using_directive_placement')
+                ? describeIssue('IDE0065', 'csharp_using_directive_placement', text, offset, message)
+                : `${message.charAt(0).toUpperCase()}${message.slice(1)}`
+            ),
+        })
       : undefined,
-    settings.convertToFileScopedNamespace &&
-    !decides('csharp_style_namespace_declarations') &&
-    !hasMultipleNamespaces(source)
-      ? fileScopedNamespaceConverter
+    settings.convertToFileScopedNamespace && !decides('csharp_style_namespace_declarations')
+      ? createFileScopedNamespaceConverter({
+          project: rules?.project,
+          indent: indentOf,
+          report: (message, text, offset) => rules?.report(`Line ${lineNumberAt(text, offset)}: ${message}`),
+        })
       : undefined,
     settings.convertToVarWhenApparent && !varStyleKeys.some(decides) ? varWhenApparentConverter : undefined,
     settings.makeFieldsReadonlyWhenSafe && !decides('dotnet_style_readonly_field') ? readonlyFieldConverter : undefined,

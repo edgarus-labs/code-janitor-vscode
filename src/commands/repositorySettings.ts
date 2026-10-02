@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { formatCodeStyleSetting, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
 import { CleanupSettings, createDefaultSettings } from '../cleanup/types';
-import { readRepoCleanupOverrides } from '../cleanup/repositoryOverrides';
+import { readRepositoryPolicy } from '../cleanup/repositoryOverrides';
 import { logInfo } from '../logging';
 
 export const REPOSITORY_CONFIG_FILE = '.codejanitor';
@@ -81,10 +82,10 @@ export async function exportRepositorySettings(workspaceRoot?: string): Promise<
   const config = vscode.workspace.getConfiguration('codeJanitor');
   const cleanup: Record<string, unknown> = {};
   const defaults = createDefaultSettings();
-  const effective = { ...defaults, ...readRepoCleanupOverrides(root, logInfo) };
+  const effective = { ...defaults, ...readRepositoryPolicy(root, logInfo).overrides };
 
   for (const key of Object.keys(defaults) as (keyof CleanupSettings)[]) {
-    if (GROUPED_SETTING_KEYS.has(key)) {
+    if (GROUPED_SETTING_KEYS.has(key) || key === 'codeStyleRules' || key === 'reorganize') {
       continue;
     }
 
@@ -107,6 +108,10 @@ export async function exportRepositorySettings(workspaceRoot?: string): Promise<
     delete cleanup.insertExplicitAccessModifiers;
   }
 
+  // Only the enabled Code Style rules: a disabled rule is not pinned and follows each user's setting
+  // (add a `null` entry by hand to pin a rule off).
+  cleanup.codeStyle = formatCodeStyleSetting(parseCodeStyleSetting(config.get('cleanup.codeStyleRules', {})));
+
   fs.writeFileSync(filePath, `${JSON.stringify({ cleanup }, null, 2)}\n`, 'utf8');
   void vscode.window.showInformationMessage(`Code Janitor: exported repository settings to ${REPOSITORY_CONFIG_FILE}.`);
 }
@@ -126,7 +131,8 @@ export async function importRepositorySettings(workspaceRoot?: string): Promise<
     return;
   }
 
-  const overrides = readRepoCleanupOverrides(root, logInfo);
+  const policy = readRepositoryPolicy(root, logInfo);
+  const overrides = policy.overrides;
   const config = vscode.workspace.getConfiguration('codeJanitor');
   let imported = 0;
   let repositoryOnly = 0;
@@ -158,6 +164,22 @@ export async function importRepositorySettings(workspaceRoot?: string): Promise<
       await config.update(`cleanup.${alias}`, values[0], vscode.ConfigurationTarget.Workspace);
       imported++;
     }
+  }
+
+  const codeStyle = Object.entries(policy.codeStyle);
+  if (codeStyle.length > 0) {
+    // The policy's rules over the user's: a value enables (or changes) a rule, `null` disables it.
+    const rules: Record<string, string> = { ...parseCodeStyleSetting(config.get('cleanup.codeStyleRules', {})) };
+    for (const [key, value] of codeStyle) {
+      if (value === null) {
+        delete rules[key];
+      } else {
+        rules[key] = value;
+      }
+    }
+
+    await config.update('cleanup.codeStyleRules', formatCodeStyleSetting(rules), vscode.ConfigurationTarget.Workspace);
+    imported += codeStyle.length;
   }
 
   const kept = repositoryOnly > 0 ? ` ${repositoryOnly} setting(s) have no VS Code setting and keep applying from ${REPOSITORY_CONFIG_FILE}.` : '';

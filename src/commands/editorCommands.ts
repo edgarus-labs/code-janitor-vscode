@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
 import { commentFormatConverter, regionDirectiveRemover } from '../cleanup/transformations/text';
 import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
+import { sortLinesInEditor } from './editorText';
 
 /**
  * The standalone editor actions of the original extension: fix namespace, remove regions, format
@@ -91,22 +92,7 @@ async function sortLinesCommand(): Promise<void> {
     return;
   }
 
-  const document = editor.document;
-  const selection = editor.selection;
-  const lastLine = selection.isEmpty ? Math.min(selection.active.line + 1, document.lineCount - 1) : selection.end.line;
-  const range = new vscode.Range(
-    new vscode.Position(selection.start.line, 0),
-    document.lineAt(lastLine).range.end
-  );
-
-  const newline = document.getText().includes('\r\n') ? '\r\n' : '\n';
-  const sorted = document
-    .getText(range)
-    .split(/\r\n|\r|\n/)
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    .join(newline);
-
-  await editor.edit((builder) => builder.replace(range, sorted));
+  await sortLinesInEditor(editor);
 }
 
 function selectionOrNextLine(editor: vscode.TextEditor): vscode.Range {

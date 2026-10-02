@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile oracle corpus (scripts/compile-oracle.ts): using directive placement next to `global using` directives of other files. Must build. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Company.App</RootNamespace>
+    <NoWarn>$(NoWarn);CS0169;CS0414;CS8933;CS0105</NoWarn>
+  </PropertyGroup>
+</Project>

@@ -8,6 +8,9 @@ import { registerGenerateXmlDocCommand } from './commands/generateXmlDoc';
 import { registerAiUtilityCommands } from './commands/aiUtilityCommands';
 import { registerSettingsUiCommand } from './commands/settingsUi';
 import { registerRepositorySettingsCommands } from './commands/repositorySettings';
+import { registerNavigationCommands } from './commands/navigation';
+import { registerRazorCommands } from './commands/razorCommands';
+import { registerReorganizeCommands } from './commands/reorganizeCommands';
 import { createOutputChannel, logInfo, showOutputChannel } from './logging';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -26,6 +29,9 @@ export function activate(context: vscode.ExtensionContext): void {
   registerAiUtilityCommands(context);
   registerSettingsUiCommand(context);
   registerRepositorySettingsCommands(context);
+  registerNavigationCommands(context);
+  registerRazorCommands(context);
+  registerReorganizeCommands(context);
 
   logInfo(`Code Janitor activated (version ${(context.extension.packageJSON as { version: string }).version}).`);
 }

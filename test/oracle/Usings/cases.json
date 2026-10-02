@@ -1,0 +1,195 @@
+{
+  "outward": {
+    "Outward/OutRelative.cs": {
+      "moved": [
+        "using Company.App.Services;",
+        "using Company.Shared;",
+        "using System.Text;"
+      ]
+    },
+    "Outward/OutShadow.cs": {
+      "skipped": "'Foo'",
+      "control": true
+    },
+    "Outward/OutAliases.cs": {
+      "moved": [
+        "using Bar = Company.App.Models.Bar;",
+        "using Items = System.Collections.Generic.List<Company.App.Models.Bar>;",
+        "using static Company.App.Models.ModelHelpers;",
+        "using Str = System.String;"
+      ]
+    },
+    "Outward/OutExtensionShadow.cs": {
+      "skipped": "extension method 'Shout'",
+      "control": true
+    },
+    "Outward/OutExtensionSafe.cs": {
+      "moved": [
+        "using Company.App.Ext;"
+      ]
+    },
+    "Outward/OutExtensionMerge.cs": {
+      "skipped": "extension method 'Where'",
+      "control": true
+    },
+    "Outward/OutSameNamedSkip.cs": {
+      "skipped": "'T' ambiguous",
+      "control": true
+    },
+    "Outward/OutSameNamedOk.cs": {
+      "moved": [
+        "using Alpha;",
+        "using Company.Shared;"
+      ]
+    },
+    "Outward/OutBclCollision.cs": {
+      "skipped": "'Timer' ambiguous",
+      "control": true
+    },
+    "Outward/OutIf.cs": {
+      "skipped": "preprocessor directives"
+    },
+    "Outward/OutRegion.cs": {
+      "skipped": "preprocessor directives"
+    },
+    "Outward/OutHeaderAndComments.cs": {
+      "moved": [
+        "// Second header line\n\n// Services of the app\nusing Company.App.Services; // the services\n/* shared */ using Company.Shared;\n\nnamespace Company.App"
+      ]
+    },
+    "Outward/OutNullableInterleaved.cs": {
+      "skipped": "preprocessor directives"
+    },
+    "Outward/OutFileScoped.cs": {
+      "moved": [
+        "using Company.App.Services;\nusing System.Text;\n\nnamespace Company.App.Views;"
+      ]
+    },
+    "Outward/OutDuplicates.cs": {
+      "moved": [
+        "using System;\nusing System.Text; // needed for StringBuilder\nusing Company.App.Services;\n\nnamespace Company.App\n{\n    internal class OutDuplicates"
+      ]
+    },
+    "Outward/OutExternAlias.cs": {
+      "moved": [
+        "extern alias V1;\nusing V1::Ext;\n\nnamespace Company.App"
+      ]
+    },
+    "Outward/OutExternInside.cs": {
+      "skipped": "extern alias 'V1'"
+    },
+    "Outward/OutTupleAlias.cs": {
+      "moved": [
+        "using Pair = (Company.App.Services.Svc First, int Second);"
+      ]
+    },
+    "Outward/OutStaticSystem.cs": {
+      "moved": [
+        "using static System.Math;\n\nnamespace Company.App"
+      ]
+    },
+    "Outward/OutMultipleNamespaces.cs": {
+      "moved": [
+        "using System.Text;\nusing Company.App.Services;\nusing Company.Shared;\n\nnamespace Company.App.One"
+      ]
+    },
+    "Outward/OutNested.cs": {
+      "moved": [
+        "using Company.App.Services;\n\nnamespace Company"
+      ]
+    },
+    "Outward/OutAliasVisible.cs": {
+      "skipped": "alias 'Timer'",
+      "control": true
+    },
+    "Outward/OutStaticPair.cs": {
+      "skipped": "cannot be compared"
+    }
+  },
+  "inward": {
+    "Inward/InBasic.cs": {
+      "moved": [
+        "namespace Company.App\n{\n    using System;\n    using System.Text;\n    using Company.App.Services;\n\n    internal class InBasic"
+      ]
+    },
+    "Inward/InGlobalQualify.cs": {
+      "moved": [
+        "    using global::Services;"
+      ]
+    },
+    "Inward/InAliases.cs": {
+      "moved": [
+        "using Repo = global::Data.Repo;",
+        "using static global::Data.Repo;",
+        "using Str = System.String;",
+        "using List = System.Collections.Generic.List<global::Data.Repo>;"
+      ]
+    },
+    "Inward/InRebind.cs": {
+      "skipped": "'Foo'",
+      "control": true
+    },
+    "Inward/InExtension.cs": {
+      "skipped": "extension method 'Shout'",
+      "control": true
+    },
+    "Inward/InExtensionSafe.cs": {
+      "moved": [
+        "namespace Company.App\n{\n    using Company.App.Ext;"
+      ]
+    },
+    "Inward/InFileScoped.cs": {
+      "moved": [
+        "namespace Company.App.Views;\n\nusing System.Text;\nusing Company.App.Services;\n\ninternal class InFileScoped"
+      ]
+    },
+    "Inward/InExternAlias.cs": {
+      "moved": [
+        "extern alias V1;\n\nnamespace Company.App\n{\n    using System;\n    using V1::Ext;"
+      ]
+    },
+    "Inward/InHeaderAndComments.cs": {
+      "moved": [
+        "// Second header line\n\nnamespace Company.App\n{\n    using System; // for Action\n    // The services\n    using Company.App.Services;"
+      ]
+    },
+    "Inward/InExistingUsings.cs": {
+      "moved": [
+        "namespace Company.App\n{\n    using System;\n    using System.Text;\n    using Services;"
+      ]
+    },
+    "Inward/InIf.cs": {
+      "skipped": "preprocessor directives"
+    },
+    "Inward/InNullable.cs": {
+      "skipped": "preprocessor directives"
+    },
+    "Inward/InAssemblyAttribute.cs": {},
+    "Inward/InNoNamespace.cs": {},
+    "Inward/InTwoNamespaces.cs": {},
+    "Inward/InTypeOutside.cs": {},
+    "Outward/OutBclCollision.cs": {
+      "skipped": "'Timer' ambiguous",
+      "control": true
+    },
+    "Outward/OutExtensionMerge.cs": {
+      "skipped": "extension method 'Where'"
+    },
+    "Outward/OutRegion.cs": {
+      "skipped": "preprocessor directives"
+    },
+    "Outward/OutNullableInterleaved.cs": {
+      "skipped": "preprocessor directives"
+    },
+    "Outward/OutDuplicates.cs": {
+      "moved": [
+        "namespace Company.App\n{\n    using System;\n    using System.Text; // needed for StringBuilder\n    using Services;"
+      ]
+    },
+    "Outward/OutExternAlias.cs": {},
+    "Outward/OutAliasVisible.cs": {},
+    "Outward/OutStaticPair.cs": {
+      "skipped": "cannot be compared"
+    }
+  }
+}

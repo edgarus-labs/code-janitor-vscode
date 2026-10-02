@@ -11,11 +11,13 @@ import { commentFormatConverter, regionDirectiveRemover } from '../cleanup/trans
 import { createTopLevelTypeSplitPlan } from '../cleanup/topLevelTypeSplit';
 import { suggestNamespace } from './editorCommands';
 import { logError, logInfo } from '../logging';
-import { readCleanupSettings } from './settings';
+import { readCleanupSettings, readCleanupSettingsForUri } from './settings';
 import { changedLinesSince, runCleanupOnChangedLines } from '../cleanup/changedLines';
 import { Baseline, readHeadVersion } from '../cleanup/gitBaseline';
 import { CleanupSettings } from '../cleanup/types';
 import { renameSymbolsAcrossWorkspace } from './workspaceRename';
+import { formatRazor } from '../razor/razorFormatter';
+import { isRazorCleanupEnabled, isRazorFile, readRazorOptions } from '../razor/razorSettings';
 
 export interface CollectedFile {
   uri: vscode.Uri;
@@ -130,8 +132,9 @@ export async function runCleanupOnUris(
     honorOnlyChangedLines?: boolean;
   } = {}
 ): Promise<{ changed: number; failed: number; unresolved: number; created: number }> {
-  const targets = uris.filter(isSupportedFile);
-  const settings = readCleanupSettings(targets[0] ? vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath : undefined);
+  const targets = uris.filter(isCleanupTarget);
+  // Batch-wide flags come from the first file; each file is cleaned with the `.codejanitor` nearest to it.
+  const settings = targets[0] ? readCleanupSettingsForUri(targets[0]) : readCleanupSettings();
   // A single file (Cleanup Active File) does not repeat the unsupported settings of its
   // `.editorconfig` once they were reported in the session; a batch lists them again.
   const issues = createEditorConfigIssueLog(targets.length === 1);
@@ -169,17 +172,19 @@ export async function runCleanupOnUris(
         !isCSharp(uri)
           ? onlyChangedLines
             ? content
-            : runLayoutCleanup(content, uri.fsPath, settings)
+            : isRazorFile(uri) && isRazorCleanupEnabled()
+              ? cleanupRazor(content, uri)
+              : runLayoutCleanup(content, uri.fsPath, readCleanupSettingsForUri(uri))
           : onlyChangedLines
             ? cleanupChangedLines(
                 content,
                 uri.fsPath,
-                settings,
+                readCleanupSettingsForUri(uri),
                 baselines.get(uri.fsPath) ?? { kind: 'unavailable', reason: 'its last commit was not read' },
                 disqualifiedTypeNames,
                 batchReport
               )
-            : runCleanup(content, uri.fsPath, settings, disqualifiedTypeNames, batchReport),
+            : runCleanup(content, uri.fsPath, readCleanupSettingsForUri(uri), disqualifiedTypeNames, batchReport),
       'Cleanup',
       'Code Janitor: no files to clean up.',
       true,
@@ -388,7 +393,6 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
   logInfo(`Split Top-Level Types: starting on ${targets.length} file(s).`);
 
   const collected = await collectFiles(targets);
-  const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(targets[0])?.uri.fsPath);
   const disqualifiedTypeNames = await discoverBatchDisqualifiedTypeNames(collected);
 
   let changedOriginals = 0;
@@ -404,6 +408,9 @@ export async function runSplitTopLevelTypesOnUris(uris: vscode.Uri[]): Promise<{
       if (!plan.hasChanges) {
         continue;
       }
+
+      // The new files are next to the original: they follow the same `.codejanitor`.
+      const settings = readCleanupSettingsForUri(file.uri);
 
       const newFiles = plan.newFiles.map((newFile) => ({
         uri: vscode.Uri.file(newFile.filePath),
@@ -545,6 +552,45 @@ export function isSupportedFile(uri: vscode.Uri): boolean {
   }
 
   return vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.includeOtherFileTypes', false);
+}
+
+/**
+ * Files cleanup acts on: the supported files, plus Razor components and views while
+ * `codeJanitor.cleanup.formatRazorComponents` is on (which formats them even when other file types
+ * are not cleaned).
+ */
+export function isCleanupTarget(uri: vscode.Uri): boolean {
+  return isSupportedFile(uri) || (isRazorFile(uri) && isRazorCleanupEnabled() && isPathCleanable(uri));
+}
+
+/** The glob of the files a folder or the workspace cleanup acts on. */
+export function cleanupFileGlob(): string {
+  if (vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.includeOtherFileTypes', false)) {
+    return '**/*';
+  }
+
+  return isRazorCleanupEnabled() ? '**/*.{cs,razor,cshtml}' : '**/*.cs';
+}
+
+/** A Razor file in a cleanup: the Razor formatter, then the layout rules when other file types are cleaned. */
+function cleanupRazor(content: string, uri: vscode.Uri): string {
+  const formatted = formatRazor(content, readRazorOptions());
+
+  return vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.includeOtherFileTypes', false)
+    ? runLayoutCleanup(formatted, uri.fsPath, readCleanupSettingsForUri(uri))
+    : formatted;
+}
+
+/** Formats the Razor files among `uris` with the Razor formatter only, whatever the cleanup settings say. */
+export async function runFormatRazorOnUris(uris: vscode.Uri[]): Promise<{ changed: number; failed: number }> {
+  const targets = uris.filter((uri) => isRazorFile(uri) && isPathCleanable(uri));
+
+  return runBatch(
+    targets,
+    (content) => formatRazor(content, readRazorOptions()),
+    'Format Razor',
+    'Code Janitor: no Razor files to format.'
+  );
 }
 
 /**
@@ -693,11 +739,17 @@ export async function expandToCleanableFiles(uri: vscode.Uri): Promise<vscode.Ur
     return [uri];
   }
 
-  const pattern = vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.includeOtherFileTypes', false)
-    ? '**/*'
-    : '**/*.cs';
+  return vscode.workspace.findFiles(new vscode.RelativePattern(uri, cleanupFileGlob()), '**/{bin,obj,node_modules,.git}/**');
+}
 
-  return vscode.workspace.findFiles(new vscode.RelativePattern(uri, pattern), '**/{bin,obj,node_modules,.git}/**');
+/** Like {@link expandToCSharpFiles} for Razor: a folder becomes its `.razor` and `.cshtml` files. */
+export async function expandToRazorFiles(uri: vscode.Uri): Promise<vscode.Uri[]> {
+  const stat = await vscode.workspace.fs.stat(uri);
+  if (stat.type !== vscode.FileType.Directory) {
+    return [uri];
+  }
+
+  return vscode.workspace.findFiles(new vscode.RelativePattern(uri, '**/*.{razor,cshtml}'), '**/{bin,obj,node_modules,.git}/**');
 }
 
 /** Unlike {@link expandToCleanableFiles}, always only `.cs` - XML documentation is a C# concept. */

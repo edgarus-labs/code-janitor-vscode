@@ -51,6 +51,8 @@ describe('changedLinesSince', () => {
 describe('runCleanupOnChangedLines', () => {
   const run = (editorConfig: string[], current: string) => {
     fs.writeFileSync(path.join(root, '.editorconfig'), ['root = true', '', '[*.cs]', ...editorConfig, ''].join('\n'));
+    // The project tells that file-scoped namespaces compile.
+    fs.writeFileSync(path.join(root, 'Counter.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>');
     const issues: EditorConfigIssue[] = [];
     const outcome = runCleanupOnChangedLines(current, path.join(root, 'Counter.cs'), createDefaultSettings(), changedLinesSince(BASE, current), undefined, (issue) =>
       issues.push(issue)

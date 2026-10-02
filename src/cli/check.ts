@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CleanupFinding, analyzeCleanup } from '../cleanup/analysis';
-import { readRepoCleanupOverrides } from '../cleanup/repositoryOverrides';
+import { applyRepositoryPolicy, readRepositoryPolicy } from '../cleanup/repositoryOverrides';
 import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { createDefaultSettings } from '../cleanup/types';
 
@@ -20,11 +20,10 @@ export interface CheckReport {
 
 /**
  * Checks the `.cs` files of `paths` (files or folders, relative to the current folder; `bin`/`obj` excluded) with the Code Janitor
- * defaults, the `.codejanitor` of `root` and each file's `.editorconfig`. Paths are shown relative to `root`.
+ * defaults, each file's nearest `.codejanitor` and its `.editorconfig`. Paths are shown relative to `root`.
  */
 export async function checkPaths(paths: readonly string[], root: string): Promise<CheckReport> {
   const files = [...new Set(paths.flatMap((target) => csharpFiles(path.resolve(target))))].sort();
-  const settings = { ...createDefaultSettings(), ...readRepoCleanupOverrides(root, (message) => console.warn(message)) };
   const sources = new Map(await Promise.all(files.map(async (file) => [file, await fs.promises.readFile(file, 'utf8')] as const)));
   const disqualifiedTypeNames = discoverDisqualifiedTypeNames(sources.values());
 
@@ -33,6 +32,8 @@ export async function checkPaths(paths: readonly string[], root: string): Promis
   let unfixable = 0;
   for (const [file, source] of sources) {
     const siblingFileNames = new Set(fs.readdirSync(path.dirname(file)).filter((name) => name.toLowerCase().endsWith('.cs')));
+    // The nearest `.codejanitor` of each file, found walking up from its folder.
+    const settings = applyRepositoryPolicy(createDefaultSettings(), readRepositoryPolicy(path.dirname(file), (message) => console.warn(message)));
     const { findings } = analyzeCleanup(source, file, settings, { disqualifiedTypeNames, siblingFileNames });
     const shown = path.relative(root, file).split(path.sep).join('/');
     lines.push(...findings.map((finding) => `${shown}:${finding.startLine + 1}: ${describe(finding)}`));

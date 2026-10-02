@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { collectSettingSections, registerSettingsUiCommand, resetSettingsPanelForTesting } from '../src/commands/settingsUi';
+import { CODE_STYLE_GROUPS, CODE_STYLE_RULES } from '../src/cleanup/codeStyleRules';
+import { collectSettingSections, readOverrideNotes, registerSettingsUiCommand, resetSettingsPanelForTesting } from '../src/commands/settingsUi';
 import {
+  Uri,
   createContext,
   createMockWebviewPanel,
   resetMock,
@@ -11,6 +14,7 @@ import {
   state,
   webviewDisposeHandlers,
   webviewMessageHandlers,
+  window,
 } from './helpers/vscodeMock';
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -27,8 +31,11 @@ describe('collectSettingSections', () => {
       'Cleaning: Remove',
       'Cleaning: Update',
       'Cleaning: Modern C#',
+      'Cleaning: Code Style',
       'Cleaning: File Header',
       'Formatting',
+      'Cleaning: Razor',
+      'Reorganizing',
       'AI: Provider',
       'AI: XML Documentation',
       'AI: Unit Tests',
@@ -105,6 +112,117 @@ describe('collectSettingSections', () => {
   it('returns nothing when there is no configuration', () => {
     expect(collectSettingSections({})).toEqual([]);
     expect(collectSettingSections(undefined)).toEqual([]);
+  });
+});
+
+describe('Code Style rules setting', () => {
+  const codeStyleManifest = {
+    contributes: {
+      configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {}, description: 'Rules.' } } }],
+    },
+  };
+
+  it('is described with every rule, grouped like the Visual Studio Options page', () => {
+    const [setting] = collectSettingSections(codeStyleManifest)[0].settings;
+
+    expect(setting.kind).toBe('codeStyleRules');
+    expect(setting.defaultValue).toEqual({});
+    expect(setting.rules).toHaveLength(CODE_STYLE_RULES.length);
+    expect([...new Set(setting.rules!.map((rule) => rule.group))]).toEqual([...CODE_STYLE_GROUPS]);
+    expect(setting.rules![0]).toMatchObject({
+      key: 'csharp_preferred_modifier_order',
+      group: 'Modifiers',
+      label: 'Order modifiers',
+      diagnosticIds: ['IDE0036'],
+      values: [],
+    });
+    expect(setting.rules!.find((rule) => rule.key === 'csharp_prefer_braces')).toMatchObject({ values: ['true', 'false', 'when_multiline'], defaultValue: 'true' });
+  });
+});
+
+describe('override notes', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    resetMock();
+    // An empty root .editorconfig above the workspace isolates the test from files on the machine.
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'code-janitor-panel-'));
+    workspace = path.join(parent, 'repo');
+    fs.mkdirSync(workspace);
+    fs.writeFileSync(path.join(parent, '.editorconfig'), 'root = true\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(path.dirname(workspace), { recursive: true, force: true });
+  });
+
+  it('names the key and the file for each setting the workspace .editorconfig overrides', () => {
+    const configPath = path.join(workspace, '.editorconfig');
+    fs.writeFileSync(
+      configPath,
+      '[*.cs]\ncsharp_style_var_when_type_is_apparent = false:warning\ndotnet_style_require_accessibility_modifiers = always\ncsharp_prefer_braces = true:warning\n'
+    );
+    state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
+
+    expect(readOverrideNotes()).toEqual({
+      notes: {
+        'codeJanitor.cleanup.convertToVarWhenApparent': `Overridden by .editorconfig: csharp_style_var_when_type_is_apparent in ${configPath}`,
+        'codeJanitor.cleanup.insertExplicitAccessModifiers': `Overridden by .editorconfig: dotnet_style_require_accessibility_modifiers in ${configPath}`,
+      },
+      ruleNotes: { csharp_prefer_braces: `Overridden by .editorconfig: csharp_prefer_braces in ${configPath}` },
+    });
+  });
+
+  it('shows and locks nothing without a workspace', () => {
+    fs.writeFileSync(path.join(workspace, '.editorconfig'), '[*.cs]\ncsharp_style_var_when_type_is_apparent = false:warning\n');
+
+    expect(readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
+  });
+
+  it('ignores keys that are not enforced and .editorconfig files nested below the workspace', () => {
+    fs.writeFileSync(path.join(workspace, '.editorconfig'), '[*.cs]\ncsharp_style_var_when_type_is_apparent = false:silent\n');
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.writeFileSync(path.join(workspace, 'src', '.editorconfig'), '[*.cs]\ndotnet_style_readonly_field = true\n');
+    state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
+
+    expect(readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
+  });
+
+  it('sends the notes with the values, and stores only valid Code Style rules', async () => {
+    fs.writeFileSync(path.join(workspace, '.editorconfig'), '[*.cs]\ndotnet_style_readonly_field = true\n');
+    state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
+    const created: { __postedMessages: unknown[] }[] = [];
+    const spy = vi.spyOn(window, 'createWebviewPanel').mockImplementation(() => {
+      const panel = createMockWebviewPanel();
+      created.push(panel as unknown as { __postedMessages: unknown[] });
+
+      return panel;
+    });
+    resetWebviewPanels();
+    resetSettingsPanelForTesting();
+    const context = createContext({
+      contributes: { configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {} } } }] },
+    });
+    registerSettingsUiCommand(context);
+    await state.commands.get('codeJanitor.openSettings')!();
+
+    simulateWebviewMessage(0, { type: 'ready' });
+    simulateWebviewMessage(0, {
+      type: 'update',
+      key: 'codeJanitor.cleanup.codeStyleRules',
+      value: { csharp_prefer_braces: 'When_Multiline', csharp_preferred_modifier_order: 'public,loud', unknown_rule: 'true' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const init = created[0].__postedMessages[0] as { type: string; notes: Record<string, string> };
+    expect(init.type).toBe('init');
+    expect(init.notes['codeJanitor.cleanup.makeFieldsReadonlyWhenSafe']).toContain('Overridden by .editorconfig: dotnet_style_readonly_field in');
+    expect(state.configuration.get('codeJanitor.cleanup.codeStyleRules')).toEqual({ csharp_prefer_braces: 'when_multiline' });
+
+    simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.cleanup.codeStyleRules', value: {} });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.configuration.get('codeJanitor.cleanup.codeStyleRules')).toBeUndefined();
+    spy.mockRestore();
   });
 });
 

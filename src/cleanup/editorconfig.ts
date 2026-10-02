@@ -12,6 +12,11 @@ export interface EditorConfigProperties {
   readonly entries: ReadonlyMap<string, string>;
   /** The severity settings of the file's project (MSBuild properties); absent without a project. */
   readonly analysis?: ProjectAnalysis;
+  /**
+   * Keys whose final state is `unset` (removed by an `.editorconfig` section). Only the ones whose
+   * `unset` carries meaning of its own need it: `file_header_template = unset` means "no header".
+   */
+  readonly unsetKeys?: ReadonlySet<string>;
 }
 
 export interface EditorConfigFile {
@@ -32,6 +37,30 @@ export function loadEditorConfigProperties(filePath: string): EditorConfigProper
     return new PropertyMap(new Map());
   }
 
+  const editorConfig = resolveEditorConfigProperties(readEditorConfigFiles(filePath), filePath);
+  const project = loadProjectAnalyzerConfig(filePath);
+  if (!project) {
+    return editorConfig;
+  }
+
+  // An `.editorconfig` entry wins over a global one for the same key.
+  const entries = new Map(project.entries);
+  for (const key of editorConfig.unsetKeys ?? []) {
+    entries.delete(key);
+  }
+
+  for (const [key, value] of editorConfig.entries) {
+    entries.set(key, value);
+  }
+
+  return new PropertyMap(entries, project.analysis, editorConfig.unsetKeys);
+}
+
+/**
+ * The `.editorconfig` files that apply to `filePath`, root-most first: every file from the file's
+ * directory up to (and including) the first one declaring `root = true`. An unreadable file is skipped.
+ */
+export function readEditorConfigFiles(filePath: string): EditorConfigFile[] {
   const files: EditorConfigFile[] = [];
   let directory = path.dirname(path.resolve(filePath));
 
@@ -53,19 +82,46 @@ export function loadEditorConfigProperties(filePath: string): EditorConfigProper
     directory = parent;
   }
 
-  const editorConfig = resolveEditorConfigProperties(files, filePath);
-  const project = loadProjectAnalyzerConfig(filePath);
-  if (!project) {
-    return editorConfig;
+  return files;
+}
+
+/**
+ * The `.editorconfig` file that defines `key` for `filePath`: the nearest file with a section
+ * matching the file that sets it. Undefined when no file applies it (also when only a file above
+ * a `root = true` file or a section for another language sets it), so a key that is not applied is
+ * never attributed to a file.
+ */
+export function findDefiningEditorConfigPath(filePath: string, key: string): string | undefined {
+  if (!filePath || !filePath.trim()) {
+    return undefined;
   }
 
-  // An `.editorconfig` entry wins over a global one for the same key.
-  const entries = new Map(project.entries);
-  for (const [key, value] of editorConfig.entries) {
-    entries.set(key, value);
+  const files = readEditorConfigFiles(filePath);
+  const lowerKey = key.toLowerCase();
+  if (!resolveEditorConfigProperties(files, filePath).entries.has(lowerKey)) {
+    return undefined;
   }
 
-  return new PropertyMap(entries, project.analysis);
+  for (const file of [...files].reverse()) {
+    if (resolveEditorConfigProperties([file], filePath).entries.has(lowerKey)) {
+      return path.join(file.directory, '.editorconfig');
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * The properties with `overrides` (keys in any case) set on top of the ones read from disk: the
+ * Code Style rules Code Janitor adds are layered like this, for analysis only. Nothing is written.
+ */
+export function withEntryOverrides(props: EditorConfigProperties, overrides: ReadonlyMap<string, string>): EditorConfigProperties {
+  const entries = new Map(props.entries);
+  for (const [key, value] of overrides) {
+    entries.set(key.toLowerCase(), value);
+  }
+
+  return new PropertyMap(entries, props.analysis, props.unsetKeys);
 }
 
 /**
@@ -80,6 +136,7 @@ export function resolveEditorConfigProperties(
   filePath: string
 ): EditorConfigProperties {
   const entries = new Map<string, string>();
+  const unsetKeys = new Set<string>();
   if (!filePath || !filePath.trim()) {
     return new PropertyMap(entries);
   }
@@ -108,14 +165,16 @@ export function resolveEditorConfigProperties(
       for (const [key, value] of section.properties) {
         if (value.toLowerCase() === 'unset') {
           entries.delete(key);
+          unsetKeys.add(key);
         } else {
           entries.set(key, value);
+          unsetKeys.delete(key);
         }
       }
     }
   }
 
-  return new PropertyMap(entries);
+  return new PropertyMap(entries, undefined, unsetKeys);
 }
 
 // Severity names as Roslyn reads them from `.editorconfig`.
@@ -186,6 +245,17 @@ export function resolveDiagnosticSeverity(
   return severity === 'warning' && analysis?.isWarningAsError(diagnosticId) ? 'error' : severity;
 }
 
+/**
+ * The diagnostics cleanup follows that are disabled by default: only `dotnet_diagnostic.<id>.severity`
+ * enables them (CA1852, sealing classes).
+ */
+const DISABLED_BY_DEFAULT_DIAGNOSTICS: ReadonlySet<string> = new Set(['CA1852']);
+
+/** Whether category and global severities leave the rule off (only its own `dotnet_diagnostic` severity enables it). */
+export function isDisabledByDefaultDiagnostic(diagnosticId: string): boolean {
+  return DISABLED_BY_DEFAULT_DIAGNOSTICS.has(diagnosticId.toUpperCase());
+}
+
 function configuredSeverity(
   props: EditorConfigProperties,
   diagnosticId: string,
@@ -209,9 +279,11 @@ function configuredSeverity(
     return ruleSet;
   }
 
-  const bulk =
-    parseSeverity(props.get(`dotnet_analyzer_diagnostic.category-${category}.severity`)) ??
-    parseSeverity(props.get('dotnet_analyzer_diagnostic.severity'));
+  // As in Roslyn, category and global severities do not enable a rule that is disabled by default.
+  const bulk = isDisabledByDefaultDiagnostic(diagnosticId)
+    ? undefined
+    : parseSeverity(props.get(`dotnet_analyzer_diagnostic.category-${category}.severity`)) ??
+      parseSeverity(props.get('dotnet_analyzer_diagnostic.severity'));
 
   return bulk ?? optionSeverity;
 }
@@ -232,7 +304,8 @@ export function isEnforced(severity: EditorConfigSeverity | undefined): boolean 
 class PropertyMap implements EditorConfigProperties {
   constructor(
     readonly entries: ReadonlyMap<string, string>,
-    readonly analysis?: ProjectAnalysis
+    readonly analysis?: ProjectAnalysis,
+    readonly unsetKeys?: ReadonlySet<string>
   ) {}
 
   get(key: string): string | undefined {

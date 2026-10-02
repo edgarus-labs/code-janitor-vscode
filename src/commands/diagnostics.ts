@@ -3,7 +3,7 @@ import { CleanupFinding, analyzeCleanup, applyRuleOnly, fixFindingOccurrence } f
 import { EditorConfigSeverity } from '../cleanup/editorconfig';
 import { logError, logInfo } from '../logging';
 import { discoverDisqualifiedTypeNamesForFile, isPathCleanable, siblingCSharpFileNames } from './cleanupCore';
-import { readCleanupSettings } from './settings';
+import { readCleanupSettingsForUri } from './settings';
 
 /**
  * `.editorconfig` violations as diagnostics ("Code Janitor" in the Problems panel): what cleanup
@@ -166,7 +166,7 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     }
 
     const text = document.getText();
-    const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath);
+    const settings = readCleanupSettingsForUri(uri);
     const fixed = applyRuleOnly(text, uri.fsPath, settings, ruleId, await discoverDisqualifiedTypeNamesForFile(uri, text));
     if (document.getText() !== text) {
       void vscode.window.showWarningMessage(`Code Janitor: ${uri.fsPath} changed while ${ruleId} was being fixed; nothing was changed.`);
@@ -217,7 +217,7 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
         return;
       }
 
-      const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath);
+      const settings = readCleanupSettingsForUri(document.uri);
       const { findings } = analyzeCleanup(text, document.uri.fsPath, settings, { disqualifiedTypeNames, siblingFileNames });
       const lines = text.split('\n');
       const entries = findings.flatMap((finding) => {
@@ -238,7 +238,7 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
 
   private occurrenceFix(document: vscode.TextDocument, analyzed: Analyzed, finding: CleanupFinding): string | undefined {
     if (!analyzed.occurrenceFixes.has(finding)) {
-      const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath);
+      const settings = readCleanupSettingsForUri(document.uri);
       analyzed.occurrenceFixes.set(finding, fixFindingOccurrence(document.getText(), document.uri.fsPath, settings, finding));
     }
 

@@ -1,4 +1,4 @@
-import { CODE, STRING, classifyCSharp } from '../csharpScanner';
+import { STRING, classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
 import { diagnosticIdsOfOption, effectiveEditorConfigValue, isDiagnosticEnforced } from '../editorConfigRegistry';
@@ -14,7 +14,6 @@ import {
   containsMultiLineString,
   describeIssue,
   hasParseErrors,
-  indentFollowingLines,
   indentUnit,
   isBlank,
   isRecoveredNode,
@@ -36,7 +35,7 @@ import { STATEMENT_PREFERENCES, applyStatementPreference } from './editorConfigS
 import { applySystemThreadingLock, reportPrimaryConstructors } from './editorConfigTypePreferences';
 import { applyVarPreferences } from './editorConfigVarPreference';
 import { createExplicitAccessModifierConverter } from './explicitAccessModifier';
-import { isFullyQualifiedUsing, moveUsingsOutside } from './namespaceScope';
+import { convertToBlockScoped, convertToFileScoped, fileScopedNamespacesUnsupported } from './namespaceScope';
 import { inlineOutVariableDeclarations } from './outVarInlining';
 import { readonlyFieldConverter } from './readonlyFieldAndSingleLineMethods';
 
@@ -209,6 +208,11 @@ function unsupportedByProject(rule: Rule, context: RuleContext): string | undefi
   const applies = /^(?:IDE|CA)\d{4}$/.test(rule.option)
     ? isDiagnosticEnforced(context.props, rule.option)
     : effectiveEditorConfigValue(context.props, rule.option) !== undefined;
+  // File-scoped namespaces are only written when the language version is known to be C# 10 or newer.
+  if (rule.option === NAMESPACE_OPTION && applies && requirement) {
+    return fileScopedNamespacesUnsupported(project);
+  }
+
   if (!requirement || !project || !applies) {
     return undefined;
   }
@@ -263,7 +267,6 @@ function applyRules(source: string, context: RuleContext, tracking?: RuleTrackin
 
 const RULES: readonly Rule[] = [
   { option: 'csharp_style_namespace_declarations', apply: applyNamespaceDeclarationPreference },
-  { option: 'csharp_using_directive_placement', apply: applyUsingPlacementPreference },
   { option: 'file_header_template', apply: applyFileHeaderTemplate },
   { option: 'dotnet_style_require_accessibility_modifiers', apply: applyAccessibilityModifierPreference },
   {
@@ -330,145 +333,23 @@ function isPreferred(props: EditorConfigProperties, option: string, diagnosticId
 
 const NAMESPACE_OPTION = 'csharp_style_namespace_declarations';
 
-/** Compilation-unit children that may accompany the single namespace of a convertible file. */
-const FILE_LEVEL_TRIVIA: Record<string, true> = {
-  using_directive: true,
-  comment: true,
-  extern_alias_directive: true,
-  attribute_list: true,
-};
-
 function applyNamespaceDeclarationPreference(source: string, context: RuleContext): string {
   const option = readCodeStyleOption(context.props, NAMESPACE_OPTION, (value) => (value === 'block_scoped' ? 'IDE0160' : 'IDE0161'));
-  if (!option?.enforced) {
+  if (!option?.enforced || (option.value !== 'file_scoped' && option.value !== 'block_scoped')) {
     return source;
   }
 
-  if (option.value === 'file_scoped') {
-    return toFileScopedNamespace(source, context);
-  }
+  const id = option.value === 'block_scoped' ? 'IDE0160' : 'IDE0161';
+  const report = (reason: string, offset: number): void =>
+    context.report(describeIssue(id, NAMESPACE_OPTION, source, offset, `namespace not converted: ${reason}`));
+  const options = { indent: context.indent, report };
 
-  return option.value === 'block_scoped' ? toBlockScopedNamespace(source, context) : source;
+  return option.value === 'file_scoped' ? convertToFileScoped(source, options) : convertToBlockScoped(source, options);
 }
 
-/**
- * Converts the file's only (block-scoped) namespace to a file-scoped one, keeping any using
- * directives inside it (a file-scoped namespace keeps them in the namespace). Like Roslyn, files
- * with other top-level members or several namespaces are not candidates.
- */
-function toFileScopedNamespace(source: string, context: RuleContext): string {
-  const tree = parseCSharp(source);
-
-  try {
-    const members = tree.rootNode.namedChildren.filter(
-      (child) => FILE_LEVEL_TRIVIA[child.type] !== true && !child.type.startsWith('preproc')
-    );
-    const namespaceNode = members[0];
-    if (members.length !== 1 || namespaceNode.type !== 'namespace_declaration') {
-      return source;
-    }
-
-    if (findAll(namespaceNode, ['namespace_declaration', 'file_scoped_namespace_declaration']).length !== 1) {
-      return source;
-    }
-
-    const body = namespaceNode.childForFieldName('body');
-    const name = namespaceNode.childForFieldName('name');
-    const open = body?.children.find((child) => child.type === '{');
-    const close = body?.children[body.children.length - 1];
-    const fail = (reason: string): string => {
-      context.report(describeIssue('IDE0161', NAMESPACE_OPTION, source, namespaceNode.startIndex, `namespace not converted: ${reason}`));
-
-      return source;
-    };
-
-    if (!name || !open || close?.type !== '}') {
-      return fail('the namespace could not be fully parsed.');
-    }
-
-    const kinds = classifyCSharp(source);
-    if (!isBlank(source.slice(name.endIndex, open.startIndex)) || !isBlank(source.slice(close.endIndex))) {
-      return fail('comments or code surround the namespace braces.');
-    }
-
-    if (containsMultiLineString(source, kinds, open.endIndex, close.startIndex)) {
-      return fail('the namespace contains a multi-line string literal, which cannot be re-indented.');
-    }
-
-    const newline = newlineOf(source);
-    const bodyText = dedentBlock(source, kinds, open.endIndex, close.startIndex);
-    const header = source.slice(0, namespaceNode.startIndex);
-
-    return `${header}namespace ${name.text};${bodyText ? newline + newline + bodyText : ''}${newline}`;
-  } finally {
-    tree.delete();
-  }
-}
-
-/** Converts a file-scoped namespace to a block-scoped one, indenting everything after it by one level. */
-function toBlockScopedNamespace(source: string, context: RuleContext): string {
-  const tree = parseCSharp(source);
-
-  try {
-    const namespaces = findAll(tree.rootNode, 'file_scoped_namespace_declaration');
-    if (namespaces.length !== 1) {
-      return source;
-    }
-
-    const namespaceNode = namespaces[0];
-    const name = namespaceNode.childForFieldName('name');
-    const semicolon = namespaceNode.children.find((child) => child.type === ';');
-    if (!name || !semicolon) {
-      context.report(describeIssue('IDE0160', NAMESPACE_OPTION, source, namespaceNode.startIndex, 'namespace not converted: it could not be fully parsed.'));
-
-      return source;
-    }
-
-    const kinds = classifyCSharp(source);
-    // An `#if` open before the declaration closes after it: the closing brace would have to go
-    // inside that `#if` group, where it is skipped when the symbol is not defined.
-    let openConditionals = 0;
-    for (const directive of source.slice(0, namespaceNode.startIndex).matchAll(/^[ \t]*#[ \t]*(if|endif)\b/gm)) {
-      if (kinds[directive.index + directive[0].indexOf('#')] === CODE) {
-        openConditionals += directive[1] === 'if' ? 1 : -1;
-      }
-    }
-
-    if (openConditionals > 0) {
-      context.report(
-        describeIssue('IDE0160', NAMESPACE_OPTION, source, namespaceNode.startIndex, 'namespace not converted: an #if directive before it ends after it.')
-      );
-
-      return source;
-    }
-
-    if (containsMultiLineString(source, kinds, semicolon.endIndex, source.length)) {
-      context.report(
-        describeIssue(
-          'IDE0160',
-          NAMESPACE_OPTION,
-          source,
-          namespaceNode.startIndex,
-          'namespace not converted: the file contains a multi-line string literal, which cannot be re-indented.'
-        )
-      );
-
-      return source;
-    }
-
-    const newline = newlineOf(source);
-    const rest = source.slice(semicolon.endIndex);
-    const leadingBlank = /^(?:[ \t]*\r?\n)*/.exec(rest)?.[0].length ?? 0;
-    const content = rest.slice(leadingBlank).trimEnd();
-    const body = content
-      ? `${context.indent}${indentFollowingLines(content, context.indent, kinds, semicolon.endIndex + leadingBlank)}${newline}`
-      : '';
-
-    return `${source.slice(0, namespaceNode.startIndex)}namespace ${name.text}${newline}{${newline}${body}}${newline}`;
-  } finally {
-    tree.delete();
-  }
-}
+// ---------------------------------------------------------------------------------------------
+// csharp_using_directive_placement (IDE0065): the step of `runCleanup.ts` (see `namespaceScope.ts`), not a rule here.
+// ---------------------------------------------------------------------------------------------
 
 /**
  * The text between `start` and `end` without its surrounding blank lines and with the indentation
@@ -501,104 +382,6 @@ function dedentBlock(source: string, kinds: Uint8Array, start: number, end: numb
   }
 
   return lines.join(newline).trimEnd();
-}
-
-// ---------------------------------------------------------------------------------------------
-// csharp_using_directive_placement (IDE0065)
-// ---------------------------------------------------------------------------------------------
-
-const USING_PLACEMENT_OPTION = 'csharp_using_directive_placement';
-
-/** Roots that are taken to be fully qualified when a using directive moves out of a namespace. */
-function applyUsingPlacementPreference(source: string, context: RuleContext): string {
-  const option = readCodeStyleOption(context.props, USING_PLACEMENT_OPTION, 'IDE0065');
-  if (!option?.enforced || (option.value !== 'outside_namespace' && option.value !== 'inside_namespace')) {
-    return source;
-  }
-
-  const tree = parseCSharp(source);
-
-  try {
-    const root = tree.rootNode;
-    const namespaces = findAll(root, ['namespace_declaration', 'file_scoped_namespace_declaration']);
-    const report = (node: Node, message: string): void => {
-      context.report(describeIssue('IDE0065', USING_PLACEMENT_OPTION, source, node.startIndex, message));
-    };
-
-    if (option.value === 'inside_namespace') {
-      const topUsings = root.namedChildren.filter((child) => child.type === 'using_directive' && !/^global\b/.test(child.text));
-      if (topUsings.length > 0 && namespaces.length === 1) {
-        report(
-          topUsings[0],
-          'using directives were not moved into the namespace: inside a namespace their names can bind to different types.'
-        );
-      }
-
-      return source;
-    }
-
-    const insideUsings = namespaces.flatMap((namespaceNode) => {
-      const body = namespaceNode.childForFieldName('body');
-      const container = body?.type === 'declaration_list' ? body : namespaceNode;
-
-      return container.namedChildren.filter((child) => child.type === 'using_directive');
-    });
-    if (insideUsings.length === 0) {
-      return source;
-    }
-
-    if (namespaces.length > 1) {
-      report(insideUsings[0], 'using directives were not moved: the file declares several namespaces.');
-
-      return source;
-    }
-
-    const namespaceRoot = namespaces[0].childForFieldName('name')?.text.split('.')[0];
-    const relative = insideUsings.filter((directive) => !isFullyQualifiedUsing(directive.text, namespaceRoot));
-    if (relative.length > 0) {
-      for (const directive of relative) {
-        report(directive, `'${directive.text}' was not moved: outside the namespace its name may bind differently.`);
-      }
-
-      return source;
-    }
-
-    return removeBlankLinesAfterNamespaceOpening(moveUsingsOutside(source));
-  } finally {
-    tree.delete();
-  }
-}
-
-/** Moving usings out leaves the blank line that separated them from the members; drop it. */
-function removeBlankLinesAfterNamespaceOpening(source: string): string {
-  const tree = parseCSharp(source);
-
-  try {
-    const edits: TextEdit[] = [];
-
-    for (const namespaceNode of findAll(tree.rootNode, ['namespace_declaration', 'file_scoped_namespace_declaration'])) {
-      const body = namespaceNode.childForFieldName('body');
-      const opener =
-        body?.type === 'declaration_list'
-          ? body.children.find((child) => child.type === '{')
-          : namespaceNode.children.find((child) => child.type === ';');
-      if (!opener) {
-        continue;
-      }
-
-      const lineEnd = lineEndAt(source, opener.endIndex);
-      const blank = /^(?:\r?\n[ \t]*(?=\r?\n))+/.exec(source.slice(lineEnd))?.[0];
-      if (blank && isBlank(source.slice(opener.endIndex, lineEnd))) {
-        // Keep one blank line after a file-scoped `namespace X;`, none after `{`.
-        const keep = opener.type === ';' ? newlineOf(source) : '';
-        edits.push({ start: lineEnd, end: lineEnd + blank.length, text: keep });
-      }
-    }
-
-    return applyEdits(source, edits);
-  } finally {
-    tree.delete();
-  }
 }
 
 // ---------------------------------------------------------------------------------------------

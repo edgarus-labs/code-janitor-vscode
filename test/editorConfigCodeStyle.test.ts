@@ -12,7 +12,9 @@ function codeStyle(source: string, rules: string, fileName = 'Sample.cs'): { out
     `/repo/src/${fileName}`
   );
   const issues: string[] = [];
-  const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName }).apply(source);
+  // A project on the latest C# version, so that no rule is held back by the language version.
+  const project = { directory: '/repo', languageVersion: 99 };
+  const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName, project }).apply(source);
 
   return { output, issues };
 }
@@ -102,13 +104,29 @@ describe('csharp_style_namespace_declarations', () => {
     );
   });
 
-  it('reports instead of re-indenting a multi-line verbatim string', () => {
+  it('converts a namespace with a multi-line verbatim string and leaves the string as it is', () => {
     const source = lines('namespace Demo', '{', '    class Sample', '    {', '        string Text = @"a', '    b";', '    }', '}');
     const { output, issues } = codeStyle(source, 'csharp_style_namespace_declarations = file_scoped:warning');
 
-    expect(output).toBe(source);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatch(/^IDE0161 \(csharp_style_namespace_declarations\) line 1: .*multi-line string/);
+    expect(output).toBe(lines('namespace Demo;', '', 'class Sample', '{', '    string Text = @"a', '    b";', '}'));
+    expect(issues).toEqual([]);
+  });
+
+  it('keeps a file-scoped namespace block-scoped when the project C# version is unknown or older than 10', () => {
+    const source = lines('namespace Demo', '{', '    class Sample', '    {', '    }', '}');
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n\n[*.cs]\ncsharp_style_namespace_declarations = file_scoped:warning\n' }], '/repo/src/Sample.cs');
+
+    for (const [project, reason] of [
+      [undefined, /version is unknown/],
+      [{ directory: '/repo' }, /version of its project is unknown/],
+      [{ directory: '/repo', languageVersion: 9 }, /C# 9 and file-scoped namespaces need C# 10/],
+    ] as const) {
+      const issues: string[] = [];
+      const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName: 'Sample.cs', project }).apply(source);
+
+      expect(output).toBe(source);
+      expect(issues).toEqual([expect.stringMatching(reason)]);
+    }
   });
 
   it('does not treat files with several namespaces as candidates', () => {
@@ -515,33 +533,6 @@ describe('dotnet_style_qualification_for_*', () => {
     const source = lines('record Sample', '{', '    int count;', '    Sample Copy() { var copy = this; count = 1 return copy; }', '}');
 
     expect(codeStyle(source, 'dotnet_style_qualification_for_field = true:warning').output).toBe(source);
-  });
-});
-
-describe('csharp_using_directive_placement', () => {
-  it('moves fully qualified usings outside the namespace', () => {
-    const source = lines('namespace Contoso.App', '{', '    using System;', '    using Contoso.Data;', '', '    class Sample { }', '}');
-
-    expect(codeStyle(source, 'csharp_using_directive_placement = outside_namespace:warning')).toEqual({
-      output: lines('using System;', 'using Contoso.Data;', '', 'namespace Contoso.App', '{', '    class Sample { }', '}'),
-      issues: [],
-    });
-  });
-
-  it('reports and keeps usings whose names may be relative to the namespace', () => {
-    const source = lines('namespace Contoso.App', '{', '    using System;', '    using Data;', '', '    class Sample { }', '}');
-    const { output, issues } = codeStyle(source, 'csharp_using_directive_placement = outside_namespace:warning');
-
-    expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/^IDE0065 .* line 4: 'using Data;' was not moved/)]);
-  });
-
-  it('reports instead of moving usings into the namespace', () => {
-    const source = lines('using System;', '', 'namespace Demo', '{', '}');
-    const { output, issues } = codeStyle(source, 'csharp_using_directive_placement = inside_namespace:warning');
-
-    expect(output).toBe(source);
-    expect(issues).toHaveLength(1);
   });
 });
 

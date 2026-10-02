@@ -1,254 +1,271 @@
 import { STRING, classifyCSharp } from '../csharpScanner';
-import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
+import { ProjectInfo } from '../projectInfo';
+import { lex } from '../syntax/lexer';
 import { SourceTransformation } from '../types';
-import { lineStartAt, nextLineStartAt } from './editorConfigSupport';
+import { Layout, analyzeLayout } from '../usings/layout';
+import { PlacementDirection, placeUsings } from '../usings/placement';
+import { projectContextOf } from '../usings/workspaceIndex';
+import { indentFollowingLines, isBlank, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
 
-const NAMESPACE_TYPES = ['namespace_declaration', 'file_scoped_namespace_declaration'];
+// ---------------------------------------------------------------------------------------------
+// Using directive placement (`moveUsingsOutsideNamespace`, `csharp_using_directive_placement`)
+// ---------------------------------------------------------------------------------------------
 
-/**
- * Moves `using` directives out of namespace declarations (block-scoped and file-scoped) up to the
- * compilation unit, preserving the file header and deduplicating directives.
- */
-export const moveUsingsOutsideNamespaceConverter: SourceTransformation = {
-  name: 'Move using directives outside namespace',
-  apply: (source) => (usingsCanMoveOutside(source) ? moveUsingsOutside(source) : source),
-};
-
-const WELL_KNOWN_ROOTS: Record<string, true> = { System: true, Microsoft: true };
-
-/**
- * True when a using directive names the same thing inside and outside the namespace: `global::`
- * names, `System`/`Microsoft` names and names starting with the namespace's first segment. Other
- * names may resolve relative to the enclosing namespace
- * (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/using-directive).
- */
-export function isFullyQualifiedUsing(text: string, namespaceRoot: string | undefined): boolean {
-  const target = /^using\s+(?:static\s+)?(?:@?\w+\s*=\s*)?([\s\S]*?);$/.exec(text.trim())?.[1].trim();
-  if (!target) {
-    return false;
-  }
-
-  if (target.startsWith('global::')) {
-    return true;
-  }
-
-  const first = target.split(/[.<:\s]/)[0];
-
-  return WELL_KNOWN_ROOTS[first] === true || first === namespaceRoot;
+export interface UsingPlacementOptions {
+  readonly direction: PlacementDirection;
+  /** The file being cleaned: its project tells which namespaces and types a name can mean. */
+  readonly filePath?: string;
+  /** Receives why the directives were left in place; `offset` is where in the source it concerns. */
+  readonly report: (message: string, source: string, offset: number) => void;
+  /** One indentation level for directives written into a namespace without anything to copy the indentation from. */
+  readonly indent?: (source: string) => string;
+  /** Set when `.editorconfig` decides the placement: the step then is the IDE0065 rule. */
+  readonly fromEditorConfig?: boolean;
 }
 
-/** True when the file has one namespace and every using inside it is fully qualified. */
-function usingsCanMoveOutside(source: string): boolean {
-  if (!source) {
-    return false;
-  }
+/**
+ * Moves the using directives between the file and its namespace in the `direction` given, when the
+ * project's declarations prove that every name binds as before. A file where that cannot be proven is
+ * returned unchanged and the reason is reported (see `usings/placement.ts`).
+ */
+export function createUsingPlacementConverter(options: UsingPlacementOptions): SourceTransformation {
+  const { direction } = options;
+  const name = direction === 'outside' ? 'Move using directives outside namespace' : 'Move using directives inside namespace';
+  const place = (input: string): string => {
+    // A byte order mark is not code: the directives are placed after it.
+    const bom = input.startsWith('\uFEFF') ? '\uFEFF' : '';
+    const source = input.slice(bom.length);
+    if (!source.trim()) {
+      return input;
+    }
 
-  const tree = parseCSharp(source);
-  try {
-    const namespaces = findAll(tree.rootNode, NAMESPACE_TYPES);
-    const root = namespaces[0]?.childForFieldName('name')?.text.split('.')[0];
+    const leftInPlace = (reason: string, offset = 0): string => {
+      options.report(`using directives were not moved ${direction === 'outside' ? 'outside' : 'inside'} the namespace because ${reason}. They were left in place.`, source, offset);
 
-    return namespaces.length === 1 && directUsings(namespaces[0]).every((directive) => isFullyQualifiedUsing(directive.text, root));
-  } finally {
-    tree.delete();
-  }
+      return input;
+    };
+
+    // Nothing to do (and nothing to look up) in a file without directives to move.
+    const layout = analyzeLayout(source);
+    if (!hasDirectivesToMove(layout, direction)) {
+      return input;
+    }
+
+    const context = projectContextOf(options.filePath ?? '', source);
+    if ('unavailable' in context) {
+      return leftInPlace(context.unavailable);
+    }
+
+    const result = placeUsings(source, direction, {
+      index: context.index,
+      externalReferences: context.externalReferences,
+      incomplete: context.incomplete,
+      indent: options.indent?.(source) ?? '    ',
+    });
+
+    if (result.status === 'skipped') {
+      return leftInPlace(result.reason, result.at);
+    }
+
+    return result.status === 'moved' ? bom + result.text : input;
+  };
+
+  return { name, ...(options.fromEditorConfig ? { diagnosticId: 'IDE0065' } : {}), apply: place };
 }
 
-export function moveUsingsOutside(source: string): string {
-  if (!source) {
-    return source;
+function hasDirectivesToMove(layout: Layout, direction: PlacementDirection): boolean {
+  return direction === 'outside'
+    ? layout.namespaces.some((namespace) => namespace.usings.length > 0)
+    : layout.usings.some((item) => !item.isGlobal) && layout.topLevel.length === 1 && !layout.otherTopLevel && !layout.hasGlobalAttributes;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Namespace declaration style (`convertToFileScopedNamespace`, `csharp_style_namespace_declarations`)
+// ---------------------------------------------------------------------------------------------
+
+export interface NamespaceConversionOptions {
+  /** One indentation level, for a body that moves into braces. */
+  readonly indent: string;
+  /** Receives why the namespace was not converted; `offset` is where in the source it concerns. */
+  readonly report: (reason: string, offset: number) => void;
+}
+
+/** Why a project cannot compile file-scoped namespaces, or `undefined` when it can. An unknown language version counts as unable. */
+export function fileScopedNamespacesUnsupported(project: ProjectInfo | undefined): string | undefined {
+  if (!project) {
+    return 'its project could not be determined, so its C# language version is unknown';
   }
 
-  const tree = parseCSharp(source);
+  if (project.languageVersion === undefined) {
+    return 'the C# language version of its project is unknown';
+  }
 
-  try {
-    const root = tree.rootNode;
-    const namespaceUsings: Node[] = [];
+  return project.languageVersion < 10 ? `its project uses C# ${project.languageVersion} and file-scoped namespaces need C# 10` : undefined;
+}
 
-    for (const namespaceNode of findAll(root, NAMESPACE_TYPES)) {
-      namespaceUsings.push(...directUsings(namespaceNode));
-    }
-
-    if (namespaceUsings.length === 0) {
-      return source;
-    }
-
-    const newline = source.includes('\r\n') ? '\r\n' : '\n';
-    const topUsings = root.namedChildren.filter((child): child is Node => child?.type === 'using_directive');
-
-    const seen = new Set(topUsings.map((directive) => usingKey(directive.text)));
-    const additions: string[] = [];
-    for (const directive of namespaceUsings) {
-      const key = usingKey(directive.text);
-      if (!seen.has(key)) {
-        seen.add(key);
-        additions.push(directive.text);
+/**
+ * Converts a single top-level block-scoped namespace to a file-scoped one when the project compiles
+ * it (C# 10 or newer). The using directives inside it stay there: they are only moved by the using
+ * directive placement.
+ */
+export function createFileScopedNamespaceConverter(options: {
+  readonly project: ProjectInfo | undefined;
+  readonly report: (message: string, source: string, offset: number) => void;
+  readonly indent?: (source: string) => string;
+}): SourceTransformation {
+  return {
+    name: 'File-Scoped Namespace',
+    apply: (source) => {
+      if (!source.trim()) {
+        return source;
       }
-    }
 
-    const edits: TextEdit[] = namespaceUsings.map((directive) => ({
-      start: lineStartAt(source, directive.startIndex),
-      end: nextLineStartAt(source, directive.endIndex),
-      text: '',
-    }));
-
-    if (additions.length > 0) {
-      const insertion = insertionPoint(root, topUsings, source);
-      const separator = topUsings.length > 0 ? newline : newline + newline;
-      edits.push({
-        start: insertion,
-        end: insertion,
-        text: additions.join(newline) + separator,
-      });
-    }
-
-    return applyEdits(source, edits);
-  } finally {
-    tree.delete();
-  }
-}
-
-/** Usings declared directly in a namespace, not those nested in an inner namespace. */
-function directUsings(namespaceNode: Node): Node[] {
-  const body = namespaceNode.childForFieldName('body');
-  const container = body && body.type === 'declaration_list' ? body : namespaceNode;
-
-  return container.namedChildren.filter((child): child is Node => child?.type === 'using_directive');
-}
-
-/**
- * After the last top-level using, or - when there is none - at the first token of the file, which
- * keeps a file header comment in front of the moved directives.
- */
-function insertionPoint(root: Node, topUsings: readonly Node[], source: string): number {
-  if (topUsings.length > 0) {
-    return nextLineStartAt(source, topUsings[topUsings.length - 1].endIndex);
-  }
-
-  const firstToken = root.namedChildren.find((child) => child && child.type !== 'comment');
-
-  return firstToken ? firstToken.startIndex : 0;
-}
-
-function usingKey(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Converts a single top-level block-scoped namespace to a file-scoped namespace, dedenting the
- * body by one indentation level.
- */
-export const fileScopedNamespaceConverter: SourceTransformation = {
-  name: 'File-Scoped Namespace',
-  apply: convertToFileScoped,
-};
-
-export function convertToFileScoped(source: string): string {
-  if (!source) {
-    return source;
-  }
-
-  let current = source;
-  let tree = parseCSharp(current);
-
-  try {
-    if (findAll(tree.rootNode, 'file_scoped_namespace_declaration').length > 0) {
-      return source;
-    }
-
-    let blockNamespaces = findAll(tree.rootNode, 'namespace_declaration');
-    if (blockNamespaces.length !== 1 || blockNamespaces[0].parent?.type !== 'compilation_unit') {
-      return source;
-    }
-
-    if (directUsings(blockNamespaces[0]).length > 0) {
-      const moved = moveUsingsOutside(current);
-      if (moved !== current) {
-        current = moved;
-        tree.delete();
-        tree = parseCSharp(current);
-        blockNamespaces = findAll(tree.rootNode, 'namespace_declaration');
-        if (blockNamespaces.length !== 1) {
-          return current;
+      const unsupported = fileScopedNamespacesUnsupported(options.project);
+      if (unsupported) {
+        // Only a file with a block-scoped namespace to convert is worth a report.
+        const candidate = analyzeLayout(source).topLevel.some((namespace) => namespace.kind === 'block');
+        if (candidate) {
+          options.report(`namespace not converted to a file-scoped one: ${unsupported}.`, source, 0);
         }
+
+        return source;
       }
-    }
 
-    const namespaceNode = blockNamespaces[0];
-    const openBrace = namespaceNode.descendantsOfType('{')[0];
-    const closeBrace = findCloseBrace(namespaceNode);
-    const name = namespaceNode.childForFieldName('name')?.text;
-    if (!openBrace || !closeBrace || !name) {
-      return current;
-    }
-
-    const header = current.slice(0, namespaceNode.startIndex);
-    const body = current.slice(openBrace.endIndex, closeBrace.startIndex);
-    const newline = body.includes('\r\n') ? '\r\n' : '\n';
-    const dedented = dedent(current, openBrace.endIndex, closeBrace.startIndex);
-
-    let result = `${header}namespace ${name};`;
-    if (dedented.trim()) {
-      result += newline + newline + dedented;
-    }
-
-    return result + newline;
-  } finally {
-    tree.delete();
-  }
-}
-
-export function hasMultipleNamespaces(source: string): boolean {
-  if (!source) {
-    return false;
-  }
-
-  const tree = parseCSharp(source);
-
-  try {
-    return findAll(tree.rootNode, NAMESPACE_TYPES).length > 1;
-  } finally {
-    tree.delete();
-  }
-}
-
-function findCloseBrace(namespaceNode: Node): Node | undefined {
-  const body = namespaceNode.childForFieldName('body');
-  const container = body && body.type === 'declaration_list' ? body : namespaceNode;
-
-  for (let i = container.childCount - 1; i >= 0; i--) {
-    const child = container.child(i);
-    if (child?.type === '}') {
-      return child;
-    }
-  }
-
-  return undefined;
+      return convertToFileScoped(source, {
+        indent: options.indent?.(source) ?? '    ',
+        report: (reason, offset) => options.report(`namespace not converted: ${reason}`, source, offset),
+      });
+    },
+  };
 }
 
 /**
- * `source` between `start` and `end` without its surrounding blank lines, with one indentation
- * level (four spaces or a tab) removed from every line that starts in code. Lines that continue a
- * string literal (verbatim, raw, multi-line interpolated) and every line break keep their text.
+ * Converts the file's only (block-scoped) namespace to a file-scoped one, keeping any using
+ * directives inside it. Like Roslyn, files with other top-level members, nested namespaces or
+ * several namespaces are not candidates (and are left unchanged without a report).
  */
-function dedent(source: string, start: number, end: number): string {
+export function convertToFileScoped(source: string, options: NamespaceConversionOptions): string {
+  const layout = analyzeLayout(source);
+  const [namespace] = layout.topLevel;
+  if (layout.topLevel.length !== 1 || layout.otherTopLevel || namespace.kind !== 'block' || namespace.nested.length > 0 || !layout.ok) {
+    return source;
+  }
+
+  const fail = (reason: string): string => {
+    options.report(reason, namespace.keywordStart);
+
+    return source;
+  };
+  const close = namespace.close;
+  if (!close) {
+    return fail('the namespace could not be fully parsed.');
+  }
+
+  if (!isBlank(source.slice(namespace.nameEnd, namespace.open.start)) || !isBlank(source.slice(close.end))) {
+    return fail('comments or code surround the namespace braces.');
+  }
+
+  if (directivesStraddle(source, namespace.keywordStart, close.end)) {
+    return fail('an #if or #region block starts outside the namespace and ends inside it, or the reverse.');
+  }
+
   const kinds = classifyCSharp(source);
-  const body = source.slice(start, end);
-  const first = body.search(/[^\r\n]/);
-  if (first < 0) {
+  const newline = newlineOf(source);
+  const body = dedentBlock(source, kinds, namespace.open.end, close.start);
+  const header = source.slice(0, namespace.keywordStart);
+
+  return `${header}namespace ${source.slice(namespace.nameStart, namespace.nameEnd)};${body ? newline + newline + body : ''}${newline}`;
+}
+
+/** Converts a file-scoped namespace to a block-scoped one, indenting everything after it by one level. */
+export function convertToBlockScoped(source: string, options: NamespaceConversionOptions): string {
+  const layout = analyzeLayout(source);
+  const [namespace] = layout.topLevel;
+  if (layout.topLevel.length !== 1 || layout.namespaces.length !== 1 || namespace.kind !== 'file' || !layout.ok) {
+    return source;
+  }
+
+  if (directivesStraddle(source, namespace.keywordStart, source.length)) {
+    options.report('an #if or #region block starts before the namespace and ends after it.', namespace.keywordStart);
+
+    return source;
+  }
+
+  const kinds = classifyCSharp(source);
+  const newline = newlineOf(source);
+  const rest = source.slice(namespace.open.end);
+  const leadingBlank = /^(?:[ \t]*\r?\n)*/.exec(rest)?.[0].length ?? 0;
+  const content = rest.slice(leadingBlank).trimEnd();
+  const body = content ? `${options.indent}${indentFollowingLines(content, options.indent, kinds, namespace.open.end + leadingBlank)}${newline}` : '';
+
+  return `${source.slice(0, namespace.keywordStart)}namespace ${source.slice(namespace.nameStart, namespace.nameEnd)}${newline}{${newline}${body}}${newline}`;
+}
+
+/**
+ * True when a conditional (`#if` ... `#endif`) or region has a directive inside `[from, to)` and another
+ * one outside it: the braces of the converted namespace would then cut through the block.
+ */
+function directivesStraddle(source: string, from: number, to: number): boolean {
+  const groups: number[][] = [];
+  for (const directive of lex(source).trivia) {
+    const at = directive.start;
+    switch (directive.type) {
+      case 'preproc_if':
+      case 'preproc_region':
+        groups.push([at]);
+        break;
+      case 'preproc_elif':
+      case 'preproc_else':
+        groups[groups.length - 1]?.push(at);
+        break;
+      case 'preproc_endif':
+      case 'preproc_endregion': {
+        const group = groups.pop();
+        if (group) {
+          group.push(at);
+          const inside = group.filter((position) => position >= from && position < to).length;
+          if (inside > 0 && inside < group.length) {
+            return true;
+          }
+        }
+
+        break;
+      }
+    }
+  }
+
+  // A block left open runs to the end of the file.
+  return groups.some((group) => group.some((position) => position >= from && position < to) && group.some((position) => position < from));
+}
+
+/**
+ * The text between `start` and `end` without its surrounding blank lines and with the indentation
+ * of its first line removed from every line that starts in code. Lines that continue a string
+ * literal (verbatim, raw, multi-line interpolated) and every line break stay as they are.
+ */
+function dedentBlock(source: string, kinds: Uint8Array, start: number, end: number): string {
+  const text = source.slice(start, end);
+  const firstContent = text.search(/\S/);
+  if (firstContent < 0) {
     return '';
   }
 
+  // Directives stand in column 0 whatever the code's indentation is: the first line of code sets the unit.
+  const code = /^[ \t]*(?!#)\S/m.exec(text.slice(lineStartAt(text, firstContent)));
+  const unit = lineIndentAt(text, code ? lineStartAt(text, firstContent) + code.index : firstContent);
+  const body = text.slice(lineStartAt(text, firstContent)).trimEnd();
+  const offset = start + text.length - text.slice(lineStartAt(text, firstContent)).length;
   let result = '';
-  let lineStart = first;
+  let lineStart = 0;
   while (lineStart < body.length) {
     const next = body.indexOf('\n', lineStart);
     const lineEnd = next < 0 ? body.length : next + 1;
     const line = body.slice(lineStart, lineEnd);
-    const inString = lineStart > 0 && kinds[start + lineStart - 1] === STRING;
-    result += inString ? line : line.startsWith('    ') ? line.slice(4) : line.startsWith('\t') ? line.slice(1) : line;
+    const startsInString = lineStart > 0 && kinds[offset + lineStart - 1] === STRING;
+    const content = line.replace(/\r?\n$/, '');
+    result += startsInString ? line : isBlank(content) ? line.slice(content.length) : line.startsWith(unit) ? line.slice(unit.length) : line;
     lineStart = lineEnd;
   }
 
-  return result.replace(/[\r\n]+$/, '');
+  return result;
 }

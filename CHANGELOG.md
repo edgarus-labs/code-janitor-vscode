@@ -6,6 +6,28 @@ All notable changes to this extension are documented here.
 
 First release of the Visual Studio Code port.
 
+### Added (Visual Studio parity)
+
+- **Testbed.** `npm run test:testbed` runs every cleanup option against deliberately bad C# from the public
+  [code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) repository (one class per option) and builds and runs the
+  cleaned solution with the real compiler. It found the fixes listed under **Fixed (found on real code)**.
+
+- **Changed:** `.codejanitor` is discovered per file, walking up from the cleaned file's folder (nearest file wins as a whole), in cleanup on save, every cleanup command, the editor diagnostics, the preview and `code-janitor check`; before, only the first workspace folder's root was read.
+- **Changed:** precedence is `.editorconfig` (where it enforces) > `.codejanitor` > VS Code settings, as in the Visual Studio extension; a key in `.codejanitor` now wins over an explicit VS Code setting.
+- **Changed (as in Visual Studio):** `:none` option suffix stops a rule, severity suffix on plain options, CA1852 not enabled by category/global severity, IDE2000/IDE2002 inverted blank-line keys, `csharp_style_expression_bodied_lambdas = when_on_single_line`, null-check keys, `file_header_template` independent of IDE0073 and `unset`, using-order keys, Roslyn default values for severity-only enforcement (see README).
+- **Fixed:** the `insertBlankLineBeforeReturnAndThrow` key written by **Export .codejanitor** is now read back (`.codejanitor` parser accepted only the long key).
+- **Added:** Code Style rules (`codeJanitor.cleanup.codeStyleRules`, `.codejanitor` `codeStyle`), grouped in the settings panel; override notes that disable the controls `.editorconfig` decides; export/import of the rules.
+- Using directive placement is proven against an index of the project's declarations instead of the old name-prefix heuristic: namespace-relative directives (`using Services;` in `Company.App`) are written fully qualified, `csharp_using_directive_placement = inside_namespace` moves file-level directives into the namespace (`global::`-qualifying what would bind differently), and every file where the move is not provably safe is left unchanged with the reason in the output.
+- File-scoped namespaces are only written for projects known to use C# 10+; `convertToFileScopedNamespace` keeps using directives inside the namespace and reports why a namespace was not converted.
+- Added multi-file cleanup preview commands (selected files, open files, changed files, workspace) with per-file inclusion, per-rule selection, native diff and stale-text protection; optional options dialog for Cleanup Selected Files (`codeJanitor.cleanup.showOptionsDialog`).
+- Added navigation commands: Switch to Related File, Toggle Read-Only (Session), Close All Read-Only Editors, Find in Explorer, Collapse Explorer, Collapse Selected in Explorer.
+- Added Reorganize (`codeJanitor.reorganizeActiveFile`, `codeJanitor.reorganizeSelectedFiles`): members ordered by the `codeJanitor.reorganize.*` settings (the `Reorganizing_*` settings of the Visual Studio extension with the same defaults), with generated or removed regions, `#if` blocks moving with their member, initializers that depend on declaration order kept in order, an option to run it at the start of cleanup, and a question about files with preprocessor conditionals.
+- Added Insert Region Around Selection and Remove Region (under the cursor or in the selection).
+- Sort Lines now behaves like the Visual Studio command: empty lines are dropped, the order is culture-aware, every line ends with a line break, and a last selected line that the selection only reaches the start of is left out.
+- Fixed the parser: explicit interface implementations of indexers (`int I.this[int i]`) and of events with accessors (`event Action I.E { add {} remove {} }`) are now single members instead of incomplete declarations.
+- Added a Razor and Blazor formatter (`codeJanitor.formatRazor`, `codeJanitor.cleanup.formatRazorComponents`, `codeJanitor.razor.indentSize`, `codeJanitor.razor.indentStyle`): whitespace-only layout of `@code`/`@functions` and control blocks in `.razor` and `.cshtml` files.
+- Added the real-compiler test helper (`test/helpers/dotnetBuild.ts`) and oracle projects for Code Style, Usings, Reorganize and Razor; `npm run verify:compile` covers them. The shared transformation corpus gained the two lambda null-check fixtures of the Visual Studio repository (the block-lambda conversion is a documented divergence: no semantic model).
+
 ### Added
 
 - **Severities from the project, as the compiler reads them**: `.globalconfig` files and

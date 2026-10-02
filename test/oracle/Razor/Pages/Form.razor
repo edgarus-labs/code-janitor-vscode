@@ -1,0 +1,41 @@
+@page "/form"
+@inject ICounterService Counter
+
+<EditForm Model="model" OnValidSubmit="Submit">
+    <InputText @bind-Value="model.Name" class="form-control" />
+    <InputNumber @bind-Value="model.Age" />
+    @if(submitted){<p class="ok">Saved @model.Name (@model.Age)</p>}
+    @foreach(var error in errors){<div class="text-danger">@error</div>}
+    <button type="submit" disabled="@(!CanSubmit)">Save</button>
+</EditForm>
+
+<Card Title="Form" OnPicked="OnPicked" class="extra">
+    <p>Child <b>content</b> with @model.Name</p>
+</Card>
+
+<DataTable Items="Counter.LoadAsync().Result" TItem="Item">
+    <Header><th>Name</th></Header>
+    <RowTemplate Context="item"><td>@item.Name</td></RowTemplate>
+</DataTable>
+
+@code {
+    private readonly Model model=new();
+    private bool submitted;
+    private readonly List<string> errors=new();
+    private bool CanSubmit=>!string.IsNullOrWhiteSpace(model.Name)&&model.Age>0;
+
+    private void Submit()
+    {
+        errors.Clear();
+        if(model.Age>150){errors.Add("Too old");return;}
+        submitted=true;
+    }
+
+    private Task OnPicked(string title)
+    {
+        model.Name=title;
+        return Task.CompletedTask;
+    }
+
+    private sealed class Model{public string Name{get;set;}="";public int Age{get;set;}}
+}

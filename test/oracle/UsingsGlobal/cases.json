@@ -1,0 +1,29 @@
+{
+  "outward": {
+    "OutGlobalCollision.cs": {
+      "skipped": "'T' ambiguous",
+      "control": true
+    },
+    "OutGlobalSafe.cs": {
+      "moved": [
+        "using System.Text;\nusing Company.Shared;\n\nnamespace Company.App"
+      ]
+    },
+    "OutGlobalAlias.cs": {
+      "skipped": "alias 'Shorthand'",
+      "control": true
+    }
+  },
+  "inward": {
+    "InGlobalKept.cs": {
+      "moved": [
+        "global using System.Collections.Generic;\n\nnamespace Company.App\n{\n    using System;\n    using Company.App.Services;"
+      ]
+    },
+    "InGlobalCollision.cs": {
+      "moved": [
+        "namespace Company.App\n{\n    using Beta;"
+      ]
+    }
+  }
+}

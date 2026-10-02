@@ -1,15 +1,37 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { XmlDocRunOptions } from '../cleanup/xmlDocumentation';
-import { readRepoCleanupOverrides } from '../cleanup/repositoryOverrides';
+import { parseCodeStyleSetting } from '../cleanup/codeStyleRules';
+import { applyRepositoryPolicy, readRepositoryPolicy } from '../cleanup/repositoryOverrides';
 import { CleanupSettings, HeaderPosition, HeaderUpdateMode, createDefaultSettings } from '../cleanup/types';
+import { readReorganizeSettings } from './reorganizeSettings';
 import { logInfo } from '../logging';
 
-/** Maps the `codeJanitor.cleanup.*` VS Code settings onto the cleanup pipeline's settings shape. */
-export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
+/**
+ * Maps the `codeJanitor.cleanup.*` VS Code settings onto the cleanup pipeline's settings shape, with the
+ * repository policy applied over them: a key listed in the nearest `.codejanitor` wins over the user's
+ * setting (`.editorconfig` wins over both, per file, when the pipeline is built). The policy is found by
+ * walking up from `startDirectory` - the directory of the cleaned file; without one, the first workspace folder.
+ */
+export function readCleanupSettings(startDirectory?: string): CleanupSettings {
+  return applyRepositoryPolicy(
+    readUserCleanupSettings(),
+    readRepositoryPolicy(startDirectory ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, logInfo)
+  );
+}
+
+/**
+ * The settings for one document or file: the repository policy is the nearest `.codejanitor` walking up
+ * from the file's folder. A document that is not a file on disk uses the workspace folder it belongs to.
+ */
+export function readCleanupSettingsForUri(uri: vscode.Uri): CleanupSettings {
+  return readCleanupSettings(uri.scheme === 'file' ? path.dirname(uri.fsPath) : vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath);
+}
+
+/** The `codeJanitor.cleanup.*` settings as the user configured them, without any repository policy. */
+function readUserCleanupSettings(): CleanupSettings {
   const cfg = vscode.workspace.getConfiguration('codeJanitor');
-  const defaults = createDefaultSettings();
-  const repo = readRepoCleanupOverrides(workspaceRoot ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, logInfo);
-  const base = { ...defaults, ...repo };
+  const base = createDefaultSettings();
 
   // Two VS Code toggles deliberately fan out to all per-kind flags of the original extension.
   const insertExplicit = cfg.get<boolean>('cleanup.insertExplicitAccessModifiers', base.insertExplicitAccessModifiersOnClasses);
@@ -77,6 +99,7 @@ export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
     updateSingleLineMethods: cfg.get('cleanup.updateSingleLineMethods', base.updateSingleLineMethods),
     updateAccessorsToBothBeSingleLineOrMultiLine: cfg.get('cleanup.updateAccessorsToBothBeSingleLineOrMultiLine', base.updateAccessorsToBothBeSingleLineOrMultiLine),
     formatComments: cfg.get('cleanup.formatComments', base.formatComments),
+    reorganize: readReorganizeSettings(),
 
     removeRegions: cfg.get('cleanup.removeRegions', base.removeRegions),
     removeByteOrderMark: cfg.get('cleanup.removeByteOrderMark', base.removeByteOrderMark),
@@ -98,6 +121,8 @@ export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
       cfg.get<string>('cleanup.fileHeaderUpdateMode', base.fileHeaderUpdateMode === HeaderUpdateMode.Replace ? 'replace' : 'insert') === 'replace'
         ? HeaderUpdateMode.Replace
         : HeaderUpdateMode.Insert,
+
+    codeStyleRules: parseCodeStyleSetting(cfg.get('cleanup.codeStyleRules', {})),
   };
 }
 

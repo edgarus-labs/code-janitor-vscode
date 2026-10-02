@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { resolveEffectiveCleanupSettings } from './effectiveSettings';
 import { diagnosticSeverity } from './editorConfigRegistry';
 import { EditorConfigProperties, EditorConfigSeverity, loadEditorConfigProperties, parseSeverity } from './editorconfig';
 import { LineHunk, applyLineHunks, diffLineHunks } from './lineDiff';
@@ -59,7 +60,8 @@ export interface AnalysisOptions {
 
 /** Runs cleanup on `source` step by step and records, per rule, where it changes the text or what it cannot fix. */
 export function analyzeCleanup(source: string, filePath: string, settings: CleanupSettings, options: AnalysisOptions = {}): CleanupAnalysis {
-  const props = loadEditorConfigProperties(filePath);
+  // With the enabled Code Style rules layered on top, so their findings carry the `suggestion` severity they apply with.
+  const props = resolveEffectiveCleanupSettings(filePath, settings).properties;
   const unsupported: string[] = [];
   const issues: string[] = [];
   let collecting = false;

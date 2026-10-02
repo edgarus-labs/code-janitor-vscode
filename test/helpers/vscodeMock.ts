@@ -59,6 +59,10 @@ export class RelativePattern {
   ) {}
 }
 
+export class ThemeIcon {
+  constructor(readonly id: string) {}
+}
+
 export const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 } as const;
 export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 } as const;
 export const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 } as const;
