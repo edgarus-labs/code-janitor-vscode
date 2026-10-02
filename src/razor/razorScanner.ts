@@ -165,6 +165,20 @@ function skipCSharpComment(text: string, index: number): number {
   return index;
 }
 
+/** Index of the first character at or after `index` that is neither whitespace nor in a C# comment; -1 in an unterminated comment. */
+function skipTrivia(text: string, index: number): number {
+  let i = skipWhitespace(text, index);
+  for (let after = skipCSharpComment(text, i); after !== i; after = skipCSharpComment(text, i)) {
+    if (after < 0) {
+      return -1;
+    }
+
+    i = skipWhitespace(text, after);
+  }
+
+  return i;
+}
+
 /** The index of the bracket closing the one at `open`, reading the text in between as C#; -1 when unbalanced. */
 export function findClosingBracket(text: string, open: number): number {
   const opener = text[open];
@@ -486,9 +500,15 @@ function skipControl(text: string, end: number, word: string): number | undefine
     i = skipWhitespace(text, i);
   }
 
-  const afterBlock = skipBlockAt(text, i);
+  // Razor reads comments between a header and its block as C#.
+  const open = skipTrivia(text, i);
+  if (open < 0) {
+    return -1;
+  }
+
+  const afterBlock = skipBlockAt(text, open);
   if (afterBlock <= 0) {
-    return text[i] === '{' ? -1 : undefined;
+    return text[open] === '{' ? -1 : undefined;
   }
 
   return skipChain(text, afterBlock, word);

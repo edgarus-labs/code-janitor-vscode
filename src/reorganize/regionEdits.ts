@@ -107,18 +107,20 @@ function regionPairs(lines: readonly string[], firstLine = 0, lastLine = lines.l
   return pairs;
 }
 
-/** The region with a directive on `line` (`IsCodeRegionUnderCursor`). */
-export function regionLinesAt(source: string, line: number): RegionLines | undefined {
-  const lines = source.split(/\r?\n/);
-
-  return regionPairs(lines).find((pair) => pair.startLine === line || pair.endLine === line);
-}
-
 /**
  * Removes the `#region` and `#endregion` lines of the regions that lie inside the lines, with the
  * blank lines next to them (the Visual Studio command collapses the vertical whitespace there).
  */
 export function removeRegionsInLines(source: string, firstLine: number, lastLine: number): string {
+  return removeRegionDirectives(source, (texts) => regionPairs(texts, firstLine, lastLine));
+}
+
+/** Removes the region with a directive on `line` (`IsCodeRegionUnderCursor`, `RemoveRegion`), keeping the regions nested in it. */
+export function removeRegionAt(source: string, line: number): string {
+  return removeRegionDirectives(source, (texts) => regionPairs(texts).filter((pair) => pair.startLine === line || pair.endLine === line));
+}
+
+function removeRegionDirectives(source: string, pairsOf: (texts: readonly string[]) => RegionLines[]): string {
   const endsWithNewline = source.endsWith('\n');
   const lines = splitLines(source);
   if (endsWithNewline) {
@@ -127,7 +129,7 @@ export function removeRegionsInLines(source: string, firstLine: number, lastLine
   const texts = lines.map((line) => line.text);
 
   const removed = new Set<number>();
-  for (const { startLine, endLine } of regionPairs(texts, firstLine, lastLine)) {
+  for (const { startLine, endLine } of pairsOf(texts)) {
     for (const directive of [startLine, endLine]) {
       removed.add(directive);
       for (let line = directive - 1; line >= 0 && texts[line].trim() === ''; line--) {

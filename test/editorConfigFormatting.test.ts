@@ -42,11 +42,27 @@ describe('editorconfig formatting: core properties', () => {
     );
   });
 
+  it('keeps indentation inside a $@ string whose interpolation hole holds a string literal', () => {
+    const source = lines('class Sample', '{', '  string M(bool c) => $@"{(c ? "a" : "b")}', '  keep two spaces', '  ";', '}');
+
+    expect(format(source, 'indent_style = tab\ntab_width = 2').output).toBe(
+      lines('class Sample', '{', '\tstring M(bool c) => $@"{(c ? "a" : "b")}', '  keep two spaces', '  ";', '}')
+    );
+  });
+
   it('normalizes line endings outside string literals and reports those kept inside', () => {
     const source = 'class Sample\n{\r\n    string Text = @"a\nb";\n}\n';
     const { output, issues } = format(source, 'end_of_line = crlf');
 
     expect(output).toBe('class Sample\r\n{\r\n    string Text = @"a\nb";\r\n}\r\n');
+    expect(issues).toEqual([expect.stringMatching(/line 3: line breaks inside a multi-line string literal were kept/)]);
+  });
+
+  it('keeps the line breaks inside a $@ string whose interpolation hole holds a string literal', () => {
+    const source = 'class Sample\n{\n    string M(bool c) => $@"{(c ? "a" : "b")}\n      line2";\n}\n';
+    const { output, issues } = format(source, 'end_of_line = crlf');
+
+    expect(output).toBe('class Sample\r\n{\r\n    string M(bool c) => $@"{(c ? "a" : "b")}\n      line2";\r\n}\r\n');
     expect(issues).toEqual([expect.stringMatching(/line 3: line breaks inside a multi-line string literal were kept/)]);
   });
 
@@ -75,6 +91,30 @@ describe('editorconfig formatting: core properties', () => {
       'class Sample {\n    void M() {\n    }\n}\n'
     );
     expect(format(source, `${rules}\n${IDE0055}`).output).toBe('class Sample\n{\n    void M()\n    {\n    }\n}\n');
+  });
+});
+
+describe('issue line numbers', () => {
+  it('numbers an open-brace issue against the input when the using order adds a line above it', () => {
+    const source = lines('using System;', 'using Zeta;', 'class C // note', '{', '}');
+    const { output, issues } = format(source, `${IDE0055}\ndotnet_separate_import_directive_groups = true\ncsharp_new_line_before_open_brace = none`);
+
+    expect(output).toBe(lines('using System;', '', 'using Zeta;', 'class C // note', '{', '}'));
+    expect(issues).toEqual([expect.stringMatching(/^IDE0055 \(csharp_new_line_before_open_brace\) line 4: /)]);
+  });
+
+  it('numbers an indentation issue against the input when a moved brace removes a line above it', () => {
+    const source = lines('class C', '{', '    void M(bool a)', '#if X', '    { Y(); }', '#else', '    { }', '#endif', '}');
+    const { issues } = format(source, `${IDE0055}\ncsharp_new_line_before_open_brace = none`);
+
+    expect(issues).toEqual([expect.stringMatching(/^IDE0055 \(indentation\) line 4: /)]);
+  });
+
+  it('numbers an end_of_line issue against the input when a moved brace removes a line above it', () => {
+    const source = lines('class C', '{', '    string S = @"a', 'b";', '}');
+    const { issues } = format(source.replace(/\n/g, '\r\n').replace('@"a\r\n', '@"a\n'), `${IDE0055}\ncsharp_new_line_before_open_brace = none\nend_of_line = crlf`);
+
+    expect(issues).toEqual([expect.stringMatching(/line 3: line breaks inside a multi-line string literal were kept/)]);
   });
 });
 
@@ -135,6 +175,11 @@ describe('csharp_new_line_before_open_brace', () => {
 
   it('puts every multi-line opening brace on its own line for all', () => {
     expect(format(allOnSameLine, `csharp_new_line_before_open_brace = all\n${IDE0055}`).output).toBe(allOnOwnLine);
+  });
+
+  it('applies no unsupported value, such as a misspelled kind', () => {
+    expect(format(allOnOwnLine, `csharp_new_line_before_open_brace = method\n${IDE0055}`).output).toBe(allOnOwnLine);
+    expect(format(allOnSameLine, `csharp_new_line_before_open_brace = methods,typo\n${IDE0055}`).output).toBe(allOnSameLine);
   });
 
   it('only moves the listed kinds', () => {

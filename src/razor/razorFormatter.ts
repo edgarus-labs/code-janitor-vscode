@@ -236,11 +236,20 @@ class Formatter {
       } else {
         const block = this.readBlock(i, false);
         if (block) {
+          const first = blocks.length;
           blocks.push(block);
           i = block.close + 1;
-          for (let bare = this.readBareContinuation(blocks[blocks.length - 1]); bare; bare = this.readBareContinuation(bare)) {
-            blocks.push(bare);
-            i = bare.close + 1;
+          for (let link = this.readContinuation(block); link; link = this.readContinuation(link)) {
+            blocks.push(link);
+            i = link.close + 1;
+          }
+
+          // A link the layout cannot read (a `catch` with a filter, a comment before a block) is C# all
+          // the same: the whole chain is left as authored, and its code is not searched for blocks.
+          const chainEnd = skipTransition(text, block.start);
+          if (chainEnd < 0 || chainEnd > i) {
+            blocks.length = first;
+            i = chainEnd < 0 ? text.length : chainEnd;
           }
         } else {
           // Razor reads an unterminated comment, code block or expression up to the end of the file.
@@ -272,10 +281,12 @@ class Formatter {
     return end < 0 ? text.length : end;
   }
 
-  /** The bare `else` / `else if` / `catch` / `finally` block that follows `block`, if any. */
-  private readBareContinuation(block: Block): Block | undefined {
+  /** The `else` / `catch` / `finally` block (bare, or after an `@`) that continues `block`, if any. */
+  private readContinuation(block: Block): Block | undefined {
     const at = skipWhitespace(this.text, block.close + 1);
-    const candidate = /^(?:else|catch|finally)\b/.test(this.text.slice(at, at + 8)) ? this.readBlock(at, true) : undefined;
+    const bare = this.text[at] !== '@';
+    const keyword = bare ? at : at + 1;
+    const candidate = /^(?:else|catch|finally)\b/.test(this.text.slice(keyword, keyword + 8)) ? this.readBlock(at, bare) : undefined;
 
     return candidate && this.continuesPrevious(block, candidate) ? candidate : undefined;
   }
@@ -495,19 +506,18 @@ class Formatter {
       return undefined;
     }
 
-    if (segment.kind === 'markup') {
-      return hasLineBreakInEmbeddedLiteral(content) || hasLineBreakInAttributeValue(content)
-        ? undefined
-        : shiftLines(content, margin, childIndent, indent, kinds, segment.start);
+    if (segment.kind !== 'markup') {
+      const laid = layoutStatements(content, this.options);
+      if (laid !== undefined) {
+        return indentCode(laid, indent);
+      }
     }
 
-    const laid = layoutStatements(content, this.options);
-    if (laid !== undefined) {
-      return indentCode(laid, indent);
-    }
-
-    // Markup nested in a statement: the line breaks of its attribute values are not C#.
-    return hasLineBreakInAttributeValue(content) ? undefined : shiftLines(content, margin, childIndent, indent, kinds, segment.start);
+    // Markup, also when nested in a statement the layout cannot read: the line breaks of its attribute
+    // values and of the literals in its Razor code are part of those values, not indentation.
+    return hasLineBreakInEmbeddedLiteral(content) || hasLineBreakInAttributeValue(content)
+      ? undefined
+      : shiftLines(content, margin, childIndent, indent, kinds, segment.start);
   }
 
   private lineIndentAt(index: number): string {

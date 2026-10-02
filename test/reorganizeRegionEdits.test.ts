@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createDefaultSettings } from '../src/cleanup/types';
-import { insertRegionAroundLines, regionLinesAt, removeRegionsInLines } from '../src/reorganize/regionEdits';
+import { insertRegionAroundLines, removeRegionAt, removeRegionsInLines } from '../src/reorganize/regionEdits';
 import { withoutPadding } from './helpers/padding';
 
 // Ported from SpadeContextInsertRegionCommand / SpadeContextRemoveRegionCommand / RemoveRegionCommand.
@@ -46,11 +46,20 @@ describe('insert region around lines', () => {
 describe('remove regions', () => {
   const source = 'class C\n{\n    #region A\n    int _a;\n    #endregion\n\n    #region B\n    int _b;\n    #endregion B\n}\n';
 
-  it('finds the region whose directive is on a line', () => {
-    expect(regionLinesAt(source, 2)).toEqual({ startLine: 2, endLine: 4 });
-    expect(regionLinesAt(source, 4)).toEqual({ startLine: 2, endLine: 4 });
-    expect(regionLinesAt(source, 3)).toBeUndefined();
-    expect(regionLinesAt(source, 8)).toEqual({ startLine: 6, endLine: 8 });
+  it('removes the region whose directive is on a line, and nothing for a line without a directive', () => {
+    const withoutA = 'class C\n{\n    int _a;\n    #region B\n    int _b;\n    #endregion B\n}\n';
+
+    expect(removeRegionAt(source, 2)).toBe(withoutA);
+    expect(removeRegionAt(source, 4)).toBe(withoutA);
+    expect(removeRegionAt(source, 3)).toBe(source);
+    expect(removeRegionAt(source, 8)).toBe('class C\n{\n    #region A\n    int _a;\n    #endregion\n    int _b;\n}\n');
+  });
+
+  it('removes only the region whose directive is on the line, not the regions nested in it', () => {
+    const nested = '#region Outer\n#region Inner\na;\n#endregion\n#endregion\n';
+
+    expect(removeRegionAt(nested, 0)).toBe('#region Inner\na;\n#endregion\n');
+    expect(removeRegionAt(nested, 3)).toBe('#region Outer\na;\n#endregion\n');
   });
 
   it('removes the directives of the regions inside the lines and the blank lines around them', () => {

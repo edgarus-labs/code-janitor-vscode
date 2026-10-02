@@ -12,6 +12,7 @@ import {
   TextEditor,
   Uri,
   createContext,
+  ExtensionContext,
   resetMock,
   state,
   window,
@@ -25,6 +26,7 @@ import { registerFormatOnSave } from '../src/commands/formatOnSave';
 import { readCleanupSettings, readCleanupSettingsForUri, readXmlDocOptions } from '../src/commands/settings';
 import { exportRepositorySettings, importRepositorySettings, registerRepositorySettingsCommands } from '../src/commands/repositorySettings';
 import { HeaderPosition, HeaderUpdateMode } from '../src/cleanup/types';
+import { findProject } from '../src/cleanup/projectInfo';
 import { createOutputChannel } from '../src/logging';
 
 /** Trailing whitespace is the smallest change every default cleanup configuration performs. */
@@ -409,6 +411,45 @@ describe('repository settings commands', () => {
     });
   });
 
+  it('keeps the codeStyle section of the overwritten file, null pins included, with the rules set in VS Code winning', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({
+        cleanup: {
+          organizeUsings: false,
+          codeStyle: { csharp_style_throw_expression: 'true', csharp_prefer_braces: null, dotnet_style_null_propagation: 'true', csharp_prefer_simple_using_statement: 'true' },
+        },
+      })
+    );
+    state.modalChoice = 'Overwrite';
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { csharp_prefer_braces: 'when_multiline', dotnet_style_null_propagation: null });
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({
+      organizeUsings: false,
+      codeStyle: {
+        csharp_style_throw_expression: 'true',
+        csharp_prefer_braces: 'when_multiline',
+        dotnet_style_null_propagation: null,
+        csharp_prefer_simple_using_statement: 'true',
+      },
+    });
+  });
+
+  it('keeps a null pin of the overwritten file for a rule VS Code does not enable', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { codeStyle: { csharp_prefer_braces: null } } }));
+    state.modalChoice = 'Overwrite';
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({ codeStyle: { csharp_prefer_braces: null } });
+  });
+
   it('imports the codeStyle section over the Workspace rules only, writing null for a rule the file turns off and User settings enable', async () => {
     const root = tempRoot();
     fs.writeFileSync(
@@ -730,6 +771,25 @@ describe('runCleanupOnUris', () => {
     expect(result.changed).toBe(1);
     expect(document.getText()).not.toContain('   \n');
     expect(state.files.get('/w/b.cs')).toBe('stale content');
+  });
+
+  it('leaves an open document the user edits during the cleanup as the user left it, and reports it', async () => {
+    const document = new TextDocument(Uri.file('/w/b.cs'), UNCLEAN, 'csharp');
+    state.documents.push(document);
+    const typed = `${UNCLEAN}// typed meanwhile\n`;
+    const readDirectory = workspace.fs.readDirectory.bind(workspace.fs);
+    // The user types while the cleanup reads the folder.
+    vi.spyOn(workspace.fs, 'readDirectory').mockImplementation((uri) => {
+      document.setText(typed);
+
+      return readDirectory(uri);
+    });
+
+    const result = await runCleanupOnUris(createContext(), [document.uri]);
+
+    expect(result.failed).toBe(1);
+    expect(document.getText()).toBe(typed);
+    expect(state.warningMessages.at(-1)).toBe('Code Janitor: /w/b.cs - the document was edited during cleanup; the file was not changed');
   });
 
   it('reports nothing to do when every file is filtered out', async () => {
@@ -1661,8 +1721,38 @@ describe('activation', () => {
     manifest.contributes.configuration.flatMap((section) => Object.keys(section.properties))
   );
 
+  /** Contexts activated in the running test: disposed after it, which removes what activation registered globally. */
+  const contexts: ExtensionContext[] = [];
+  afterEach(() => contexts.splice(0).forEach((context) => context.subscriptions.forEach((subscription) => subscription.dispose())));
+
+  function activated(): ExtensionContext {
+    const context = createContext();
+    contexts.push(context);
+    activate(context);
+
+    return context;
+  }
+
+  it('lets project facts read the unsaved text of open C# files, only while activated', () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+    const unsaved = new TextDocument(Uri.file(path.join(root, 'User.cs')), 'class User { }', 'csharp');
+    unsaved.isDirty = true;
+    const notes = new TextDocument(Uri.file(path.join(root, 'Notes.txt')), 'draft', 'plaintext');
+    notes.isDirty = true;
+    state.documents.push(unsaved, new TextDocument(Uri.file(path.join(root, 'Saved.cs')), 'class Saved { }', 'csharp'), notes);
+    expect(findProject(path.join(root, 'Util.cs'))?.unsavedSources).toBeUndefined();
+
+    const context = activated();
+    expect(findProject(path.join(root, 'Util.cs'))?.unsavedSources).toEqual(new Map([[path.join(root, 'User.cs'), 'class User { }']]));
+
+    contexts.splice(contexts.indexOf(context), 1);
+    context.subscriptions.forEach((subscription) => subscription.dispose());
+    expect(findProject(path.join(root, 'Util.cs'))?.unsavedSources).toBeUndefined();
+  });
+
   it('registers a handler for every command declared in the manifest', () => {
-    activate(createContext());
+    activated();
 
     const declared = manifest.contributes.commands.map((entry) => entry.command);
     const missing = declared.filter((command) => !state.commands.has(command));
@@ -1671,7 +1761,7 @@ describe('activation', () => {
   });
 
   it('registers no command that the manifest does not declare', () => {
-    activate(createContext());
+    activated();
 
     const declared = new Set(manifest.contributes.commands.map((entry) => entry.command));
     const undeclared = [...state.commands.keys()].filter((command) => !declared.has(command));
@@ -1680,19 +1770,19 @@ describe('activation', () => {
   });
 
   it('subscribes the save hook', () => {
-    activate(createContext());
+    activated();
 
     expect(state.willSaveHandlers).toHaveLength(1);
   });
 
   it('creates the output channel and logs activation', () => {
-    activate(createContext());
+    activated();
 
     expect(state.outputChannelLines.some((line) => line.includes('Code Janitor activated'))).toBe(true);
   });
 
   it('shows the output channel on demand', () => {
-    activate(createContext());
+    activated();
     const handler = state.commands.get('codeJanitor.showOutputChannel');
 
     expect(() => handler?.()).not.toThrow();

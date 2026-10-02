@@ -75,10 +75,12 @@ export class EditorConfigIssueLog {
   }
 }
 
-/** Identifies the resolved `.editorconfig` properties of a file, whichever files they come from. */
+/**
+ * Identifies the resolved `.editorconfig` properties of a file, whichever files they come from, and
+ * the project's analysis settings (NoWarn, AnalysisLevel/Mode, ...) that decide which of them apply.
+ */
 export function editorConfigSignature(props: EditorConfigProperties): string {
-  return [...props.entries]
-    .map(([key, value]) => `${key}=${value}`)
-    .sort()
-    .join('\n');
+  const entries = [...props.entries].map(([key, value]) => `${key}=${value}`).sort();
+
+  return [...entries, '[analysis]', props.analysis?.signature ?? 'none'].join('\n');
 }

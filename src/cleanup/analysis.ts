@@ -68,7 +68,7 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
   const notes: string[] = [];
   const issues: string[] = [];
   let collecting = false;
-  const pipeline = getCleanupPipeline(source, filePath, settings, options.disqualifiedTypeNames, (issue) => {
+  const pipeline = getCleanupPipeline(filePath, settings, options.disqualifiedTypeNames, (issue) => {
     if (issue.kind === 'unsupported') {
       unsupported.push(issue.detail);
     } else if (issue.kind === 'note') {
@@ -88,6 +88,7 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
     const output = full ? full.output : step.apply(current);
     collecting = false;
     const stepIssues = [...issues];
+    // A step numbers the lines of its issues in its input, `current`, as its changes are diffed from it.
     const toSource = lineMapper(source, current);
     const at = (start: number, end: number) => {
       const [first] = toSource(start);
@@ -130,7 +131,7 @@ export function applyRuleOnly(
   ruleId: string,
   disqualifiedTypeNames?: ReadonlySet<string>
 ): string {
-  for (const step of getCleanupPipeline(source, filePath, settings, disqualifiedTypeNames).transformations) {
+  for (const step of getCleanupPipeline(filePath, settings, disqualifiedTypeNames).transformations) {
     if (step.diagnosticId === ruleId) {
       return step.apply(source);
     }
@@ -392,9 +393,14 @@ function anchorLines(hunk: LineHunk, lastLine: number): [number, number] {
   return [line, line];
 }
 
-/** Maps a line of `current` (a text cleanup derived from `source`) to the line range of `source` it comes from. */
+/**
+ * Maps a line of `current` (a text cleanup derived from `source`) to the line range of `source` it
+ * comes from. Lines are compared without their indentation, so a line an earlier step only re-indented
+ * is still its own line; a hunk that replaced as many lines as it has maps them one to one.
+ */
 function lineMapper(source: string, current: string): (line: number) => [number, number] {
-  const hunks = diffLineHunks(source, current);
+  const trimmed = (text: string) => text.split('\n').map((line) => line.trim()).join('\n');
+  const hunks = diffLineHunks(trimmed(source), trimmed(current));
 
   return (line) => {
     let shift = 0;
@@ -404,6 +410,12 @@ function lineMapper(source: string, current: string): (line: number) => [number,
       }
 
       if (line < hunk.afterEnd) {
+        if (hunk.beforeEnd - hunk.beforeStart === hunk.afterEnd - hunk.afterStart) {
+          const mapped = hunk.beforeStart + line - hunk.afterStart;
+
+          return [mapped, mapped];
+        }
+
         return [hunk.beforeStart, Math.max(hunk.beforeStart, hunk.beforeEnd - 1)];
       }
 

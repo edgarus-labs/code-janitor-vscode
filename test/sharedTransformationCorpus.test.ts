@@ -113,7 +113,7 @@ suite('shared transformation corpus', () => {
 
     it(fixture.name, () => {
       const settings = applyFixtureSettings(fixture.settings ?? {});
-      const output = buildPipeline(input, settings, CORPUS_RULES).run(input);
+      const output = buildPipeline(settings, CORPUS_RULES).run(input);
 
       if (divergence) {
         // Roslyn knows the lambda parameter's type; without a semantic model `x is null` could be

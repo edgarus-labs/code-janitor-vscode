@@ -136,6 +136,9 @@ describe('editorconfig formatting: csharp_space_*', () => {
     expect(format(inMethod('if ( x ) { }', 'var y = ( a );'), 'csharp_space_between_parentheses = false')).toBe(
       inMethod('if (x) { }', 'var y = (a);')
     );
+    expect(format(inMethod('if ( x ) { }', 'var y = ( a );'), 'csharp_space_between_parentheses = expression')).toBe(
+      inMethod('if ( x ) { }', 'var y = ( a );')
+    );
   });
 
   it('collapses extra spaces in declarations when csharp_space_around_declaration_statements is false', () => {

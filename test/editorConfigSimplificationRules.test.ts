@@ -66,7 +66,7 @@ describe('rules without options', () => {
     expect(issues).toEqual([expect.stringMatching(/IDE0110: not applied, the project uses C# 8/)]);
   });
 
-  it('IDE0082 uses nameof for typeof(T).Name when the name is the same', () => {
+  it('IDE0082 uses nameof for typeof(T).Name when the name is the same, keeping single names that may be aliases of other files', () => {
     expectRewrite(
       'IDE0082',
       lines(
@@ -84,10 +84,30 @@ describe('rules without options', () => {
         '',
         'class C<T>',
         '{',
-        '    string[] Names() => new[] { typeof(C<T>).Name, nameof(Uri), nameof(Int32), typeof(T).Name, typeof(Alias).Name, nameof(System.IO.File) };',
+        '    string[] Names() => new[] { typeof(C<T>).Name, typeof(Uri).Name, nameof(Int32), typeof(T).Name, typeof(Alias).Name, nameof(System.IO.File) };',
         '}'
       )
     );
+  });
+
+  it('IDE0082 keeps global using and project aliases of other files', () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-nameof-'));
+    try {
+      fs.writeFileSync(
+        path.join(folder, 'App.csproj'),
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup><Using Include="System.Text.StringBuilder" Alias="Sb" /></ItemGroup></Project>'
+      );
+      fs.writeFileSync(path.join(folder, 'GlobalUsings.cs'), 'global using Json = System.Text.Json.JsonSerializer;\n');
+      const source = lines('using System;', '', 'class C', '{', '    string[] Names() => new[] { typeof(Json).Name, typeof(Sb).Name, typeof(Uri).Name, typeof(C).Name };', '}');
+      const filePath = path.join(folder, 'C.cs');
+      fs.writeFileSync(filePath, source);
+      const props = resolveEditorConfigProperties([{ directory: folder, text: 'root = true\n[*.cs]\ndotnet_diagnostic.IDE0082.severity = warning\n' }], filePath);
+      const clean = createEditorConfigCodeStyleConverter(props, () => undefined, { filePath, fileName: 'C.cs', project: findProject(filePath) }).apply(source);
+
+      expect(clean).toBe(source.replace('typeof(Uri).Name, typeof(C).Name', 'nameof(Uri), nameof(C)'));
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
   });
 
   it('IDE0035 removes statements after return, throw, break or continue in the same block', () => {

@@ -200,7 +200,7 @@ describe('override notes', () => {
         cleanup: {
           removeRegions: false,
           insertBlankLineBeforeReturnAndThrow: true,
-          insertBlankLinePaddingBeforeClasses: false,
+          insertBlankLinePadding: false,
           insertBlankLinePaddingBeforeFieldsSingleLine: true,
           makeFieldsReadonlyWhenSafe: false,
           codeStyle: { csharp_prefer_braces: null, dotnet_style_null_propagation: 'true' },
@@ -222,6 +222,16 @@ describe('override notes', () => {
         dotnet_style_null_propagation: `Overridden by .codejanitor: dotnet_style_null_propagation in ${policyPath}`,
       },
     });
+  });
+
+  it('locks a group setting only when .codejanitor pins every flag of the group, since the others follow the setting', () => {
+    fs.writeFileSync(
+      path.join(workspace, '.codejanitor'),
+      JSON.stringify({ cleanup: { insertBlankLinePaddingBeforeClasses: false, insertExplicitAccessModifiersOnFields: false } })
+    );
+    state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
+
+    expect(readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
   });
 
   it('shows the stored Code Style rules with the values the editor offers', async () => {
@@ -309,7 +319,13 @@ describe('override notes', () => {
         }) as never
     );
     state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
-    const spy = vi.spyOn(window, 'createWebviewPanel').mockImplementation(() => createMockWebviewPanel());
+    const panels: { __postedMessages: unknown[] }[] = [];
+    const spy = vi.spyOn(window, 'createWebviewPanel').mockImplementation(() => {
+      const panel = createMockWebviewPanel();
+      panels.push(panel as unknown as { __postedMessages: unknown[] });
+
+      return panel;
+    });
     try {
       resetWebviewPanels();
       resetSettingsPanelForTesting();
@@ -319,6 +335,9 @@ describe('override notes', () => {
       await state.commands.get('codeJanitor.openSettings')!();
       simulateWebviewMessage(0, { type: 'ready' });
       simulateWebviewMessage(0, { type: 'scope', scope: 'workspace' });
+      // Workspace scope shows the rules in effect there, the User settings' included: what an update then writes keeps them.
+      const shown = panels[0].__postedMessages.at(-1) as { values: Record<string, unknown> };
+      expect(shown.values['codeJanitor.cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'true', dotnet_style_null_propagation: 'true' });
 
       // Only braces stays checked: null propagation, on in the User settings, is turned off here.
       simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.cleanup.codeStyleRules', value: { csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' } });

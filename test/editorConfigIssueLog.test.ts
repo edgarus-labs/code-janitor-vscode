@@ -1,5 +1,8 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
+import { loadEditorConfigProperties, resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import { EditorConfigIssueLog, editorConfigSignature } from '../src/cleanup/editorConfigIssueLog';
 
 const unsupported = (filePath: string, detail: string) => ({ kind: 'unsupported' as const, filePath, detail });
@@ -56,5 +59,26 @@ describe('editorConfigSignature', () => {
     expect(editorConfigSignature(resolveEditorConfigProperties(files, '/r/A.cs'))).not.toBe(
       editorConfigSignature(resolveEditorConfigProperties([{ directory: '/r', text: 'root = true\n[*.cs]\nindent_size = 2\n' }], '/r/A.cs'))
     );
+  });
+
+  it('differs between projects whose NoWarn or analysis mode differ under the same .editorconfig', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-signature-'));
+    try {
+      const project = (name: string, properties: string) => {
+        fs.mkdirSync(path.join(root, name));
+        fs.writeFileSync(path.join(root, name, `${name}.csproj`), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework>${properties}</PropertyGroup></Project>`);
+
+        return editorConfigSignature(loadEditorConfigProperties(path.join(root, name, 'A.cs')));
+      };
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n[*.cs]\ndotnet_diagnostic.IDE0055.severity = warning\n');
+
+      const plain = project('Plain', '');
+      expect(project('Same', '')).toBe(plain);
+      expect(project('NoWarn', '<NoWarn>IDE0055</NoWarn>')).not.toBe(plain);
+      expect(project('Mode', '<AnalysisMode>All</AnalysisMode>')).not.toBe(plain);
+      expect(project('Errors', '<TreatWarningsAsErrors>true</TreatWarningsAsErrors>')).not.toBe(plain);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

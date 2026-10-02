@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { registerAiActionCommands } from './commands/aiActionCommands';
 import { registerCleanupCommands } from './commands/cleanupCommands';
+import { unsavedCSharpSources } from './commands/cleanupCore';
 import { registerCleanupDiagnostics } from './commands/diagnostics';
 import { registerEditorCommands } from './commands/editorCommands';
 import { registerFormatOnSave } from './commands/formatOnSave';
@@ -12,12 +13,15 @@ import { registerNavigationCommands } from './commands/navigation';
 import { registerRazorCommands } from './commands/razorCommands';
 import { registerReorganizeCommands } from './commands/reorganizeCommands';
 import { createOutputChannel, logInfo, showOutputChannel } from './logging';
+import { setUnsavedSourcesProvider } from './cleanup/projectInfo';
 
 export function activate(context: vscode.ExtensionContext): void {
   createOutputChannel(context);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('codeJanitor.showOutputChannel', () => showOutputChannel())
+    vscode.commands.registerCommand('codeJanitor.showOutputChannel', () => showOutputChannel()),
+    // Rules reading the project's other files see their unsaved editor text, as the compiler does.
+    setUnsavedSourcesProvider(unsavedCSharpSources)
   );
 
   registerCleanupCommands(context);

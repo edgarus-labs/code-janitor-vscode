@@ -24,9 +24,4 @@ describe('applyEdits', () => {
   it('applies adjacent edits and edits at both ends of the text', () => {
     expect(applyEdits('abc', [{ start: 0, end: 1, text: 'X' }, { start: 1, end: 2, text: 'Y' }, { start: 3, end: 3, text: '!' }])).toBe('XYc!');
   });
-
-  it('keeps the text on both sides of a reversed range, duplicating the span between them', () => {
-    // end < start: the text before `start` and the text from `end` are both kept.
-    expect(applyEdits('abcdef', [{ start: 4, end: 2, text: '|' }, { start: 0, end: 1, text: 'A' }])).toBe('Abcd|cdef');
-  });
 });

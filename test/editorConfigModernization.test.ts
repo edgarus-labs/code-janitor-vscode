@@ -138,6 +138,17 @@ describe('IDE0016 csharp_style_throw_expression', () => {
 
     expect(codeStyle(source, 'csharp_style_throw_expression = true:warning').output).toBe(source);
   });
+
+  it('keeps checks whose assignment target has side effects that would run before the throw', () => {
+    for (const target of ['items[i++]', 'Next().Name', 'items[Next()]']) {
+      const source = method('if (s == null) throw new ArgumentNullException(nameof(s));', `${target} = s;`);
+
+      expect(codeStyle(source, 'csharp_style_throw_expression = true:warning').output).toBe(source);
+    }
+
+    const simple = method('if (s == null) throw new ArgumentNullException(nameof(s));', 'this.Name = s;');
+    expect(codeStyle(simple, 'csharp_style_throw_expression = true:warning').output).toBe(method('this.Name = s ?? throw new ArgumentNullException(nameof(s));'));
+  });
 });
 
 describe('IDE0150 csharp_style_prefer_null_check_over_type_check', () => {
@@ -173,6 +184,15 @@ describe('IDE0039 csharp_style_prefer_local_over_anonymous_function', () => {
       method('Func<int, string> format = x => x.ToString();', 'Action log = () => { Write(); };', 'Use(format(1));', 'log();'),
       method('string format(int x) => x.ToString();', 'void log() { Write(); }', 'Use(format(1));', 'log();')
     );
+  });
+
+  it('keeps the async and static modifiers of the lambda', () => {
+    expect(
+      codeStyle(
+        method('Func<Task> run = async () => await DoAsync();', 'Func<int, Task<int>> g = async x => { await Y(); return x; };', 'Func<int, int> h = static x => x + 1;', 'run();', 'g(1);', 'h(2);'),
+        'csharp_style_prefer_local_over_anonymous_function = true:warning'
+      ).output
+    ).toBe(method('async Task run() => await DoAsync();', 'async Task<int> g(int x) { await Y(); return x; }', 'static int h(int x) => x + 1;', 'run();', 'g(1);', 'h(2);'));
   });
 
   it('keeps delegate variables used as values', () => {
@@ -332,5 +352,15 @@ describe('unsupported settings and rule severities', () => {
       '"dotnet_style_prefer_non_hidden_explicit_cast_in_source = true" is not supported and was not applied.',
       '"dotnet_diagnostic.ide0221.severity = warning" is not supported and was not applied.',
     ]);
+  });
+
+  it('holds back only values that write syntax the project lacks', () => {
+    const source = lines('class Sample', '{', '    int M() => 1;', '', '    void N(int i)', '    {', '        switch (i) { case 1: return; }', '    }', '}');
+    const rules = 'csharp_style_prefer_switch_expression = false:warning\ncsharp_prefer_simple_using_statement = false:suggestion\ndotnet_style_prefer_collection_expression = never:warning\ncsharp_style_expression_bodied_methods = false:warning';
+    const old = codeStyle(source, rules, { project: { directory: '/repo', languageVersion: 5 } });
+
+    expect(old.issues).toEqual([]);
+    expect(old.output).toBe(codeStyle(source, rules, { project: { directory: '/repo', languageVersion: 99 } }).output);
+    expect(old.output).toContain('int M()\n    {');
   });
 });

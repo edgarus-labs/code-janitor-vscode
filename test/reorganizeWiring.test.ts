@@ -16,7 +16,7 @@ describe('Reorganize in the cleanup pipeline', () => {
   beforeEach(() => resetMock());
 
   it('does not reorganize members by default', () => {
-    const output = buildPipeline(SOURCE, createDefaultSettings()).run(SOURCE);
+    const output = buildPipeline(createDefaultSettings()).run(SOURCE);
 
     expect(output.indexOf('void B')).toBeLessThan(output.indexOf('int A'));
   });
@@ -25,7 +25,7 @@ describe('Reorganize in the cleanup pipeline', () => {
     const settings = createDefaultSettings();
     settings.reorganize.runAtStartOfCleanup = true;
 
-    const output = buildPipeline(SOURCE, settings).run(SOURCE);
+    const output = buildPipeline(settings).run(SOURCE);
 
     expect(output.indexOf('int A')).toBeLessThan(output.indexOf('void B'));
   });

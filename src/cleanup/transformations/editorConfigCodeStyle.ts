@@ -23,6 +23,7 @@ import {
   newlineOf,
   parseErrorCount,
   readCodeStyleOption,
+  renumberIssue,
 } from './editorConfigSupport';
 import { EXPRESSION_PREFERENCES, applyExpressionPreference } from './editorConfigExpressionPreferences';
 import { EXPRESSION_BODY_RULES } from './editorConfigExpressionBodies';
@@ -71,7 +72,8 @@ const MAX_PASSES = 3;
  * Applies the C# code-style preferences of `.editorconfig` whose diagnostic is enforced
  * (`suggestion`, `warning` or `error`). Each rule rewrites code only when the result is certain
  * from syntax alone and reports every violation it leaves in place. The rules run again while a
- * pass changes the code, and only the last pass reports, so reports describe the final code.
+ * pass changes the code, and only the last pass reports, so reports describe what the final code
+ * leaves; like every other step's, their `line N` is a line of the step's input.
  */
 export function createEditorConfigCodeStyleConverter(
   props: EditorConfigProperties,
@@ -85,20 +87,20 @@ export function createEditorConfigCodeStyleConverter(
 
     // A byte order mark would confuse the parser; the rules work on the text after it.
     const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
-    let current = source.slice(bom.length);
-    let issues: string[] = [];
+    const input = source.slice(bom.length);
+    let current = input;
+    let issues: ReportedIssue[] = [];
 
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       issues = [];
-      const context: RuleContext = {
+      const settings: RuleSettings = {
         props,
-        report: (issue) => issues.push(issue),
         indent: indentUnit(props, current),
         fileName: options.fileName,
         filePath: options.filePath,
         project: options.project,
       };
-      const updated = applyRules(current, context, tracking);
+      const updated = applyRules(current, settings, (issue, against) => issues.push({ issue, against }), tracking);
       if (updated === current) {
         break;
       }
@@ -106,8 +108,9 @@ export function createEditorConfigCodeStyleConverter(
       current = updated;
     }
 
-    for (const issue of issues) {
-      report(issue);
+    const toInput = new Map<string, (line: number) => number>();
+    for (const { issue, against } of issues) {
+      report(renumberIssue(issue, input, against, toInput));
     }
 
     return bom + current;
@@ -130,6 +133,14 @@ export function createEditorConfigCodeStyleConverter(
 interface RuleTracking {
   readonly excluded: ReadonlySet<string>;
   readonly changes: Map<string, number>;
+}
+
+type RuleSettings = Omit<RuleContext, 'report'>;
+
+/** A violation a rule reported, with the text its `line N` is a line of: the text the rule read. */
+interface ReportedIssue {
+  readonly issue: string;
+  readonly against: string;
 }
 
 interface LanguageRequirement {
@@ -191,13 +202,18 @@ const LANGUAGE_REQUIREMENTS: Record<string, LanguageRequirement> = {
   IDE0110: { version: 9 },
 };
 
-/** The requirement of `rule` for the option's current value (file-scoped namespaces need C# 10). */
+/**
+ * The requirement of `rule` for the option's current value: file-scoped namespaces need C# 10,
+ * and `false`/`never` ask for no new syntax (at most the older form), so they need nothing.
+ */
 function requirementOf(rule: Rule, props: EditorConfigProperties): LanguageRequirement | undefined {
   if (rule.option === 'csharp_style_namespace_declarations') {
     return effectiveEditorConfigValue(props, rule.option) === 'file_scoped' ? { version: 10 } : undefined;
   }
 
-  return LANGUAGE_REQUIREMENTS[rule.option];
+  const value = /^(?:IDE|CA)\d{4}$/.test(rule.option) ? undefined : effectiveEditorConfigValue(props, rule.option);
+
+  return value === 'false' || value === 'never' ? undefined : LANGUAGE_REQUIREMENTS[rule.option];
 }
 
 /** Why the project cannot take the rule's syntax in `source`, or `undefined` when it can (or is unknown). */
@@ -225,11 +241,14 @@ function unsupportedByProject(rule: Rule, source: string, context: RuleContext):
   return requirement.modernRuntime && project.modernRuntime === false ? 'the project targets a runtime without the types the rewrite needs' : undefined;
 }
 
-function applyRules(source: string, context: RuleContext, tracking?: RuleTracking): string {
+/** Applies every rule in order; `report` gets each violation with the text the rule read. */
+function applyRules(source: string, settings: RuleSettings, report: (issue: string, against: string) => void, tracking?: RuleTracking): string {
   let current = source;
   let errors: number | undefined;
 
   for (const rule of RULES) {
+    const input = current;
+    const context: RuleContext = { ...settings, report: (issue) => report(issue, input) };
     const unsupported = unsupportedByProject(rule, current, context);
     if (unsupported) {
       context.report(`${rule.option}: not applied, ${unsupported}.`);

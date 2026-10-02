@@ -102,7 +102,7 @@ export function runCleanup(
     return source;
   }
 
-  return getCleanupPipeline(source, filePath, settings, externalDisqualifiedTypeNames, onIssue).run(source);
+  return getCleanupPipeline(filePath, settings, externalDisqualifiedTypeNames, onIssue).run(source);
 }
 
 /**
@@ -111,7 +111,6 @@ export function runCleanup(
  * implement, are passed to `onIssue` right away; violations it cannot fix are passed while the pipeline runs.
  */
 export function getCleanupPipeline(
-  source: string,
   filePath: string,
   settings: CleanupSettings,
   externalDisqualifiedTypeNames?: ReadonlySet<string>,
@@ -140,7 +139,7 @@ export function getCleanupPipeline(
     project: hasAnalyzerConfiguration(properties) || effective.settings.convertToFileScopedNamespace ? findProject(filePath) : undefined,
   };
 
-  return buildPipeline(source, effective.settings, rules, externalDisqualifiedTypeNames);
+  return buildPipeline(effective.settings, rules, externalDisqualifiedTypeNames);
 }
 
 /**
@@ -151,7 +150,6 @@ export function getCleanupPipeline(
  * Settings the `.editorconfig` does not decide keep applying.
  */
 export function buildPipeline(
-  source: string,
   settings: CleanupSettings,
   rules?: EditorConfigRules,
   externalDisqualifiedTypeNames?: ReadonlySet<string>
@@ -165,10 +163,9 @@ export function buildPipeline(
   const collectionExpressions = enforced('dotnet_style_prefer_collection_expression');
   const expressionBodiedLambdas = enforced('csharp_style_expression_bodied_lambdas');
 
-  // With `charset` set, the byte order mark is decided by the `.editorconfig` rules: the steps work
-  // on the text without it, and it is put back for the formatting rules, which apply `charset`.
+  // With `charset` set, the byte order mark is decided by the `.editorconfig` formatting rules, which
+  // apply `charset`: every other step works on the text after it and leaves it where it was.
   const charsetDecides = decides('charset');
-  const restoreByteOrderMark = charsetDecides && source.startsWith('\uFEFF');
 
   const hasEditorConfig = props !== undefined && hasAnalyzerConfiguration(props);
   // The final newline is ensured by a later step (unless `insert_final_newline = false`): removing
@@ -185,32 +182,48 @@ export function buildPipeline(
   // A rename can give code style more to do (a `this.` the renamed field no longer needs): code style
   // runs once more, without reporting again, when naming changed what it produced, so that one cleanup
   // leaves nothing for the next. With rules left out (the preview), the rerun leaves out the same ones.
+  // Code style may be called more than once on the same text (the analysis applies its rules one by
+  // one): the call that counts is the one whose output naming then received.
   const codeStyle =
     hasEditorConfig && rules
       ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, { fileName: rules.fileName, filePath: rules.filePath, project: rules.project })
       : undefined;
-  let afterCodeStyle: { output: string; excluded?: ReadonlySet<string> } | undefined;
+  // Reset by the pipeline at the start of each run, so that a preview never reruns code style for an earlier one.
+  const codeStyleRuns = new Map<string, ReadonlySet<string> | undefined>();
+  let renamed: { output: string; excluded?: ReadonlySet<string> } | undefined;
   const trackedCodeStyle: SourceTransformation | undefined = codeStyle && {
     ...codeStyle,
     apply(text) {
       const output = codeStyle.apply(text);
-      afterCodeStyle = { output };
+      codeStyleRuns.set(output, undefined);
       return output;
     },
     applyRules: codeStyle.applyRules && ((text, excluded) => {
       const result = codeStyle.applyRules!(text, excluded);
-      afterCodeStyle = { output: result.output, excluded };
+      // A copy: the caller may go on to leave out more rules with the same set.
+      codeStyleRuns.set(result.output, new Set(excluded));
       return result;
     }),
+  };
+  const naming = hasEditorConfig && rules ? createEditorConfigNamingConverter(rules.properties, rules.report) : undefined;
+  const trackedNaming: SourceTransformation | undefined = naming && {
+    ...naming,
+    apply(text) {
+      const output = naming.apply(text);
+      renamed = output !== text && codeStyleRuns.has(text) ? { output, excluded: codeStyleRuns.get(text) } : undefined;
+      codeStyleRuns.clear();
+      return output;
+    },
   };
   const silentCodeStyle =
     hasEditorConfig && rules
       ? createEditorConfigCodeStyleConverter(rules.properties, () => undefined, { fileName: rules.fileName, filePath: rules.filePath, project: rules.project })
       : undefined;
   const codeStyleAfterRenames = silentCodeStyle && delegateTransformation('C# code style after renames (.editorconfig)', (text) => {
-    const previous = afterCodeStyle;
-    afterCodeStyle = undefined;
-    if (!previous || text === previous.output) {
+    const previous = renamed;
+    renamed = undefined;
+    codeStyleRuns.clear();
+    if (!previous || text !== previous.output) {
       return text;
     }
 
@@ -220,7 +233,7 @@ export function buildPipeline(
   const transformations: (SourceTransformation | undefined)[] = [
     settings.reorganize.runAtStartOfCleanup ? createReorganizeTransformation(settings.reorganize, settings) : undefined,
     settings.removeRegions ? regionDirectiveRemover : undefined,
-    settings.removeByteOrderMark || charsetDecides ? byteOrderMarkConverter : undefined,
+    settings.removeByteOrderMark && !charsetDecides ? byteOrderMarkConverter : undefined,
     placement
       ? createUsingPlacementConverter({
           direction: placement,
@@ -314,15 +327,35 @@ export function buildPipeline(
     // so the names code-style rewrites introduce follow the naming rules too), then formatting
     // (last, so it formats code the other rules created).
     trackedCodeStyle,
-    hasEditorConfig && rules ? createEditorConfigNamingConverter(rules.properties, rules.report) : undefined,
+    trackedNaming,
     codeStyleAfterRenames,
-    restoreByteOrderMark
-      ? delegateTransformation('Restore byte order mark for charset', (text) => `\uFEFF${text}`)
-      : undefined,
-    hasEditorConfig && rules ? createEditorConfigFormattingConverter(rules.properties, rules.report) : undefined,
   ];
+  const formatting = hasEditorConfig && rules ? createEditorConfigFormattingConverter(rules.properties, rules.report) : undefined;
+  const steps = charsetDecides ? transformations.map((step) => step && afterByteOrderMark(step)) : transformations;
 
-  return new SourceTransformationPipeline(transformations);
+  return new SourceTransformationPipeline([...steps, formatting], () => {
+    codeStyleRuns.clear();
+    renamed = undefined;
+  });
+}
+
+/** `step` applied to the text after a byte order mark, which it keeps. */
+function afterByteOrderMark(step: SourceTransformation): SourceTransformation {
+  return {
+    ...step,
+    apply: (text) => (text.startsWith('\uFEFF') ? `\uFEFF${step.apply(text.slice(1))}` : step.apply(text)),
+    ...(step.applyRules && {
+      applyRules: (text: string, excluded: ReadonlySet<string>) => {
+        if (!text.startsWith('\uFEFF')) {
+          return step.applyRules!(text, excluded);
+        }
+
+        const result = step.applyRules!(text.slice(1), excluded);
+
+        return { ...result, output: `\uFEFF${result.output}` };
+      },
+    }),
+  };
 }
 
 function anyExplicitAccessModifierEnabled(settings: CleanupSettings): boolean {

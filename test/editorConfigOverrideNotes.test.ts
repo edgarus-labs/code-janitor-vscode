@@ -196,6 +196,13 @@ describe('override notes', () => {
     expect(notes.get('convertToVarWhenApparent')).toBe('Overridden by .editorconfig: csharp_style_var_when_type_is_apparent');
   });
 
+  it('attributes a key only a global AnalyzerConfig sets to the global config, not to .editorconfig', () => {
+    fs.writeFileSync(path.join(workspace, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+    fs.writeFileSync(path.join(workspace, '.globalconfig'), 'is_global = true\r\ndotnet_diagnostic.CA1852.severity = warning\r\n');
+
+    expect(notesOf().get('sealClassesWhenSafe')).toBe('Overridden by a global AnalyzerConfig: dotnet_diagnostic.ca1852.severity');
+  });
+
   it('notes a Code Style rule enforced by .editorconfig, but not one it leaves alone', () => {
     const configPath = writeEditorConfig(workspace, false, 'csharp_prefer_braces = true:warning', 'dotnet_style_null_propagation = true:silent');
 

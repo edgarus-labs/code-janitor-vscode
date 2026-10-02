@@ -159,6 +159,9 @@ export class TextEdit {
 export class TextDocument {
   isClosed = false;
 
+  /** As in VS Code: the document has changes that are not saved; tests set it. */
+  isDirty = false;
+
   version = 1;
 
   constructor(
@@ -186,6 +189,14 @@ export class TextDocument {
   setText(text: string): void {
     this.content = text;
     this.version++;
+  }
+
+  /** As in VS Code: writes the text to disk. */
+  save(): Thenable<boolean> {
+    state.files.set(this.uri.fsPath, this.content);
+    state.documentListeners.save.forEach((listener) => listener(this));
+
+    return Promise.resolve(true);
   }
 
   positionAt(offset: number): Position {
@@ -278,6 +289,20 @@ function applyRangeEdits(document: TextDocument, edits: readonly RecordedEdit[])
   document.setText(content);
 }
 
+/**
+ * The text of a file once loaded into a VS Code document: a file with mixed line endings gets the
+ * dominant one throughout (`PieceTreeTextBufferFactory`, which normalizes the end of lines).
+ */
+function asLoadedText(content: string): string {
+  const crlf = content.match(/\r\n/g)?.length ?? 0;
+  const cr = content.match(/\r(?!\n)/g)?.length ?? 0;
+  const lf = content.match(/(?<!\r)\n/g)?.length ?? 0;
+  const eol = cr + crlf > (cr + lf + crlf) / 2 ? '\r\n' : '\n';
+  const mixed = eol === '\r\n' ? cr + lf > 0 : cr + crlf > 0;
+
+  return mixed ? content.replace(/\r\n|\r|\n/g, eol) : content;
+}
+
 // ---------------------------------------------------------------- languages
 
 export const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 } as const;
@@ -321,7 +346,10 @@ export const languages = {
       set: (uri: Uri, diagnostics: readonly Diagnostic[]) => {
         state.diagnostics.set(uri.toString(), [...diagnostics]);
       },
+      has: (uri: Uri) => state.diagnostics.has(uri.toString()),
+      // As in VS Code, every deletion is an update of the Problems panel, whether or not the uri had diagnostics.
       delete: (uri: Uri) => {
+        state.diagnosticDeletions.push(uri.toString());
         state.diagnostics.delete(uri.toString());
       },
       dispose: () => undefined,
@@ -378,7 +406,12 @@ export const state = {
   applyEditResult: true,
   /** Published diagnostics, by document uri. */
   diagnostics: new Map<string, Diagnostic[]>(),
+  /** Every `DiagnosticCollection.delete`, by uri. */
+  diagnosticDeletions: [] as string[],
   codeActionProviders: [] as MockCodeActionProvider[],
+  /** The editor tabs (`window.tabGroups`, one group); `showInTab` opens one. */
+  tabs: [] as { input: unknown; isDirty: boolean }[],
+  tabListeners: [] as ((event: { opened: readonly unknown[]; closed: readonly unknown[]; changed: readonly unknown[] }) => void)[],
   /** Handlers of `workspace.onDid(Open|Change|Close|Save)TextDocument`. */
   documentListeners: { open: [], change: [], close: [], save: [] } as Record<'open' | 'change' | 'close' | 'save', ((argument: unknown) => void)[]>,
   /** Handlers of the `workspace.createFileSystemWatcher` watchers: a file created, changed or deleted on disk. */
@@ -414,10 +447,20 @@ export function resetMock(): void {
   state.failingWrites = new Set();
   state.applyEditResult = true;
   state.diagnostics = new Map();
+  state.diagnosticDeletions = [];
   state.codeActionProviders = [];
+  state.tabs = [];
+  state.tabListeners = [];
   state.documentListeners = { open: [], change: [], close: [], save: [] };
   state.diskListeners = [];
   window.activeTextEditor = undefined;
+}
+
+/** Opens an editor tab on `uri`, as VS Code does once a document is shown. */
+export function showInTab(uri: Uri): void {
+  const tab = { input: { uri }, isDirty: false };
+  state.tabs.push(tab);
+  state.tabListeners.forEach((listener) => listener({ opened: [tab], closed: [], changed: [] }));
 }
 
 export interface WillSaveEvent {
@@ -457,6 +500,17 @@ export function createContext(packageJSON?: unknown): ExtensionContext {
 
 export const window = {
   activeTextEditor: undefined as TextEditor | undefined,
+
+  tabGroups: {
+    get all(): { tabs: { input: unknown; isDirty: boolean }[] }[] {
+      return [{ tabs: state.tabs }];
+    },
+    onDidChangeTabs(handler: (typeof state.tabListeners)[number]): { dispose(): void } {
+      state.tabListeners.push(handler);
+
+      return { dispose: () => undefined };
+    },
+  },
 
   createOutputChannel(_name: string) {
     return {
@@ -605,7 +659,7 @@ export const workspace = {
         return Promise.reject(new Error(`cannot open ${target.toString()}. Detail: Unable to read file '${target.fsPath}'`));
       }
 
-      const loaded = new TextDocument(target, content, 'csharp');
+      const loaded = new TextDocument(target, asLoadedText(content), 'csharp');
       state.documents.push(loaded);
       state.documentListeners.open.forEach((listener) => listener(loaded));
 
@@ -643,13 +697,14 @@ export const workspace = {
         continue;
       }
 
-      // A closed file: VS Code loads it, applies the edit and the caller saves it.
+      // A closed file: VS Code loads it and applies the edit, unsaved; the caller saves it.
       const filePath = key.replace(/^file:\/\//, '');
       const content = state.files.get(filePath);
       if (content !== undefined) {
-        const loaded = new TextDocument(Uri.file(filePath), content, 'csharp');
+        const loaded = new TextDocument(Uri.file(filePath), asLoadedText(content), 'csharp');
+        state.documents.push(loaded);
+        state.documentListeners.open.forEach((listener) => listener(loaded));
         applyRangeEdits(loaded, edits);
-        state.files.set(filePath, loaded.getText());
       }
     }
 

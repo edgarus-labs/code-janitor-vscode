@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readMSBuildProject } from '../msbuildProperties';
 import { WorkspaceProject, readProject } from '../naming/workspaceScope';
-import { DeclarationAggregate, DeclarationIndex, FileSummary, summarizeDeclarations } from './declarations';
+import { DeclarationAggregate, DeclarationIndex, ExternalDeclarations, FileSummary, asConditional, summarizeDeclarations } from './declarations';
 
 /** What the using-directive placement knows about the project a file belongs to. */
 export interface ProjectContext {
@@ -26,7 +27,7 @@ interface CachedProject {
   aggregate: DeclarationAggregate;
   summaries: Map<string, FileSummary>;
   externalReferences: boolean;
-  unindexedFramework: boolean;
+  external: ExternalDeclarations;
   incomplete?: string;
 }
 
@@ -61,7 +62,7 @@ export function projectContextOf(filePath: string, source: string): ProjectConte
   const own = cached.summaries.get(file);
 
   return {
-    index: cached.aggregate.view(own, summarizeDeclarations(source), cached.unindexedFramework),
+    index: cached.aggregate.view(own, summarizeDeclarations(source), cached.external),
     externalReferences: cached.externalReferences,
     incomplete: cached.incomplete,
     projectFile: located.projectFile,
@@ -104,7 +105,7 @@ function loadProject(projectFile: string): CachedProject {
   const aggregate = new DeclarationAggregate();
   const summaries = new Map<string, FileSummary>();
   let externalReferences = false;
-  let unindexedFramework = false;
+  let namespaceRoots: Set<string> | 'any' = new Set();
 
   // The SDK writes the `<Using>` items of the project (`<ImplicitUsings>` adds some) into a generated file; they are global usings like the written ones.
   const msbuildUsings = msbuildGlobalUsingsOf(projects[0]);
@@ -121,11 +122,15 @@ function loadProject(projectFile: string): CachedProject {
 
     const references = referencesOf(project);
     externalReferences ||= references.external;
-    unindexedFramework ||= references.unindexedFramework;
+    namespaceRoots = namespaceRoots === 'any' || references.namespaceRoots === 'any' ? 'any' : new Set([...namespaceRoots, ...references.namespaceRoots]);
+    const removals = compileRemovalsOf(project);
+    problems.push(...removals.problems);
     for (const file of project.csharpFiles) {
       const read = summaryOf(file);
       // A `global using` applies only in the compilation that declares it: those of referenced projects do not reach this one.
-      const summary = read && position > 0 ? withoutGlobalUsings(read) : read;
+      const compiled = read && position > 0 ? withoutGlobalUsings(read) : read;
+      // A file a `<Compile Remove>` may take out of the compilation declares what it declares only in some builds.
+      const summary = compiled && removals.patterns.some((pattern) => pattern.test(file.replace(/\\/g, '/'))) ? asConditional(compiled) : compiled;
       if (summary) {
         aggregate.add(summary);
         summaries.set(file, summary);
@@ -140,12 +145,72 @@ function loadProject(projectFile: string): CachedProject {
     aggregate,
     summaries,
     externalReferences,
-    unindexedFramework,
+    external: {
+      // Packages and frameworks other than the indexed ones add to the framework namespaces, and so do the
+      // reference assemblies of other target frameworks (.NET Framework, .NET Standard, platforms).
+      frameworkNamespacesOpen: externalReferences || projects[0] === undefined || !targetsIndexedFramework(projects[0]),
+      namespaceRoots,
+    },
     ...(problems.length > 0 ? { incomplete: problems.join('; ') } : {}),
   };
   projectCache.set(projectFile, project);
 
   return project;
+}
+
+/** True when every target framework of `project` is a .NET (5 or later) one without a platform, whose namespaces the index lists. */
+function targetsIndexedFramework(project: WorkspaceProject): boolean {
+  const msbuild = readMSBuildProject(project.projectFile);
+  const name = msbuild?.property('TargetFrameworks') !== undefined ? 'TargetFrameworks' : 'TargetFramework';
+  const value = msbuild?.isCertain(name) ? msbuild.property(name) : undefined;
+  const frameworks = (value ?? '')
+    .split(';')
+    .map((framework) => framework.trim())
+    .filter((framework) => framework !== '');
+
+  return frameworks.length > 0 && frameworks.every((framework) => /^net\d+\.\d+$/i.test(framework));
+}
+
+/**
+ * The files the `<Compile Remove>` items of `project` or its `Directory.Build.*` files may take out of the compilation, as
+ * patterns of full paths with `/` separators, and the items whose paths MSBuild has to evaluate.
+ */
+function compileRemovalsOf(project: WorkspaceProject): { patterns: RegExp[]; problems: string[] } {
+  const files = buildFilesOf(project);
+  const patterns: RegExp[] = [];
+  const problems: string[] = [];
+  for (const text of [...files.props, files.projectText ?? '', ...files.targets]) {
+    for (const element of text.replace(/<!--[\s\S]*?-->/g, '').matchAll(/<Compile\b((?:[^>"']|"[^"]*"|'[^']*')*)>/gi)) {
+      const remove = /\bRemove\s*=\s*(["'])(.*?)\1/i.exec(element[1])?.[2];
+      for (const include of (remove ?? '').split(';').map((part) => part.trim()).filter((part) => part !== '')) {
+        if (/[$@%]\(/.test(include)) {
+          problems.push(`the <Compile Remove> item '${include}' needs MSBuild to be evaluated`);
+        } else {
+          patterns.push(globPattern(path.resolve(project.directory, include.replace(/\\/g, '/')).replace(/\\/g, '/')));
+        }
+      }
+    }
+  }
+
+  return { patterns, problems };
+}
+
+/** An MSBuild wildcard path: `**` any number of folders, `*` and `?` characters within one name. */
+function globPattern(glob: string): RegExp {
+  let source = '';
+  for (let i = 0; i < glob.length; i++) {
+    if (glob.startsWith('**/', i)) {
+      source += '(?:.*/)?';
+      i += 2;
+    } else if (glob.startsWith('**', i)) {
+      source += '.*';
+      i++;
+    } else {
+      source += glob[i] === '*' ? '[^/]*' : glob[i] === '?' ? '[^/]' : glob[i].replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+
+  return new RegExp(`^${source}$`, process.platform === 'win32' ? 'i' : '');
 }
 
 /**
@@ -372,15 +437,16 @@ function msbuildGlobalUsingsOf(project: WorkspaceProject | undefined): { usings:
   return { usings: [...new Set(items.map((item) => item.words))], problems };
 }
 
-const EXTERNAL_REFERENCE = /<(?:PackageReference|Reference|FrameworkReference|COMReference|PackageVersion)\b/i;
+const EXTERNAL_REFERENCE = /<(?:PackageReference|GlobalPackageReference|Reference|FrameworkReference|COMReference|PackageVersion)\b/i;
 /** Windows Desktop (Windows Forms, WPF) or another shared framework than the two the index is generated from. */
 const UNINDEXED_FRAMEWORK = /<(?:UseWPF|UseWindowsForms)>\s*true\s*<|<FrameworkReference\s[^>]*\bInclude\s*=\s*"(?!Microsoft\.(?:NETCore|AspNetCore)\.App")|\bSdk\s*=\s*"Microsoft\.NET\.Sdk\.WindowsDesktop"/i;
 
 /**
- * What the project, its `Directory.Build.*` files or its SDK reference besides what the index lists: assemblies (`external`),
- * among them a framework (`unindexedFramework`) that adds types and extension methods to the namespaces of the listed ones.
+ * What the project, its `Directory.Build.*` files or its SDK reference besides what the index lists: whether there are
+ * such assemblies (`external`), and the first segments of the namespaces they may declare, taken from their names
+ * (`Company.Shared.Logging` may declare `Company.*`). Packages often add to `System` and `Microsoft`, whatever their name.
  */
-function referencesOf(project: WorkspaceProject): { external: boolean; unindexedFramework: boolean } {
+function referencesOf(project: WorkspaceProject): { external: boolean; namespaceRoots: ReadonlySet<string> | 'any' } {
   const texts: string[] = [];
   const read = (file: string): void => {
     try {
@@ -401,15 +467,49 @@ function referencesOf(project: WorkspaceProject): { external: boolean; unindexed
     }
   }
 
-  const unindexedFramework = texts.some((text) => UNINDEXED_FRAMEWORK.test(text));
+  const projectText = texts[0] ?? '';
+  const packagesConfig = path.join(project.directory, 'packages.config');
+  const external =
+    texts.some((text) => UNINDEXED_FRAMEWORK.test(text) || EXTERNAL_REFERENCE.test(text)) ||
+    // A project SDK other than the plain one brings its own references (web, Razor, MSTest, ...).
+    /<Project\s[^>]*\bSdk\s*=\s*"(?!Microsoft\.NET\.Sdk")/i.test(projectText) ||
+    fs.existsSync(packagesConfig);
+  if (!external) {
+    return { external, namespaceRoots: new Set() };
+  }
 
-  return {
-    external:
-      unindexedFramework ||
-      texts.some((text) => EXTERNAL_REFERENCE.test(text)) ||
-      // A project SDK other than the plain one brings its own references (web, Razor, MSTest, ...).
-      /<Project\s[^>]*\bSdk\s*=\s*"(?!Microsoft\.NET\.Sdk")/i.test(texts[0] ?? '') ||
-      fs.existsSync(path.join(project.directory, 'packages.config')),
-    unindexedFramework,
-  };
+  const names: string[] = [];
+  for (const text of texts.map((candidate) => candidate.replace(/<!--[\s\S]*?-->/g, ''))) {
+    for (const [, kind, attributes] of text.matchAll(/<(\w*Reference|PackageVersion)\b((?:[^>"']|"[^"]*"|'[^']*')*)>/gi)) {
+      if (/^COMReference$/i.test(kind)) {
+        // A type library names its own namespaces.
+        return { external, namespaceRoots: 'any' };
+      }
+
+      if (/^(?:PackageReference|GlobalPackageReference|PackageVersion|Reference|FrameworkReference)$/i.test(kind)) {
+        names.push(...(/\bInclude\s*=\s*(["'])(.*?)\1/i.exec(attributes)?.[2] ?? '').split(';'));
+      }
+    }
+  }
+
+  for (const sdk of [/<Project\s[^>]*\bSdk\s*=\s*(["'])(.*?)\1/i.exec(projectText)?.[2] ?? '', ...[...projectText.matchAll(/<Sdk\s[^>]*\bName\s*=\s*(["'])(.*?)\1/gi)].map((match) => match[2])]) {
+    names.push(...sdk.split(';').map((name) => name.split('/')[0]));
+  }
+
+  try {
+    names.push(...[...fs.readFileSync(packagesConfig, 'utf8').matchAll(/<package\s[^>]*\bid\s*=\s*(["'])(.*?)\1/gi)].map((match) => match[2]));
+  } catch {
+    // No packages.config.
+  }
+
+  const roots = new Set(['system', 'microsoft']);
+  for (const name of names.map((candidate) => candidate.split(',')[0].trim()).filter((candidate) => candidate !== '')) {
+    if (/[$@%*?]/.test(name)) {
+      return { external, namespaceRoots: 'any' };
+    }
+
+    roots.add(name.split('.')[0].toLowerCase());
+  }
+
+  return { external, namespaceRoots: roots };
 }

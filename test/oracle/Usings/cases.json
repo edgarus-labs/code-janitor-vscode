@@ -112,6 +112,14 @@
     "Inward/InAliasQualifier.cs": {
       "skipped": "finds 'Txt' through",
       "control": true
+    },
+    "Outward/OutGenericArity.cs": {
+      "moved": [
+        "using R = Company.Result;\n\nnamespace Company.App"
+      ]
+    },
+    "Outward/OutConditionalNamespace.cs": {
+      "skipped": "'Archive' is declared in Company.App only under a preprocessor condition"
     }
   },
   "inward": {
@@ -174,6 +182,10 @@
     },
     "Inward/InHiddenBinding.cs": {
       "skipped": "finds 'Math' through 'using System;'",
+      "control": true
+    },
+    "Inward/InHiddenGenericArity.cs": {
+      "skipped": "finds 'Helpers' through 'using Vendor;'",
       "control": true
     },
     "Inward/InHiddenNestedType.cs": {

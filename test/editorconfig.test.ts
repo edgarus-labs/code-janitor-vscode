@@ -89,10 +89,12 @@ describe('resolveEditorConfigProperties', () => {
     expect(matches('src/*.cs', '/repo/src/deep/a.cs')).toBe(false);
   });
 
-  it('matches ** across directories, including zero directories', () => {
-    expect(matches('src/**/*.cs', '/repo/src/a.cs')).toBe(true);
+  it('matches ** as any string, including separators, as Roslyn does', () => {
+    expect(matches('src/**/*.cs', '/repo/src/a.cs')).toBe(false);
+    expect(matches('src/**/*.cs', '/repo/src/x/a.cs')).toBe(true);
     expect(matches('src/**/*.cs', '/repo/src/x/y/a.cs')).toBe(true);
-    expect(matches('**/Tests/*.cs', '/repo/Tests/a.cs')).toBe(true);
+    expect(matches('**/Tests/*.cs', '/repo/Tests/a.cs')).toBe(false);
+    expect(matches('**/Tests/*.cs', '/repo/lib/Tests/a.cs')).toBe(true);
     expect(matches('src/**', '/repo/src/x/a.txt')).toBe(true);
     expect(matches('src/**', '/repo/lib/a.txt')).toBe(false);
   });
@@ -116,8 +118,9 @@ describe('resolveEditorConfigProperties', () => {
     expect(matches('file{1..3}.cs', '/repo/file2.cs')).toBe(true);
     expect(matches('file{1..3}.cs', '/repo/file4.cs')).toBe(false);
     expect(matches('file{-1..1}.cs', '/repo/file-1.cs')).toBe(true);
-    expect(matches('{single}.cs', '/repo/{single}.cs')).toBe(true);
-    expect(matches('{single}.cs', '/repo/single.cs')).toBe(false);
+    expect(matches('{single}.cs', '/repo/single.cs')).toBe(true);
+    expect(matches('{single}.cs', '/repo/{single}.cs')).toBe(false);
+    expect(matches('*.{cs}', '/repo/src/a.cs')).toBe(true);
   });
 
   it('treats escaped and unbalanced specials literally', () => {
@@ -215,7 +218,10 @@ describe('severity helpers', () => {
     expect(resolveDiagnosticSeverity(props('dotnet_diagnostic.IDE1006.severity = default\n' + all), 'IDE1006', 'none')).toBe(
       'none'
     );
-    expect(resolveDiagnosticSeverity(props('dotnet_diagnostic.IDE1006.severity = warn\n'), 'IDE1006')).toBe('warning');
+    // `warn` is not a severity Roslyn reads: it is invalid and falls back like any other invalid name.
+    expect(resolveDiagnosticSeverity(props('dotnet_diagnostic.IDE1006.severity = warn\n'), 'IDE1006')).toBeUndefined();
+    expect(resolveDiagnosticSeverity(props('dotnet_diagnostic.IDE1006.severity = warn\n' + all), 'IDE1006')).toBe('error');
+    expect(splitOptionSeverity('true:warn')).toEqual({ value: 'true:warn' });
     expect(resolveDiagnosticSeverity(props(''), 'IDE1006')).toBeUndefined();
   });
 

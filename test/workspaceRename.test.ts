@@ -2,10 +2,18 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as editorconfig from '../src/cleanup/editorconfig';
 import { planWorkspaceRenames, WorkspaceRenamePlan } from '../src/cleanup/naming/workspaceRenamer';
 import { discoverProjects } from '../src/cleanup/naming/workspaceScope';
 import { renameSymbolsAcrossWorkspace } from '../src/commands/workspaceRename';
-import { resetMock, state, Uri, workspace as vscodeWorkspace, WorkspaceEdit } from './helpers/vscodeMock';
+import { resetMock, state, Uri, window as vscodeWindow, workspace as vscodeWorkspace, WorkspaceEdit } from './helpers/vscodeMock';
+
+vi.mock('../src/cleanup/editorconfig', async (importOriginal) => {
+  const actual = await importOriginal<typeof editorconfig>();
+
+  return { ...actual, loadEditorConfigProperties: vi.fn(actual.loadEditorConfigProperties) };
+});
+const loadEditorConfigProperties = vi.mocked(editorconfig.loadEditorConfigProperties);
 
 /** Public members and types PascalCase, as the generated .editorconfig requires. */
 const EDITORCONFIG = [
@@ -757,6 +765,112 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
       "    /// <summary>Like <see cref='Order.Count'/>, <see cref=\"Count\"/> and <see cref=\"T:Lib.Order\"/>, not <see cref=\"External.count\"/>.</summary>"
     );
   });
+
+  it('refuses a simple name inside a type whose bases outside the workspace may declare it', () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public bool enabled;\n}\n',
+      'Lib/Comp.cs': 'namespace Lib;\n\npublic class Comp : UnityEngine.MonoBehaviour\n{\n    private void Start() { enabled = false; }\n}\n',
+    });
+
+    const result = plan(root);
+
+    expect(result.renames).toEqual([]);
+    expect(output(root, result, 'Lib/Comp.cs')).toBeUndefined();
+    expect(issues(result)).toEqual([expect.stringMatching(/field 'enabled' should be named 'Enabled'; not renamed across the workspace because .*Comp\.cs line 5 is in Comp, whose base MonoBehaviour is declared outside the workspace and may declare 'enabled'/)]);
+  });
+
+  it('refuses an unqualified cref or a type name inside a type whose bases outside the workspace may declare it', () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public bool enabled;\n}\n\npublic class line { }\n',
+      'Lib/Comp.cs': [
+        'namespace Lib;',
+        '',
+        'public class Comp : External.Base',
+        '{',
+        '    /// <summary>See <see cref="enabled"/>.</summary>',
+        '    public int Value;',
+        '    public object Make() => new line();',
+        '}',
+        '',
+      ].join('\n'),
+    });
+
+    const result = plan(root);
+
+    expect(result.renames).toEqual([]);
+    expect(issues(result)).toEqual([
+      expect.stringMatching(/field 'enabled' should be named 'Enabled'; .*Comp\.cs line 5 is in Comp, whose base Base is declared outside the workspace/),
+      expect.stringMatching(/class 'line' should be named 'Line'; .*Comp\.cs line 7 is in Comp, whose base Base is declared outside the workspace/),
+    ]);
+  });
+
+  it('still renames a simple name in a type deriving from the declaring type or with every base in the workspace', () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order : Entity\n{\n    public bool enabled;\n}\n\npublic class Entity { }\n',
+      'Lib/Special.cs': 'namespace Lib;\n\npublic class Special : Order\n{\n    public void Off() { enabled = false; }\n    private sealed class Inner : Entity { private bool On() => new Order().enabled; }\n}\n',
+    });
+
+    const result = plan(root);
+
+    expect(issues(result)).toEqual([]);
+    expect(output(root, result, 'Lib/Special.cs')).toContain('public void Off() { Enabled = false; }');
+  });
+
+  it('renames a simple name a using static of the declaring type imports, but refuses one outside any type declaring or inheriting it', () => {
+    const files = (directive: string) =>
+      workspace({
+        'Lib/Lib.csproj': LIBRARY,
+        'Lib/Defaults.cs': 'namespace Lib;\n\npublic static class Defaults\n{\n    public const int timeout = 30;\n}\n',
+        'App/App.csproj': APP,
+        'App/Client.cs': `${directive}\n\ninternal class Client\n{\n    public int T() => timeout;\n}\n`,
+      });
+
+    const imported = files('using static Lib.Defaults;');
+    const importedResult = plan(imported, ['Lib/Defaults.cs']);
+    expect(issues(importedResult)).toEqual([]);
+    expect(output(imported, importedResult, 'App/Client.cs')).toContain('public int T() => Timeout;');
+
+    const vendor = files('using static Vendor.Consts;');
+    const vendorResult = plan(vendor, ['Lib/Defaults.cs']);
+    expect(vendorResult.renames).toEqual([]);
+    expect(issues(vendorResult)).toEqual([expect.stringMatching(/field 'timeout' should be named 'Timeout'; .*Client\.cs line 5 is in Client, which neither declares nor inherits 'timeout'/)]);
+  });
+
+  it.each([
+    ['an anonymous-type property', 'public static int M() { var a = new { count = 1 }; return a.count; }'],
+    ['a tuple element', 'public static int M() { var t = (count: 1, size: 2); return t.count; }'],
+    ['a member of a type outside the workspace', 'public static int M(Vendor.Basket basket) => basket.count();'],
+  ])('refuses an extension method rename where a member access may be %s', (_label, use) => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic sealed class Order { }\n\npublic static class OrderExt\n{\n    public static int count(this Order o) => 0;\n}\n',
+      'App/App.csproj': APP,
+      'App/Program.cs': `using Lib;\n\ninternal static class Program\n{\n    ${use}\n}\n`,
+    });
+
+    const result = plan(root);
+
+    expect(result.renames).toEqual([]);
+    expect(issues(result)).toEqual([expect.stringMatching(/method 'count' should be named 'Count'; not renamed across the workspace because .*Program\.cs line 5/)]);
+  });
+
+  it('loads the naming rules and violations of each file once per plan, whatever the number of renames', () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public int alpha;\n    public int beta;\n    public int gamma;\n}\n',
+      'Lib/Use.cs': 'namespace Lib;\n\ninternal static class Use\n{\n    public static int Sum(Order o) => o.alpha + o.beta + o.gamma;\n}\n',
+    });
+    loadEditorConfigProperties.mockClear();
+
+    const result = plan(root);
+
+    expect(result.renames).toHaveLength(3);
+    const loaded = loadEditorConfigProperties.mock.calls.map(([filePath]) => path.relative(root, filePath));
+    expect(loaded.sort()).toEqual([path.join('Lib', 'Order.cs'), path.join('Lib', 'Use.cs')]);
+  });
 });
 
 describe('renameSymbolsAcrossWorkspace (command)', () => {
@@ -846,6 +960,28 @@ describe('renameSymbolsAcrossWorkspace (command)', () => {
     expect(applied).toEqual([]);
     expect(reported).toEqual([expect.stringMatching(/field 'count' should be named 'Count'; not renamed across the workspace because .*Legacy\.cs is not UTF-8 text, which the rename cannot rewrite safely/)]);
     expect(fs.readFileSync(legacy)).toEqual(bytes);
+  });
+
+  it('applies nothing when a file it rewrites changed while the confirmation was open', async () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public int count;\n}\n',
+      'Lib/Report.cs': 'namespace Lib;\n\ninternal static class Report\n{\n    public static int Sum(Order o) => o.count;\n}\n',
+    });
+    const report = path.join(root, 'Lib', 'Report.cs');
+    const changed = 'namespace Lib;\n\ninternal static class Report\n{\n    public static int Sum(Order o) => o.count + 1;\n}\n';
+    // Another tool rewrites a closed file on disk while the modal dialog is open.
+    vi.spyOn(vscodeWindow, 'showWarningMessage').mockImplementation(() => {
+      state.files.set(report, changed);
+
+      return Promise.resolve('Rename' as never);
+    });
+
+    const { applied, reported } = await run(root, ['Lib/Order.cs']);
+
+    expect(applied).toEqual([]);
+    expect(state.files.get(report)).toBe(changed);
+    expect(reported).toEqual([expect.stringMatching(/line 5: field 'count' should be named 'Count'; not renamed because .*Report\.cs changed since the rename was planned; run cleanup again\./)]);
   });
 
   it('reports every declaration of a rename group when the rename is cancelled', async () => {

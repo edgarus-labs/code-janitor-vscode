@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { CODE_STYLE_GROUPS, CODE_STYLE_RULES, formatCodeStyleScopeSetting, formatCodeStyleSetting, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
 import { editorConfigOverrideNotes } from '../cleanup/overrideNotes';
 import { readRepositoryPolicy } from '../cleanup/repositoryOverrides';
-import { CleanupSettings } from '../cleanup/types';
+import { CleanupSettings, createDefaultSettings } from '../cleanup/types';
 import { vscodeSettingOf } from './repositorySettings';
 import { readCleanupSettings } from './settings';
 
@@ -184,12 +184,14 @@ export function readOverrideNotes(): OverrideNotes {
   const policy = readRepositoryPolicy(root);
   if (policy.configPath) {
     const pinned = (key: string): string => `Overridden by ${path.basename(policy.configPath!)}: ${key} in ${policy.configPath}`;
+    const pinnedKeys = new Map<string, string>();
     for (const key of Object.keys(policy.overrides) as (keyof CleanupSettings)[]) {
       const setting = vscodeSettingOf(key);
       if (setting !== undefined) {
-        notes.notes[`codeJanitor.cleanup.${setting}`] = pinned(setting);
+        pinnedKeys.set(key, pinned(setting));
       }
     }
+    Object.assign(notes.notes, settingNotes(pinnedKeys));
 
     for (const rule of Object.keys(policy.codeStyle)) {
       notes.ruleNotes[rule] = pinned(rule);
@@ -197,16 +199,41 @@ export function readOverrideNotes(): OverrideNotes {
   }
 
   const ruleKeys = new Set(CODE_STYLE_RULES.map((rule) => rule.key));
+  const decidedKeys = new Map<string, string>();
   for (const [name, note] of editorConfigOverrideNotes(root, readCleanupSettings(root))) {
     if (ruleKeys.has(name)) {
       notes.ruleNotes[name] = note;
     } else {
-      // The nine per-kind explicit access modifier flags are one setting in VS Code.
-      notes.notes[`codeJanitor.cleanup.${name.startsWith('insertExplicitAccessModifiersOn') ? 'insertExplicitAccessModifiers' : name}`] = note;
+      decidedKeys.set(name, note);
+    }
+  }
+  Object.assign(notes.notes, settingNotes(decidedKeys));
+
+  return notes;
+}
+
+/**
+ * The note of each VS Code setting from the notes of its cleanup flags: a group setting (the padding
+ * or explicit access modifier flags) gets one only when every flag of the group has one, since the
+ * flags without a note still follow the setting.
+ */
+function settingNotes(keyNotes: ReadonlyMap<string, string>): Record<string, string> {
+  const keysBySetting = new Map<string, string[]>();
+  for (const key of Object.keys(createDefaultSettings()) as (keyof CleanupSettings)[]) {
+    const setting = vscodeSettingOf(key);
+    if (setting !== undefined) {
+      keysBySetting.set(setting, [...(keysBySetting.get(setting) ?? []), key]);
     }
   }
 
-  return notes;
+  const result: Record<string, string> = {};
+  for (const [setting, keys] of keysBySetting) {
+    if (keys.every((key) => keyNotes.has(key))) {
+      result[`codeJanitor.cleanup.${setting}`] = keyNotes.get(keys[0])!;
+    }
+  }
+
+  return result;
 }
 
 export function registerSettingsUiCommand(context: vscode.ExtensionContext): void {
@@ -355,9 +382,15 @@ class SettingsPanel {
         const override =
           this.scope === 'workspace' ? inspected?.workspaceValue : inspected?.globalValue;
 
-        // The rule editor offers each value in its normalized form (`True` is `true`); invalid rules are not shown.
-        values[setting.key] =
-          setting.kind === 'codeStyleRules' && override !== undefined ? formatCodeStyleSetting(parseCodeStyleSetting(override)) : (override ?? setting.defaultValue);
+        if (setting.kind === 'codeStyleRules') {
+          // VS Code merges the rules across scopes: Workspace scope shows the rules in effect there (the
+          // User settings' unless turned off with `null`), which an update then writes back. The rule
+          // editor offers each value in its normalized form (`True` is `true`); invalid rules are not shown.
+          const rules = this.scope === 'workspace' ? { ...(inspected?.globalValue as object), ...(override as object) } : override;
+          values[setting.key] = rules === undefined ? setting.defaultValue : formatCodeStyleSetting(parseCodeStyleSetting(rules));
+        } else {
+          values[setting.key] = override ?? setting.defaultValue;
+        }
       }
     }
 

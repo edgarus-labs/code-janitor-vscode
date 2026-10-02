@@ -60,12 +60,13 @@ export function runCleanupOnChangedLines(
   // Issues reported while the pipeline is built (unresolved Code Style rules) are forwarded too.
   let collecting = true;
   let lines = changed;
+  // A step numbers the lines of its issues in its input, whose changed lines are `lines`.
   const onLine = (detail: string) => {
     const line = / line (\d+):/.exec(detail)?.[1];
 
     return line === undefined || lines.has(Number(line) - 1);
   };
-  const pipeline = getCleanupPipeline(source, filePath, settings, disqualifiedTypeNames, (issue) => {
+  const pipeline = getCleanupPipeline(filePath, settings, disqualifiedTypeNames, (issue) => {
     if (issue.kind === 'unsupported' || (collecting && onLine(issue.detail))) {
       onIssue?.(issue);
     }

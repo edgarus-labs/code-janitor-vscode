@@ -117,6 +117,14 @@ const PROPERTY = /<([A-Za-z_][\w.-]*)(\s[^>]*?)?(?:\/>|>([\s\S]*?)<\/\1\s*>)/g;
 const ITEM = /<([A-Za-z_][\w.-]*)\s([^>]*?)\/?>/g;
 const CONDITION = /\bCondition\s*=/i;
 const MAX_IMPORT_DEPTH = 8;
+/** Reserved properties the reader seeds; MSBuild rejects any attempt to set them. */
+const RESERVED_PROPERTIES: Record<string, true> = {
+  msbuildprojectdirectory: true,
+  msbuildprojectfullpath: true,
+  msbuildprojectfile: true,
+  msbuildprojectname: true,
+  msbuildprojectextension: true,
+};
 
 class EvaluationState {
   readonly properties: Map<string, string>;
@@ -143,6 +151,11 @@ class EvaluationState {
   }
 
   isCertain(name: string): boolean {
+    // MSBuild does not let a project or an import set a reserved property (MSB4004).
+    if (Object.hasOwn(RESERVED_PROPERTIES, name)) {
+      return true;
+    }
+
     return !this.uncertain.has(name) && (!this.unknownImport || this.setAfterUnknownImport.has(name));
   }
 
@@ -208,8 +221,8 @@ class EvaluationState {
     }
 
     const project = /\bProject\s*=\s*"([^"]*)"/i.exec(attributes)?.[1];
-    const target = project === undefined ? undefined : this.expand(project, file).value;
-    const resolved = target === undefined ? undefined : path.resolve(directory, target.replace(/\\/g, path.sep));
+    const target = project === undefined ? undefined : this.expand(project, file);
+    const resolved = target?.certain ? path.resolve(directory, target.value.replace(/\\/g, path.sep)) : undefined;
     const condition = /\bCondition\s*=\s*"([^"]*)"/i.exec(attributes)?.[1];
     if (!resolved || /[*?]/.test(resolved)) {
       this.markUnknownImport();
@@ -218,13 +231,13 @@ class EvaluationState {
 
     if (condition !== undefined) {
       const exists = /^\s*(!)?\s*Exists\s*\(\s*'([^']*)'\s*\)\s*$/i.exec(condition);
-      const checked = exists ? this.expand(exists[2], file).value : undefined;
-      if (checked === undefined) {
+      const checked = exists ? this.expand(exists[2], file) : undefined;
+      if (!checked?.certain) {
         this.markUnknownImport();
         return;
       }
 
-      if (fs.existsSync(path.resolve(directory, checked.replace(/\\/g, path.sep))) === (exists?.[1] === '!')) {
+      if (fs.existsSync(path.resolve(directory, checked.value.replace(/\\/g, path.sep))) === (exists?.[1] === '!')) {
         return;
       }
     }
@@ -278,8 +291,14 @@ class EvaluationState {
         continue;
       }
 
+      // An include only MSBuild can resolve (an unknown property) is skipped like a conditional one.
+      const expanded = this.expand(decode(include), file);
+      if (!expanded.certain) {
+        continue;
+      }
+
       const list = this.items.get(type) ?? [];
-      for (const part of this.expand(decode(include), file).value.split(';').map((entry) => entry.trim()).filter(Boolean)) {
+      for (const part of expanded.value.split(';').map((entry) => entry.trim()).filter(Boolean)) {
         list.push(path.resolve(this.projectDirectory, part.replace(/\\/g, path.sep)));
       }
 
@@ -335,6 +354,10 @@ class EvaluationState {
     }
 
     const expanded = functions.replace(/\$\(([\w.-]+)\)/g, (_, name: string) => reference(name));
+    // What is left is a function only MSBuild evaluates, such as $(Name.Replace(' ', '_')).
+    if (/\$\(/.test(expanded)) {
+      certain = false;
+    }
 
     return { value: expanded, certain };
   }

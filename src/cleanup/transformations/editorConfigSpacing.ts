@@ -1,4 +1,5 @@
 import { EditorConfigProperties } from '../editorconfig';
+import { effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
 import { Token, lex } from '../syntax/lexer';
 import { isRecoveredNode, optionValue } from './editorConfigSupport';
@@ -538,7 +539,8 @@ function applyParentheses(
     }
   }
 
-  const between = optionValue(props, 'csharp_space_between_parentheses');
+  // An unsupported value (a misspelled kind) is reported as such and applies nothing.
+  const between = effectiveEditorConfigValue(props, 'csharp_space_between_parentheses');
   if (between === undefined) {
     return;
   }

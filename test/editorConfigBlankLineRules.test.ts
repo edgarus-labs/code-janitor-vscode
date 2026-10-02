@@ -69,6 +69,19 @@ describe('experimental blank-line and wrapping options (IDE2000 - IDE2006)', () 
     );
   });
 
+  it('IDE2001 puts an else that follows a moved statement on its own line', () => {
+    expectRewrite(
+      'csharp_style_allow_embedded_statements_on_same_line_experimental',
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a) X(); else Y();', '    }', '}'),
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a)', '            X();', '        else', '            Y();', '    }', '}')
+    );
+    expectRewrite(
+      'csharp_style_allow_embedded_statements_on_same_line_experimental',
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a) X(); else if (!a) Y(); else Z();', '    }', '}'),
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a)', '            X();', '        else if (!a)', '            Y();', '        else', '            Z();', '    }', '}')
+    );
+  });
+
   it('IDE2002 removes blank lines between consecutive closing braces', () => {
     expectRewrite(
       'csharp_style_allow_blank_lines_between_consecutive_braces_experimental',
@@ -109,6 +122,7 @@ describe('IDE2000 and multi-line string literals', () => {
     ['verbatim', lines('class C', '{', '    string S = @"a', '', '', '', 'b";', '}')],
     ['raw', lines('class C', '{', '    string S = """', '        a', '', '', '        b', '        """;', '}')],
     ['interpolated verbatim', lines('class C', '{', '    string S(int n) => $@"a', '', '', '{n}', '', '', 'b";', '}')],
+    ['interpolated verbatim whose hole holds a string literal', lines('class C', '{', '    string M(string[] x) => $@"{string.Join(",", x)}', '', '', 'end";', '}')],
   ])('keeps the blank lines of a %s string', (_name, source) => {
     expect(codeStyle(source, 'dotnet_style_allow_multiple_blank_lines_experimental = false:warning')).toBe(source);
   });
@@ -119,6 +133,12 @@ describe('IDE2000 and multi-line string literals', () => {
       lines('class C', '{', '    string S = @"a', '', '', 'b";', '', '', '', '    int N;', '}'),
       lines('class C', '{', '    string S = @"a', '', '', 'b";', '', '    int N;', '}')
     );
+  });
+
+  it('IDE2002 keeps blank lines before closing braces inside a $@ string whose hole holds a string literal', () => {
+    const source = lines('class C', '{', '    string M(string[] x) => $@"{string.Join(",", x)}', '    }', '', '}";', '}');
+
+    expect(codeStyle(source, 'csharp_style_allow_blank_lines_between_consecutive_braces_experimental = false:warning')).toBe(source);
   });
 });
 

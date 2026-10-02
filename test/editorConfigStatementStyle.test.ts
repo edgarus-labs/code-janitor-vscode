@@ -44,6 +44,16 @@ describe('IDE0045 dotnet_style_prefer_conditional_expression_over_assignment', (
     expect(codeStyle(source, setting, { directory: '/repo', languageVersion: 9 })).toBe(method('void', 'int? x = c ? 1 : null;', 'long z = c ? 1u : i;'));
   });
 
+  it('keeps a negative literal branch of a long or decimal target before C# 9', () => {
+    const setting = 'dotnet_style_prefer_conditional_expression_over_assignment = true:warning\ndotnet_style_prefer_conditional_expression_over_return = true:warning';
+    const assigning = method('void', 'uint u = 3;', 'long z;', 'if (c) z = -1; else z = u;', 'decimal d;', 'if (c) d = -1; else d = u;');
+    const returning = method('long', 'uint u = 3;', 'if (c) return -1;', 'return u;');
+
+    expect(codeStyle(assigning, setting, CSHARP_7_3)).toBe(assigning);
+    expect(codeStyle(returning, setting, CSHARP_7_3)).toBe(returning);
+    expect(codeStyle(method('void', 'if (c) i = -1; else i = 2;'), setting, CSHARP_7_3)).toBe(method('void', 'i = c ? -1 : 2;'));
+  });
+
   it('keeps comments and directives between the declaration and the if', () => {
     const setting = 'dotnet_style_prefer_conditional_expression_over_assignment = true:warning';
     for (const between of [['// keep me'], ['#region Body']]) {
@@ -111,6 +121,20 @@ describe('IDE0017 dotnet_style_object_initializer', () => {
 
     expect(codeStyle(source, 'dotnet_style_object_initializer = true:warning')).toBe(method('void', 'var s = new Sample()', '{', '    _name = "x"', '};', 's.Other = $"{s._name}!";', 'Use(s);'));
   });
+
+  it('folds only when the members bind on the created type: var, new(), or the same declared type', () => {
+    for (const creation of ['dynamic d = new ExpandoObject();', 'IFoo d = new Foo();', 'Base d = new Derived();']) {
+      const source = method('void', creation, 'd.Name = "x";', 'Use(d);');
+
+      expect(codeStyle(source, 'dotnet_style_object_initializer = true:warning')).toBe(source);
+    }
+
+    for (const creation of ['Foo d = new Foo()', 'Foo d = new()', 'Foo<int> d = new Foo< int >()']) {
+      const source = method('void', `${creation};`, 'd.Name = "x";', 'Use(d);');
+
+      expect(codeStyle(source, 'dotnet_style_object_initializer = true:warning')).toBe(method('void', creation, '{', '    Name = "x"', '};', 'Use(d);'));
+    }
+  });
 });
 
 describe('IDE0028 dotnet_style_collection_initializer', () => {
@@ -132,6 +156,28 @@ describe('IDE0028 dotnet_style_collection_initializer', () => {
 
   it('stops before an Add call that reads the local inside an interpolated string', () => {
     const source = method('void', 'var list = new List<string>();', 'list.Add($"{list.Count}");', 'Use(list);');
+
+    expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning')).toBe(source);
+  });
+
+  it('leaves a creation stored in a differently typed local alone', () => {
+    for (const creation of ['IDictionary map = new Dictionary<string, int>();', 'dynamic map = new Dictionary<string, int>();']) {
+      const source = method('void', creation, 'map.Add("a", 1);', 'Use(map);');
+
+      expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning')).toBe(source);
+    }
+  });
+
+  it('keeps an assigning Add argument an element, not a member initializer', () => {
+    const source = method('void', 'int x;', 'var list = new List<int>();', 'list.Add(x = 5);', 'list.Add(i += 1);', 'Use(list, x);');
+
+    expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning')).toBe(
+      method('void', 'int x;', 'var list = new List<int>()', '{', '    (x = 5),', '    (i += 1)', '};', 'Use(list, x);')
+    );
+  });
+
+  it('leaves a collection type of the same name declared in the file alone', () => {
+    const source = `${method('void', 'var list = new List<int>();', 'list.Add(1);', 'Use(list);')}class List<T> { public void Add(T item) { } }\n`;
 
     expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning')).toBe(source);
   });
@@ -206,6 +252,12 @@ describe('IDE0066 csharp_style_prefer_switch_expression', () => {
 
   it('leaves switches with other statements, or of types the arms could change, alone', () => {
     const source = method('object', 'switch (i)', '{', '    case 1: return 1;', '    default: return 2L;', '}');
+
+    expect(codeStyle(source, 'csharp_style_prefer_switch_expression = true:warning')).toBe(source);
+  });
+
+  it('leaves a switch on a tuple header alone', () => {
+    const source = method('string', 'switch (i, c)', '{', '    case (1, true): return "x";', '    default: return "y";', '}');
 
     expect(codeStyle(source, 'csharp_style_prefer_switch_expression = true:warning')).toBe(source);
   });

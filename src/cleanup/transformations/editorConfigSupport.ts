@@ -7,6 +7,7 @@ import {
 } from '../editorconfig';
 import { CODE, STRING } from '../csharpScanner';
 import { Node, parseCSharp, walk } from '../parser';
+import { diffLineHunks } from '../lineDiff';
 import { memoizeBySource } from '../sourceCache';
 
 /**
@@ -14,6 +15,54 @@ import { memoizeBySource } from '../sourceCache';
  * names a type or non-private member the naming rules would rename (see `EditorConfigIssue`).
  */
 export type EditorConfigIssueReporter = (issue: string, symbol?: string) => void;
+
+/**
+ * `issue` with its `line N`, a line of `against` (a text the rules made of `input`), renumbered for
+ * `input`: a line the rules wrote is located at the first line of `input` they replaced, or at the
+ * line they inserted it before. `toInput` caches the line maps of the texts already seen.
+ */
+export function renumberIssue(issue: string, input: string, against: string, toInput: Map<string, (line: number) => number>): string {
+  if (against === input) {
+    return issue;
+  }
+
+  return issue.replace(/ line (\d+):/, (_, line: string) => {
+    let map = toInput.get(against);
+    if (!map) {
+      map = inputLineMap(input, against);
+      toInput.set(against, map);
+    }
+
+    return ` line ${map(Number(line) - 1) + 1}:`;
+  });
+}
+
+/**
+ * Maps a line (0-based) of `text`, made of `input` by the rules, to the line of `input` it comes
+ * from. Lines that differ in indentation only are the same line: a namespace made file-scoped
+ * re-indents every line in it.
+ */
+function inputLineMap(input: string, text: string): (line: number) => number {
+  const hunks = diffLineHunks(input.replace(/^[ \t]+/gm, ''), text.replace(/^[ \t]+/gm, ''));
+  const lastLine = input.split('\n').length - 1;
+
+  return (line) => {
+    let shift = 0;
+    for (const hunk of hunks) {
+      if (line < hunk.afterStart) {
+        break;
+      }
+
+      if (line < hunk.afterEnd) {
+        return Math.min(hunk.beforeStart, lastLine);
+      }
+
+      shift = hunk.beforeEnd - hunk.afterEnd;
+    }
+
+    return Math.min(line + shift, lastLine);
+  };
+}
 
 /** A code-style option read as `option = value[:severity]`, with its diagnostic's effective severity. */
 export interface CodeStyleOption {

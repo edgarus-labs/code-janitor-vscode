@@ -122,7 +122,8 @@ class EntryBuilder {
       }
     };
     const takePending = (next: Node): number => {
-      const attached = pending.length > 0 && this.newlinesBetween(this.endOf(pending[pending.length - 1]), next.startIndex) === 1;
+      // XML documentation belongs to the next member even across blank lines.
+      const attached = pending.length > 0 && (this.newlinesBetween(this.endOf(pending[pending.length - 1]), next.startIndex) === 1 || pending.some(isDocComment));
       if (!attached) {
         flushPending();
       }
@@ -154,7 +155,7 @@ class EntryBuilder {
           this.extend(entries[entries.length - 1], last.start, last.end);
         } else if (pending.length === 0 && entries.length === 0 && !this.startsLine(atom.startIndex)) {
           // A comment on the line of the opening brace stays with it.
-        } else if (pending.length > 0 && this.newlinesBetween(this.endOf(pending[pending.length - 1]), atom.startIndex) > 1) {
+        } else if (pending.length > 0 && !isDocComment(pending[pending.length - 1]) && this.newlinesBetween(this.endOf(pending[pending.length - 1]), atom.startIndex) > 1) {
           flushPending();
           pending.push(atom);
         } else {
@@ -307,6 +308,7 @@ class EntryBuilder {
     // The block sorts as its first member and takes the order constraints of all of them.
     const info: MemberInfo = {
       ...members[0],
+      isLayoutField: members.some((member) => member.isLayoutField),
       init: mergeInitInfo(members.map((member) => member.init)),
       partialTypes: new Set(members.flatMap((member) => [...member.partialTypes])),
     };
@@ -396,6 +398,11 @@ class EntryBuilder {
 /** The parser reports a semicolon after a member (`void M() { };`) as an incomplete declaration. */
 export function isSemicolon(node: Node): boolean {
   return node.type === ';' || (node.type === 'incomplete_declaration' && node.text === ';');
+}
+
+/** `/// ...` or `/** ... *\/` (not `////` or `/**\/`): XML documentation of the next member. */
+function isDocComment(node: Node): boolean {
+  return node.type === 'comment' && /^(\/\/\/(?!\/)|\/\*\*(?!\/))/.test(node.text);
 }
 
 /** The directives of a `#if` block's own structure: nested blocks move with the block. */

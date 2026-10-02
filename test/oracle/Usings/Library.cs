@@ -137,3 +137,38 @@ namespace AliasRival
         public int Only;
     }
 }
+
+namespace Archive
+{
+    public class Entry
+    {
+        public string GlobalEntry => "global";
+    }
+}
+
+namespace Company
+{
+    public class Result
+    {
+        public string CompanyResult => "company";
+    }
+}
+
+namespace Company.App
+{
+    public class Result<T>
+    {
+    }
+
+    public class Helpers<T>
+    {
+    }
+}
+
+namespace Vendor
+{
+    public static class Helpers
+    {
+        public static int Twice(int x) => x * 2;
+    }
+}

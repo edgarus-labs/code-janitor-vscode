@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BCL_TYPES } from '../src/cleanup/usings/bclIndex.generated';
 import { createIndex, summarizeDeclarations } from '../src/cleanup/usings/declarations';
 import { analyzeLayout } from '../src/cleanup/usings/layout';
 
@@ -25,7 +26,7 @@ describe('declarations of a file', () => {
     delegate T Generic<T>(T value);
 }`;
 
-    expect(keys(source)).toEqual(['N:N', 'T:N.C', 'T:N.C.E', 'T:N.C.Nested', 'T:N.D', 'T:N.Generic', 'T:N.I', 'T:N.P', 'T:N.Q', 'T:N.R', 'T:N.S']);
+    expect(keys(source)).toEqual(['N:N', 'T:N.C', 'T:N.C.E', 'T:N.C.Nested', 'T:N.D', 'T:N.Generic`1', 'T:N.I', 'T:N.P', 'T:N.Q', 'T:N.R', 'T:N.S']);
   });
 
   it('does not take constraints, typeof or local code for declarations', () => {
@@ -37,7 +38,13 @@ describe('declarations of a file', () => {
     }
 }`;
 
-    expect(keys(source)).toEqual(['N:N', 'T:N.C']);
+    expect(keys(source)).toEqual(['N:N', 'T:N.C`1']);
+  });
+
+  it('records the arity of generic types the way metadata names them', () => {
+    const source = 'namespace N { class Box { } class Box<T> { } class Pair<A, B> { } delegate void D<T>(T x); class Attr<[X(1, 2)] T> { } record R<T>(T A); }';
+
+    expect(keys(source)).toEqual(['N:N', 'T:N.Attr`1', 'T:N.Box', 'T:N.Box`1', 'T:N.D`1', 'T:N.Pair`2', 'T:N.R`1']);
   });
 
   it('reads a file that starts with a byte order mark', () => {
@@ -102,8 +109,21 @@ describe('declarations of a file', () => {
     expect(keys('namespace N { delegate (int A, int B) Pair(); class After { } }')).toEqual(['N:N', 'T:N.After', 'T:N.Pair']);
   });
 
-  it('counts a declaration in a disabled #if branch too', () => {
-    expect(keys('#if X\nnamespace A { class C { } }\n#else\nnamespace B { class D { } }\n#endif\n')).toEqual(['N:A', 'N:B', 'T:A.C', 'T:B.D']);
+  it('counts a declaration in a disabled #if branch too, marked as one a condition may leave out', () => {
+    expect(keys('#if X\nnamespace A { class C { } }\n#else\nnamespace B { class D { } }\n#endif\n')).toEqual([
+      'C:N:A',
+      'C:N:B',
+      'C:T:A.C',
+      'C:T:B.D',
+      'N:A',
+      'N:B',
+      'T:A.C',
+      'T:B.D',
+    ]);
+  });
+
+  it('marks only the declarations inside a conditional branch, not those of a region', () => {
+    expect(keys('namespace A\n{\n#if X\n    class C { }\n#endif\n#region R\n    class D { }\n#endregion\n}\n')).toEqual(['C:T:A.C', 'N:A', 'T:A.C', 'T:A.D']);
   });
 });
 
@@ -119,6 +139,37 @@ describe('declaration index', () => {
     expect(index.memberKind('Company', 'App')).toBe('namespace');
     expect(index.memberKind('System', 'String')).toBe('type');
     expect(index.memberKind('', 'Nothing')).toBeUndefined();
+  });
+
+  it('looks a name up by arity when it is given', () => {
+    const index = createIndex(['namespace N { class Box<T> { } class Plain { } }']);
+
+    expect(index.memberKind('N', 'Box')).toBe('type');
+    expect(index.memberKind('N', 'Box', 0)).toBeUndefined();
+    expect(index.memberKind('N', 'Box', 1)).toBe('type');
+    expect(index.memberKind('N', 'Plain', 0)).toBe('type');
+    expect(index.memberKind('System', 'Action', 0)).toBe('type');
+    expect(index.memberKind('System', 'Action', 2)).toBe('type');
+    expect(index.memberKind('System.Collections.Generic', 'List', 0)).toBeUndefined();
+    expect(index.memberKind('System.Collections.Generic', 'List', 1)).toBe('type');
+  });
+
+  it('tells a member declared only in a conditional branch', () => {
+    const index = createIndex(['namespace A\n{\n#if X\n    class C { }\n    class D { }\n#endif\n}\n', 'namespace A { class D { } }']);
+
+    expect(index.declaredOnlyConditionally('A', 'C')).toBe(true);
+    expect(index.declaredOnlyConditionally('A', 'D')).toBe(false);
+    expect(index.declaredOnlyConditionally('', 'A')).toBe(false);
+    expect(index.declaredOnlyConditionally('System', 'String')).toBe(false);
+  });
+
+  it('does not list the analyzers and source generators shipped in the reference packs', () => {
+    const index = createIndex([]);
+
+    expect(Object.keys(BCL_TYPES).filter((namespace) => /^Microsoft\.Interop\b|SourceGeneration|\.Generators?\b|\.Analyzers\b/.test(namespace))).toEqual([]);
+    expect(index.hasNamespace('System.Text.Json.SourceGeneration')).toBe(false);
+    expect(index.hasNamespace('Microsoft.Interop')).toBe(false);
+    expect(index.hasNamespace('System.Text.Json.Serialization')).toBe(true);
   });
 
   it('lists the members of a scope and the extension methods of a namespace', () => {

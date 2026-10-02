@@ -61,6 +61,11 @@ describe('computeSourceFacts', () => {
     expect(facts.internalsVisibleTo).toBe(true);
   });
 
+  it('reads the aliases global usings declare', () => {
+    expect([...facts.globalUsingAliases]).toEqual(['Alias']);
+    expect([...computeSourceFacts('global using @Json = System.Text.Json; using Local = System.IO; global using static System.Math;').globalUsingAliases]).toEqual(['Json']);
+  });
+
   it('reports no InternalsVisibleTo when the source has none', () => {
     expect(computeSourceFacts('class C { }').internalsVisibleTo).toBe(false);
   });
@@ -124,6 +129,16 @@ describe('loadProjectFacts', () => {
     expect([...facts.others.derivedOrConstrainedNames]).toContain('Shared');
   });
 
+  it('collects global using aliases of the other files and of Using items', () => {
+    const { directory, info } = project({
+      'App.csproj': '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Using Include="System.Text.Json" Alias="Json" /><Using Alias="Io" Include="System.IO" /><Using Include="System.Linq" /></ItemGroup></Project>',
+      'Usings.cs': 'global using Txt = System.Text;',
+      'Current.cs': 'global using OnlyHere = System.Net;',
+    });
+
+    expect([...loadProjectFacts(info, path.join(directory, 'Current.cs')).others.globalUsingAliases].sort()).toEqual(['Io', 'Json', 'Txt']);
+  });
+
   it('leaves out the current file asked for, also when the same project object is asked for another file', () => {
     const { directory, info } = project({ 'App.csproj': SDK, 'A.cs': 'class A { }', 'B.cs': 'class B { }' });
 
@@ -147,6 +162,34 @@ describe('loadProjectFacts', () => {
     expect([...loadProjectFacts(info, undefined).others.typeNames]).toEqual(['Own']);
   });
 
+  it('reads bin and obj folders below the project root, and node_modules outside web projects, which the SDK compiles', () => {
+    const files = {
+      'Own.cs': 'class Own { }',
+      'Formats/Obj/ObjReader.cs': 'class ObjReader { }',
+      'Legacy/bin/Loader.cs': 'class Loader { }',
+      'node_modules/pkg/Tool.cs': 'class Tool { }',
+    };
+    const plain = project({ 'App.csproj': SDK, ...files });
+    expect([...loadProjectFacts(plain.info, undefined).others.typeNames].sort()).toEqual(['Loader', 'ObjReader', 'Own', 'Tool']);
+
+    for (const sdk of ['Microsoft.NET.Sdk.Web', 'Microsoft.NET.Sdk.Razor', 'Microsoft.NET.Sdk.BlazorWebAssembly']) {
+      const web = project({ 'App.csproj': SDK.replace('Microsoft.NET.Sdk', sdk), ...files });
+      expect([...loadProjectFacts(web.info, undefined).others.typeNames].sort(), sdk).toEqual(['Loader', 'ObjReader', 'Own']);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('follows symlinked folders and files, as MSBuild globbing does, without looping on a cycle', () => {
+    const shared = project({ 'Shared.cs': 'class Shared { }', 'Nested/Deep.cs': 'class Deep { }' });
+    const { directory, info } = project({ 'App.csproj': SDK, 'Own.cs': 'class Own { }', 'Sub/Inner.cs': 'class Inner { }' });
+    fs.symlinkSync(shared.directory, path.join(directory, 'Linked'), 'dir');
+    fs.symlinkSync(path.join(shared.directory, 'Shared.cs'), path.join(directory, 'Single.cs'));
+    fs.symlinkSync(path.join(directory, 'Sub'), path.join(directory, 'Sub', 'Back'), 'dir');
+
+    const facts = loadProjectFacts(info, undefined);
+    expect([...facts.others.typeNames].sort()).toEqual(['Deep', 'Inner', 'Own', 'Shared']);
+    expect(facts.incomplete).toBeUndefined();
+  });
+
   it('reads a file again when it changes', () => {
     const { directory, info } = project({ 'App.csproj': SDK, 'A.cs': 'class First { }' });
     expect([...loadProjectFacts(info, undefined).others.typeNames]).toEqual(['First']);
@@ -155,6 +198,20 @@ describe('loadProjectFacts', () => {
     const fresh = { directory } as ProjectInfo;
 
     expect([...loadProjectFacts(fresh, undefined).others.typeNames]).toEqual(['Second']);
+  });
+
+  it('reads the unsaved text of another open file instead of its disk copy, and the disk copy again once it is saved or reverted', () => {
+    const { directory } = project({ 'App.csproj': SDK, 'A.cs': 'class OnDisk { }', 'C.cs': 'class C { }', 'D.cs': 'class D { }' });
+    const unsaved = new Map([[path.join(directory, 'A.cs'), 'class Unsaved : Base { void M(X x) { x.Twice(); } }']]);
+    const withBuffer = loadProjectFacts({ directory, unsavedSources: unsaved }, path.join(directory, 'C.cs'));
+    expect([...withBuffer.others.typeNames].sort()).toEqual(['D', 'Unsaved']);
+    expect(withBuffer.others.memberAccessNames.has('Twice')).toBe(true);
+    expect(withBuffer.others.derivedOrConstrainedNames.has('Base')).toBe(true);
+
+    // The next file of the same batch, after the buffer was reverted: the scan is reused, the overlay is not.
+    const reverted = loadProjectFacts({ directory }, path.join(directory, 'D.cs'));
+    expect([...reverted.others.typeNames].sort()).toEqual(['C', 'OnDisk']);
+    expect(reverted.others.memberAccessNames.has('Twice')).toBe(false);
   });
 
   it('sees files added to or removed from a folder listed before, and names the current file shares with others', () => {

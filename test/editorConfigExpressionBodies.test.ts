@@ -113,6 +113,37 @@ describe('IDE0022 csharp_style_expression_bodied_methods', () => {
       lines('class Sample', '{', '    int Sum(int a, int b)', '    {', '        return a +', '            b;', '    }', '', '    int One() => 1;', '}')
     );
   });
+
+  it('writes a statement, not a return, for async methods of any non-generic task-like type', () => {
+    const expressions = lines(
+      'class Sample',
+      '{',
+      '    async UniTask A() => await X();',
+      '    async global::System.Threading.Tasks.Task B() => await X();',
+      '    async UniTask<int> C() => await Y();',
+      '}'
+    );
+    const blocks = lines(
+      'class Sample',
+      '{',
+      '    async UniTask A()',
+      '    {',
+      '        await X();',
+      '    }',
+      '    async global::System.Threading.Tasks.Task B()',
+      '    {',
+      '        await X();',
+      '    }',
+      '    async UniTask<int> C()',
+      '    {',
+      '        return await Y();',
+      '    }',
+      '}'
+    );
+
+    expectRewrite('csharp_style_expression_bodied_methods = false', expressions, blocks);
+    expectRewrite('csharp_style_expression_bodied_methods = true', blocks, expressions);
+  });
 });
 
 describe('IDE0021 / IDE0023 / IDE0061 constructors, operators and local functions', () => {

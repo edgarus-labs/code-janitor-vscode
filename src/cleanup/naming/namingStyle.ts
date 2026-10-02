@@ -333,7 +333,7 @@ function toLowerChar(ch: string): string {
 }
 
 function hasCasing(ch: string): boolean {
-  return ch.toLowerCase() !== ch.toUpperCase();
+  return toLowerChar(ch) !== toUpperChar(ch);
 }
 
 function isUpperChar(ch: string): boolean {

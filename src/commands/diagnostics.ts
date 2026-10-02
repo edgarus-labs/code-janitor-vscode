@@ -3,20 +3,24 @@ import * as vscode from 'vscode';
 import { CleanupFinding, analyzeCleanup, applyRuleOnly, fixFindingOccurrence } from '../cleanup/analysis';
 import { EditorConfigSeverity } from '../cleanup/editorconfig';
 import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
+import { REPOSITORY_CONFIG_NAMES } from '../cleanup/repositoryOverrides';
 import { logError, logInfo } from '../logging';
 import { isPathCleanable } from './cleanupCore';
 import { readCleanupSettingsForUri } from './settings';
 
 /**
  * `.editorconfig` violations as diagnostics ("Code Janitor" in the Problems panel): what cleanup
- * would change per rule and what it cannot fix, computed a moment after a C# document opens or
- * changes, and dropped when the document changed again meanwhile. Quick fixes fix one occurrence,
- * every occurrence of the rule in the file, or run the whole cleanup.
+ * would change per rule and what it cannot fix, computed a moment after a C# document is shown in an
+ * editor tab or changes, and dropped when the document changed again meanwhile. Documents a command
+ * opens without showing them (the preview apply, the rename) are not analyzed. Quick fixes fix one
+ * occurrence, every occurrence of the rule in the file, or run the whole cleanup.
  */
 
 const SOURCE = 'Code Janitor';
 /** Pause after the last edit before a document is analyzed again. */
 export const ANALYSIS_DELAY_MS = 500;
+/** The files whose saving changes the settings of every document (matched ignoring case). */
+const SETTINGS_FILE_NAMES: ReadonlySet<string> = new Set(['.editorconfig', '.globalconfig', ...REPOSITORY_CONFIG_NAMES]);
 
 const SEVERITIES: Readonly<Record<EditorConfigSeverity, vscode.DiagnosticSeverity | undefined>> = {
   error: vscode.DiagnosticSeverity.Error,
@@ -60,8 +64,13 @@ export function registerCleanupDiagnostics(context: vscode.ExtensionContext): vo
     vscode.workspace.onDidOpenTextDocument((document) => diagnostics.schedule(document)),
     vscode.workspace.onDidChangeTextDocument((event) => diagnostics.schedule(event.document)),
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.forget(document.uri)),
+    // A document is shown once its tab opens (after the document itself), and no longer once its last tab closes.
+    vscode.window.tabGroups.onDidChangeTabs(({ opened, closed }) => {
+      const uris = new Set([...opened, ...closed].map((tab) => tabUri(tab)?.toString()));
+      vscode.workspace.textDocuments.filter((document) => uris.has(document.uri.toString())).forEach((document) => diagnostics.schedule(document));
+    }),
     vscode.workspace.onDidSaveTextDocument((document) => {
-      if (/(?:^|[\\/])(?:\.editorconfig|\.globalconfig|\.codejanitor)$/i.test(document.uri.fsPath)) {
+      if (SETTINGS_FILE_NAMES.has(path.win32.basename(document.uri.fsPath).toLowerCase())) {
         diagnostics.refreshAll();
       } else {
         // The watcher only sees the workspace folders; a file saved outside them changed on disk too.
@@ -112,9 +121,12 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     );
   }
 
+  /** Clears what is known of `uri`; the Problems panel is updated only when it shows something for it. */
   forget(uri: vscode.Uri): void {
     this.analyzed.delete(uri.toString());
-    this.collection.delete(uri);
+    if (this.collection.has(uri)) {
+      this.collection.delete(uri);
+    }
   }
 
   refreshAll(): void {
@@ -216,13 +228,15 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
 
   private isAnalyzed(document: vscode.TextDocument): boolean {
     const config = vscode.workspace.getConfiguration('codeJanitor');
+    const key = document.uri.toString();
 
     return (
       document.languageId === 'csharp' &&
       document.uri.scheme === 'file' &&
       config.get<boolean>('diagnostics.enabled', true) &&
       document.getText().length <= config.get<number>('diagnostics.maxFileSizeKB', 256) * 1024 &&
-      isPathCleanable(document.uri)
+      isPathCleanable(document.uri) &&
+      vscode.window.tabGroups.all.some((group) => group.tabs.some((tab) => tabUri(tab)?.toString() === key))
     );
   }
 
@@ -324,6 +338,11 @@ function toDiagnostic(finding: CleanupFinding, lines: readonly string[]): vscode
   diagnostic.code = documentation ? { value: finding.ruleId, target: vscode.Uri.parse(documentation) } : finding.ruleId;
 
   return diagnostic;
+}
+
+/** The document a text editor tab shows (`TabInputText`); none for diffs, webviews and the like. */
+function tabUri(tab: vscode.Tab): vscode.Uri | undefined {
+  return (tab.input as { uri?: vscode.Uri } | undefined)?.uri;
 }
 
 /** The diagnostics VS Code passes back to code actions are copies: they are matched by rule, place and message. */

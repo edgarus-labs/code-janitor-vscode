@@ -231,6 +231,26 @@ describe('inward move: skipped with a reason', () => {
     expect(skipped('using Missing;\r\nusing Company.App.Services;\r\n\r\nnamespace Company.App\r\n{\r\n    class C { Svc s; }\r\n}\r\n')).toMatch(/using Missing;.*cannot be resolved|cannot be resolved.*Missing/);
   });
 
+  it.each([
+    ['a generic type of another arity', 'namespace Company.App { public class Helpers<T> { } }\r\n'],
+    ['a type in an #if branch', 'namespace Company.App\r\n{\r\n#if LEGACY\r\n    public static class Helpers { }\r\n#endif\r\n}\r\n'],
+  ])('skips a directive of the namespace that finds a name through a moved directive when the namespace declares only %s', (_name, declaration) => {
+    // Helpers passes over Company.App.Helpers and binds Vendor.Helpers through the file-level 'using Vendor;', which
+    // the directive no longer sees once both are in the namespace.
+    const vendor = 'namespace Vendor { public static class Helpers { public static int Twice(int x) => x; } }\r\n';
+    const input = 'using Vendor;\r\n\r\nnamespace Company.App\r\n{\r\n    using static Helpers;\r\n\r\n    class C { int y = Twice(1); }\r\n}\r\n';
+
+    expect(skipped(input, vendor, declaration)).toMatch(/finds 'Helpers' through 'using Vendor;'/);
+  });
+
+  it('writes an unresolved directive global:: when a package sharing the root of the namespace may declare it relative to the namespace', () => {
+    // Inside Company.App, Shared.Logging could bind Company.Shared.Logging of the package; at file level it is the global one.
+    const input = 'using Shared.Logging;\r\n\r\nnamespace Company.App\r\n{\r\n    class C { Logger l; }\r\n}\r\n';
+    const result = placeUsings(input, 'inside', { index: createIndex([input], { frameworkNamespacesOpen: true, namespaceRoots: new Set(['company']) }), externalReferences: true, indent: '    ' });
+
+    expect(result).toEqual({ status: 'moved', text: 'namespace Company.App\r\n{\r\n    using global::Shared.Logging;\r\n\r\n    class C { Logger l; }\r\n}\r\n' });
+  });
+
   it('skips a move that would silently rebind a name', () => {
     // At file level, 'using Company.App.Models;' is searched after the enclosing namespace Company, so Foo means
     // Company.Foo. Inside Company.App it would be searched first, so Foo would silently become Company.App.Models.Foo.

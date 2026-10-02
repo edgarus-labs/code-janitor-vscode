@@ -269,7 +269,7 @@ const NAMED_DECLARATIONS: Record<string, true> = {
  * first: constructors are `.ctor`/`.cctor`, fields and events their declarators' names, and
  * declarations without a simple name (operators, indexers, destructors) `*`, matching any target name.
  */
-function enclosingNames(node: Node): { namespaces: string[]; declarations: string[] } {
+export function enclosingNames(node: Node): { namespaces: string[]; declarations: string[] } {
   const namespaces: string[] = [];
   const declarations: string[] = [];
   let root = node;
@@ -707,6 +707,10 @@ export class DeclaredTypes {
       return local ?? undefined;
     }
 
+    if (this.mayDeclareInMember(name, offset)) {
+      return undefined;
+    }
+
     for (let type = typeAt(this.model, offset); type; type = type.parent) {
       if (type.memberNames.has(name)) {
         return this.fieldOrProperty(type, name);
@@ -719,6 +723,27 @@ export class DeclaredTypes {
     }
 
     return undefined;
+  }
+
+  /**
+   * True when the member containing `offset` may declare `name` in a way the source model does not
+   * record as a scoped local: pattern designations (`o is T name`, `case T name`, switch-expression
+   * arms, property patterns), query `let`/`join`/`into` names, deconstructions (`var (a, b) = ...`,
+   * `(T a, var b) = ...`, `foreach (var (a, b) in ...)`, which the parser reads as expressions), or
+   * anything the parser could not structure. Such a name may shadow a field or property, so the
+   * member is not a safe fallback.
+   */
+  private mayDeclareInMember(name: string, offset: number): boolean {
+    return (this.model.occurrencesByName.get(name) ?? []).some(
+      (occurrence) =>
+        occurrence.memberRoot !== undefined &&
+        occurrence.memberRoot.startIndex <= offset &&
+        offset < occurrence.memberRoot.endIndex &&
+        (((occurrence.role.kind === 'unknown' || occurrence.role.kind === 'declaration') &&
+          // Recorded declarations are either members (the fallback itself) or locals `localDeclaration` already scoped.
+          (occurrence.node === undefined || !this.model.symbolByNameNode.has(occurrence.node))) ||
+          (occurrence.node !== undefined && isDeconstructionTarget(occurrence.node)))
+    );
   }
 
   /**
@@ -776,6 +801,33 @@ export class DeclaredTypes {
 
     return initializer ? this.typeOf(initializer, depth + 1) : undefined;
   }
+}
+
+/** Nodes a deconstruction's left side is made of, as the parser reads it: `var (a, b)` is a call of `var`, `(T a, var b)` a tuple. */
+const DECONSTRUCTION_PARTS: Record<string, true> = { tuple_expression: true, invocation_expression: true, argument_list: true, argument: true, declaration_expression: true };
+
+/**
+ * True when `node` is inside the left side of a deconstruction: of an assignment
+ * (`var (a, b) = t`, `(T a, var b) = t`; a plain `(a, b) = t` too, which only makes the lookup
+ * more careful) or of a `foreach` (`foreach (var (a, b) in ts)`).
+ */
+function isDeconstructionTarget(node: Node): boolean {
+  let child = node;
+  for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (parent.type === 'assignment_expression') {
+      return child !== node && parent.childForFieldName('left') === child;
+    }
+
+    if (parent.type === 'for_each_statement') {
+      return child !== node && parent.namedChildren[0] === child;
+    }
+
+    if (DECONSTRUCTION_PARTS[parent.type] !== true) {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 export function unwrapParentheses(node: Node): Node {

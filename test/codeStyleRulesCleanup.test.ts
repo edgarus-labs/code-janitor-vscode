@@ -105,8 +105,11 @@ function fixture(file: string): string {
 
 let workDir: string;
 
+// The group files belong to CodeStyle.csproj: rules that must know the project's other types (such as
+// IDE0049 on bare framework names) only act on a file of a known project.
 beforeEach(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-janitor-codestyle-'));
+  fs.copyFileSync(path.join(FIXTURES, 'CodeStyle.csproj'), path.join(workDir, 'CodeStyle.csproj'));
 });
 
 afterEach(() => {
@@ -270,7 +273,7 @@ describe('precedence of the Code Style rules', () => {
     clean('Qualification.cs', onlyRules({ dotnet_style_qualification_for_field: 'true' }));
 
     expect(fs.readFileSync(path.join(workDir, '.editorconfig'), 'utf8')).toBe(before);
-    expect(fs.readdirSync(workDir)).toEqual(['.editorconfig']);
+    expect(fs.readdirSync(workDir).sort()).toEqual(['.editorconfig', 'CodeStyle.csproj']);
   });
 
   it('keeps the other qualification options of the .editorconfig as it configures them while one is enabled here', () => {

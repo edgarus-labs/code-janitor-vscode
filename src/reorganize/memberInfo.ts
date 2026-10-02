@@ -15,6 +15,8 @@ export interface MemberInfo {
   isReadOnly: boolean;
   isExplicitInterface: boolean;
   isMultiLine: boolean;
+  /** An instance field (or the backing field of an auto-property or field-like event) of a struct whose layout is the order of its fields. */
+  isLayoutField: boolean;
   init: InitInfo;
   /** Names of the partial types declared: their parts run their initializers in declaration order. */
   partialTypes: ReadonlySet<string>;
@@ -68,20 +70,42 @@ export function containerKindOf(node: Node): ContainerKind {
 
 export interface ContainerContext {
   kind: ContainerKind;
+  /** The order of the instance fields is the layout of the type: a struct without `LayoutKind.Auto`. */
+  fieldOrderIsLayout: boolean;
   init: InitContext;
 }
 
-/** Collects the member names of a container, for the initializer analysis. */
-export function createContainerContext(kind: ContainerKind, typeName: string, declarations: readonly Node[]): ContainerContext {
+/** Collects the member names (and declared types of fields and properties) of a container, for the initializer analysis. */
+export function createContainerContext(kind: ContainerKind, typeName: string, declarations: readonly Node[], fieldOrderIsLayout: boolean): ContainerContext {
   const names = new Map<string, MemberNameClass>();
+  const types = new Map<string, string>();
 
   for (const declaration of declarations) {
+    const type = declaredType(declaration);
     for (const [name, nameClass] of declaredNames(declaration)) {
       names.set(name, nameClass);
+      if (type !== undefined) {
+        types.set(name, type);
+      }
     }
   }
 
-  return { kind, init: { typeName, names } };
+  return { kind, fieldOrderIsLayout, init: { typeName, names, types } };
+}
+
+/** The type text of a field, event field or property declaration. */
+function declaredType(declaration: Node): string | undefined {
+  switch (declaration.type) {
+    case 'field_declaration':
+    case 'event_field_declaration':
+      return declaration.namedChildren.find((child) => child.type === 'variable_declaration')?.namedChildren[0]?.text;
+
+    case 'property_declaration':
+      return declaration.childForFieldName('type')?.text;
+
+    default:
+      return undefined;
+  }
 }
 
 function declaredNames(declaration: Node): [string, MemberNameClass][] {
@@ -134,6 +158,9 @@ export function describeMember(node: Node, kind: MemberKind, context: ContainerC
   const isInitializerHost = (kind === 'field' && !isConstant) || kind === 'property' || (kind === 'event' && node.type === 'event_field_declaration');
   const isPartialType = (kind === 'class' || kind === 'struct' || kind === 'interface') && modifiers.includes('partial');
   const name = nameOf(node, kind);
+  // An auto-property, a property using `field` and a field-like event are backed by an instance field.
+  const hasBackingField =
+    (kind === 'field' && !isConstant) || node.type === 'event_field_declaration' || (kind === 'property' && (!isComputedProperty(node) || /\bfield\b/.test(node.text)));
 
   return {
     kind,
@@ -144,6 +171,7 @@ export function describeMember(node: Node, kind: MemberKind, context: ContainerC
     isReadOnly: kind === 'field' && modifiers.includes('readonly'),
     isExplicitInterface,
     isMultiLine: node.endPosition.row > node.startPosition.row,
+    isLayoutField: context.fieldOrderIsLayout && !isStatic && hasBackingField,
     init: isInitializerHost ? analyzeInitializers(node, isStatic, context.init) : NO_INIT,
     partialTypes: isPartialType ? new Set([name]) : NO_PARTIAL_TYPES,
   };

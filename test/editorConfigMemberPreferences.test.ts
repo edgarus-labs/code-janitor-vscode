@@ -98,6 +98,18 @@ describe('IDE0250 csharp_style_prefer_readonly_struct', () => {
     const reader = lines('public struct Point(int x)', '{', '    public int X => x;', '    public int Twice() => Read(in x) * 2;', '}');
     expect(codeStyle(reader, setting).output).toBe(reader.replace('public struct', 'public readonly struct'));
   });
+
+  it('leaves structs that write or call through a member of a primary constructor parameter alone', () => {
+    const setting = 'csharp_style_prefer_readonly_struct = true:warning';
+    for (const write of ['p.X = 5', 'p.X++', 'p.Inner.X += 1', 'p.Increment()', 'p.Inner.Increment()', 'Set(ref p.X)']) {
+      const source = lines('public struct Holder(Point p)', '{', `    public void Move() => ${write};`, '}');
+
+      expect(codeStyle(source, setting).output).toBe(source);
+    }
+
+    const reader = lines('public struct Holder(Point p, List<int> items)', '{', '    public int X => p.X;', '    public void Add() => items.Add(1);', '}');
+    expect(codeStyle(reader, setting).output).toBe(reader.replace('public struct', 'public readonly struct'));
+  });
 });
 
 describe('IDE0251 csharp_style_prefer_readonly_struct_member through field chains', () => {
@@ -117,6 +129,40 @@ describe('IDE0251 csharp_style_prefer_readonly_struct_member through field chain
 
     expect(codeStyle(source, 'csharp_style_prefer_readonly_struct_member = true:warning').output).toBe(
       source.replace('public int First', 'public readonly int First')
+    );
+  });
+
+  it('leaves ref-returning members and members taking refs to the instance alone', () => {
+    const source = lines(
+      'struct S',
+      '{',
+      '    private int _x;',
+      '    public ref int GetRef() => ref _x;',
+      '    public ref int Item => ref _x;',
+      '    public int Bump() { ref int r = ref _x; r++; return r; }',
+      '    public ref readonly int Peek() => ref _x;',
+      '    public int Read() { return _x; }',
+      '}'
+    );
+
+    expect(codeStyle(source, 'csharp_style_prefer_readonly_struct_member = true:warning').output).toBe(
+      source.replace('public int Read', 'public readonly int Read')
+    );
+  });
+
+  it('leaves members that call methods on a primary constructor parameter of a struct type alone', () => {
+    const source = lines(
+      'struct Holder(Point p, List<int> items)',
+      '{',
+      '    public void Move() { p.Increment(); }',
+      '    public void MoveInner() { p.Inner.Increment(); }',
+      '    public void Append() { items.Add(1); }',
+      '    public int Read() { return p.X; }',
+      '}'
+    );
+
+    expect(codeStyle(source, 'csharp_style_prefer_readonly_struct_member = true:warning').output).toBe(
+      source.replace('public void Append', 'public readonly void Append').replace('public int Read', 'public readonly int Read')
     );
   });
 });

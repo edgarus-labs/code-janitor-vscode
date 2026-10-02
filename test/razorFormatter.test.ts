@@ -227,6 +227,10 @@ describe('formatRazor: content it must not touch', () => {
   // The lines of a multi-line literal in Razor code inside markup are part of its value.
   unchanged('a verbatim string in a code block inside markup', '@if(a){\n<div>\n@{ var s = @"x\ny"; }\n<p>@s</p>\n</div>\n}');
   unchanged('a verbatim string in an expression inside an attribute', '@if(a){\n<div title="@(@"x\ny")">\n</div>\n}');
+  unchanged(
+    'a verbatim string in an expression inside an attribute of markup nested in a statement',
+    '<div>\n    @if (a) {\n    if (b) {\n        <div title="@(@"x\n      y")"></div>\n    }\n    }\n</div>'
+  );
   // Rewriting every line ending as CRLF would change the LF lines inside literals and pre elements too.
   unchanged('a file with mixed line endings', '<p>a</p>\r\n@if(a){\n<pre>\n  x\n</pre>\n}\r\n@code{\nstring s=@"a\nb";\n}\n');
   // A line break inside a quoted attribute value is part of the value.
@@ -270,6 +274,17 @@ describe('formatRazor: content it must not touch', () => {
   it('leaves a whole try chain as authored when a catch has a filter', () => {
     const input = '@try{var a=1;}catch(Exception ex) when (ex is null){var b=2;}';
     expect(formatRazor(input)).toBe(input);
+  });
+
+  it('leaves a whole multi-line chain as authored when a link cannot be read, and reads no block in its C#', () => {
+    // Read as markup, the string in the catch would hold a `@code` block, and formatting it would break the literal.
+    const input = '@try\n{\n    Load();\n}\ncatch (Exception ex) when (ex is IOException)\n{\n    var hint = "@code{int x;}";\n}';
+    const commented = '@try{var a=1;}\ncatch (Exception ex) // log\n{\n    var hint = "@code{int x;}";\n}';
+    const commentedFirst = '@if (a) // log\n{\n    var hint = "@code{int x;}";\n}';
+
+    expect(formatRazor(input)).toBe(input);
+    expect(formatRazor(commented)).toBe(commented);
+    expect(formatRazor(commentedFirst)).toBe(commentedFirst);
   });
 
   it('still formats the chain that follows an unreadable one', () => {

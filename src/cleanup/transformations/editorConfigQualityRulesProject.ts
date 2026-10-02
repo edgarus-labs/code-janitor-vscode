@@ -1,11 +1,14 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { findAll, parseCSharp } from '../parser';
+import { baseTypeNames } from '../naming/sourceModel';
+import { Node, findAll, parseCSharp } from '../parser';
+import { listProjectSources } from '../projectSources';
 import { ProjectInfo } from '../projectInfo';
+import { memoizeBySource } from '../sourceCache';
 import { Token, lex } from '../syntax/lexer';
 import { interpolationHoles } from './interpolation';
 import type { RuleContext } from './editorConfigCodeStyle';
-import { GlobalSuppression, Suppressions, globalSuppressionsOf } from './editorConfigQualityRulesSupport';
+import { GlobalSuppression, Suppressions, enclosingNames, globalSuppressionsOf } from './editorConfigQualityRulesSupport';
 import { collectDisqualifiedTypeNames } from './sealedClass';
 
 /**
@@ -18,6 +21,8 @@ import { collectDisqualifiedTypeNames } from './sealedClass';
 export interface SourceFacts {
   /** Simple names of types used as a base type or generic constraint. */
   readonly derivedOrConstrainedNames: ReadonlySet<string>;
+  /** Simple names inside the types of casts, `as`, `is` and `case` patterns and switch-expression arms (see `collectConversionTargetNames`). */
+  readonly conversionTargetNames: ReadonlySet<string>;
   /**
    * Names used on an instance from outside its type: accessed on a receiver (`x.Name`, `x?.Name`,
    * `x->Name`, also inside interpolation holes) or read by a property pattern (`{ Name: 1 }`,
@@ -30,8 +35,18 @@ export interface SourceFacts {
   readonly interfaceNames: ReadonlySet<string>;
   /** Names of the members the declared interfaces declare. */
   readonly interfaceMemberNames: ReadonlySet<string>;
+  /** `Interface:Base` for every base type in the base list of a declared interface (simple names). */
+  readonly interfaceBases: ReadonlySet<string>;
+  /**
+   * Full names of the namespaces declared inside another namespace, every level (`namespace
+   * Acme.Tools.System` gives `Acme.Tools` and `Acme.Tools.System`): inside `Acme.Tools`, `System`
+   * names that namespace instead of a type or global namespace of that name.
+   */
+  readonly nestedNamespaces: ReadonlySet<string>;
   /** Namespaces imported with `global using`. */
   readonly globalUsings: ReadonlySet<string>;
+  /** Alias names declared with `global using Name = ...;` (in project facts, also `<Using Include="..." Alias="Name" />` items). */
+  readonly globalUsingAliases: ReadonlySet<string>;
   /** The source applies `[assembly: InternalsVisibleTo(...)]`. */
   readonly internalsVisibleTo: boolean;
   /** Its `[assembly: SuppressMessage(...)]` and `[module: SuppressMessage(...)]` attributes (`GlobalSuppressions.cs`). */
@@ -57,12 +72,6 @@ export interface ProjectFacts {
   readonly webProject: boolean;
 }
 
-/** Folders never holding the project's own sources. */
-const SKIPPED_FOLDERS: Record<string, true> = { bin: true, obj: true, node_modules: true };
-
-/** More files than this and the project is not scanned (the rules report instead). */
-const MAX_PROJECT_FILES = 20000;
-
 const INTERNALS_VISIBLE_TO = /^InternalsVisibleTo(?:Attribute)?$/;
 
 /**
@@ -87,6 +96,7 @@ export function suppressionsOf(source: string, context: RuleContext): Suppressio
 export function computeSourceFacts(source: string): SourceFacts {
   const memberAccessNames = new Set<string>();
   const globalUsings = new Set<string>();
+  const globalUsingAliases = new Set<string>();
   let internalsVisibleTo = false;
   const tokens = lex(source).tokens;
   const text = (index: number): string => source.slice(tokens[index].start, tokens[index].end);
@@ -101,7 +111,10 @@ export function computeSourceFacts(source: string): SourceFacts {
       }
 
       const imported = source.slice(tokens[i + 2]?.start ?? 0, tokens[end]?.start ?? 0).replace(/\s+/g, '');
-      if (/^[\w.]+$/.test(imported)) {
+      const alias = /^@?(\w+)=/.exec(imported)?.[1];
+      if (alias) {
+        globalUsingAliases.add(alias);
+      } else if (/^[\w.]+$/.test(imported)) {
         globalUsings.add(imported);
       }
     }
@@ -125,17 +138,125 @@ export function computeSourceFacts(source: string): SourceFacts {
 
     return {
       derivedOrConstrainedNames: collectDisqualifiedTypeNames(tree.rootNode),
+      conversionTargetNames: collectConversionTargetNames(source, tree.rootNode),
       memberAccessNames,
       typeNames: new Set(declarations.map(nameOf)),
       interfaceNames: new Set(interfaces.map(nameOf)),
       interfaceMemberNames: new Set(interfaceMembers.map((member) => member.childForFieldName('name')?.text.replace(/^@/, '') ?? '').filter(Boolean)),
+      interfaceBases: new Set(interfaces.flatMap((declaration) => baseTypeNames(declaration).map((base) => `${nameOf(declaration)}:${base}`))),
+      nestedNamespaces: collectNestedNamespaces(tree.rootNode),
       globalUsings,
+      globalUsingAliases,
       internalsVisibleTo,
       globalSuppressions: globalSuppressionsOf(source),
     };
   } finally {
     tree.delete();
   }
+}
+
+function collectNestedNamespaces(root: Node): Set<string> {
+  const names = new Set<string>();
+  for (const namespace of findAll(root, ['namespace_declaration', 'file_scoped_namespace_declaration'])) {
+    const segments = enclosingNames(namespace).namespaces.map((segment) => segment.replace(/^@/, ''));
+    for (let length = 2; length <= segments.length; length++) {
+      names.add(segments.slice(0, length).join('.'));
+    }
+  }
+
+  return names;
+}
+
+/** Tokens that can be part of a type as written after `as`; `<` `>` and `,` are tracked separately. */
+const TYPE_TOKENS: Record<string, true> = { identifier: true, predefined_type: true, '.': true, '::': true, '?': true, '[': true, ']': true };
+
+/** Tokens ending a pattern outside brackets: `x is T f && ...`, `case T f:`, `T f => ...`, `is T ? a : b`. */
+const PATTERN_ENDS: Record<string, true> = { ';': true, ':': true, '=>': true, '&&': true, '||': true, '?': true, '??': true, ',': true, '==': true, '!=': true };
+
+/**
+ * Simple names inside the types `source` explicitly converts to: cast and `as` types, and every
+ * name of an `is` or `case` pattern or a switch-expression arm (constants and designations too,
+ * which only makes the rules more careful). Sealing a class removes the explicit conversion from
+ * an interface it does not implement, so such a conversion would stop compiling (CS0030, CS0039,
+ * CS8121). Patterns are read from the tokens: the parser does not structure all of them.
+ */
+export function collectConversionTargetNames(source: string, root: Node): Set<string> {
+  const names = new Set<string>();
+  const addIdentifiers = (node: Node): void => {
+    for (const identifier of [node, ...node.descendantsOfType('identifier')]) {
+      if (identifier.type === 'identifier') {
+        names.add(identifier.text.replace(/^@/, ''));
+      }
+    }
+  };
+  for (const cast of findAll(root, 'cast_expression')) {
+    const type = cast.childForFieldName('type') ?? cast.namedChildren[0];
+    if (type) {
+      addIdentifiers(type);
+    }
+  }
+
+  const tokens = lex(source).tokens;
+  const text = (index: number): string => source.slice(tokens[index].start, tokens[index].end);
+  const addType = (start: number): void => {
+    let angles = 0;
+    for (let i = start; i < tokens.length; i++) {
+      const type = tokens[i].type;
+      if (type === '<') {
+        angles++;
+      } else if (type === '>' && angles > 0) {
+        angles--;
+      } else if (type === ',' && angles > 0) {
+        continue;
+      } else if (TYPE_TOKENS[type] !== true) {
+        return;
+      } else if (type === 'identifier') {
+        names.add(text(i).replace(/^@/, ''));
+      }
+    }
+  };
+  const addPattern = (start: number): void => {
+    let depth = 0;
+    for (let i = start; i < tokens.length && tokens[i].type !== 'end'; i++) {
+      const type = tokens[i].type;
+      if (type === '(' || type === '[' || type === '{') {
+        depth++;
+      } else if (type === ')' || type === ']' || type === '}') {
+        if (--depth < 0) {
+          return;
+        }
+      } else if (depth === 0 && (PATTERN_ENDS[type] === true || (type === 'identifier' && text(i) === 'when'))) {
+        return;
+      } else if (type === 'identifier') {
+        names.add(text(i).replace(/^@/, ''));
+      }
+    }
+  };
+
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const type = tokens[i].type;
+    if (type === 'as') {
+      addType(i + 1);
+    } else if (type === 'is' || type === 'case') {
+      addPattern(i + 1);
+    } else if (type === 'switch' && tokens[i + 1].type === '{') {
+      // A switch expression: each arm starts after `{` or a `,` at the arms' level.
+      let depth = 0;
+      for (let j = i + 1; j < tokens.length && tokens[j].type !== 'end'; j++) {
+        const inner = tokens[j].type;
+        if ((inner === '{' && depth === 0) || (inner === ',' && depth === 1)) {
+          addPattern(j + 1);
+        }
+
+        depth += inner === '(' || inner === '[' || inner === '{' ? 1 : inner === ')' || inner === ']' || inner === '}' ? -1 : 0;
+        if (depth === 0) {
+          break;
+        }
+      }
+    }
+  }
+
+  return names;
 }
 
 /** Tokens or contextual keywords after which `Name :` declares a base list or a constraint, not a pattern. */
@@ -221,8 +342,11 @@ export function targetFrameworksOf(project: ProjectInfo | undefined): readonly s
  * The facts of every C# file of `project` except `currentFile` (whose current text the rules read
  * themselves). Files are the `.cs` files under the project folder, outside `bin`, `obj`, hidden
  * folders and folders of other projects, as the .NET SDK's default compile items, plus explicit
- * `<Compile Include>` items. Computed once per project object (one cleanup); across cleanups only
- * the files and folders whose modification time changed are read again.
+ * `<Compile Include>` items, read from their unsaved text where `project.unsavedSources` has it.
+ * Computed once per project object (one cleanup). A batch cleanup asks with a new project object
+ * per file: the project's scan is reused while the calls follow each other closely (see
+ * `SCAN_REUSE_MS`), reading again only the files cleaned since. Later, only the files and folders
+ * whose modification time changed are read again.
  */
 export function loadProjectFacts(project: ProjectInfo, currentFile: string | undefined): ProjectFacts {
   const key = currentFile ? path.resolve(currentFile) : '';
@@ -234,16 +358,37 @@ export function loadProjectFacts(project: ProjectInfo, currentFile: string | und
 
   let facts = byFile.get(key);
   if (!facts) {
-    facts = readProjectFacts(project.directory, key);
+    facts = readProjectFacts(project.directory, key, project.unsavedSources);
     byFile.set(key, facts);
   }
 
   return facts;
 }
 
-type NameKind = 'derivedOrConstrainedNames' | 'memberAccessNames' | 'typeNames' | 'interfaceNames' | 'interfaceMemberNames' | 'globalUsings';
+type NameKind =
+  | 'derivedOrConstrainedNames'
+  | 'conversionTargetNames'
+  | 'memberAccessNames'
+  | 'typeNames'
+  | 'interfaceNames'
+  | 'interfaceMemberNames'
+  | 'interfaceBases'
+  | 'nestedNamespaces'
+  | 'globalUsings'
+  | 'globalUsingAliases';
 
-const NAME_KINDS: readonly NameKind[] = ['derivedOrConstrainedNames', 'memberAccessNames', 'typeNames', 'interfaceNames', 'interfaceMemberNames', 'globalUsings'];
+const NAME_KINDS: readonly NameKind[] = [
+  'derivedOrConstrainedNames',
+  'conversionTargetNames',
+  'memberAccessNames',
+  'typeNames',
+  'interfaceNames',
+  'interfaceMemberNames',
+  'interfaceBases',
+  'nestedNamespaces',
+  'globalUsings',
+  'globalUsingAliases',
+];
 
 /**
  * The facts of every file of a project folder, merged as how many files hold each name. Kept per
@@ -258,11 +403,97 @@ interface ProjectIndex {
 
 const indexByDirectory = new Map<string, ProjectIndex>();
 
-function readProjectFacts(directory: string, currentFile: string): ProjectFacts {
+/** What one scan of a project folder found, reused by the calls of one batch cleanup. */
+interface ProjectScan {
+  readonly settings: ProjectSettings;
+  readonly markup: string | undefined;
+  /** The C# files the project compiles. */
+  readonly files: ReadonlySet<string>;
+  readonly index: ProjectIndex;
+  /** Problems of the project file and folder listing. */
+  readonly problems: readonly string[];
+  /** Why a file could not be read, by file. */
+  readonly unreadable: Map<string, string>;
+  /** The current files asked for since the scan, in a batch each file once; the last one the cleanup may since have rewritten. */
+  readonly asked: Set<string>;
+  lastAsked: string | undefined;
+  lastUse: number;
+  /** The files counted from their unsaved text instead of their disk copy. */
+  readonly unsaved: Set<string>;
+}
+
+/**
+ * How long after the previous call for a project its scan is still reused. A batch cleanup asks for
+ * the facts file after file, each file once; a gap this long, a call for no file or for a file asked
+ * for before ends the batch, and the call scans the project again.
+ */
+const SCAN_REUSE_MS = 1000;
+
+const scanByDirectory = new Map<string, ProjectScan>();
+
+function readProjectFacts(directory: string, currentFile: string, unsavedSources: ReadonlyMap<string, string> | undefined): ProjectFacts {
+  const now = Date.now();
+  let scan = scanByDirectory.get(directory);
+  if (!scan || !currentFile || scan.asked.has(currentFile) || now - scan.lastUse > SCAN_REUSE_MS) {
+    scan = scanProject(directory);
+    scanByDirectory.set(directory, scan);
+  } else if (scan.lastAsked !== undefined && scan.files.has(scan.lastAsked)) {
+    readIntoScan(scan, scan.lastAsked);
+  }
+
+  // The disk copy again for files no longer unsaved (saved or reverted since), the text of those that are.
+  for (const file of [...scan.unsaved].filter((file) => !unsavedSources?.has(file))) {
+    scan.unsaved.delete(file);
+    readIntoScan(scan, file);
+  }
+
+  for (const [file, text] of unsavedSources ?? []) {
+    if (scan.files.has(file)) {
+      scan.unsaved.add(file);
+      scan.unreadable.delete(file);
+      updateIndex(scan.index, file, unsavedSourceFacts(text));
+    }
+  }
+
+  if (currentFile) {
+    scan.asked.add(currentFile);
+  }
+
+  scan.lastAsked = currentFile || undefined;
+  scan.lastUse = now;
+  const { index, settings } = scan;
+  // The current file is counted from disk like the others and left out here; the rules read its
+  // current text themselves, so it not being on disk (yet) is no problem.
+  const problems = [...scan.problems, ...[...scan.unreadable].filter(([file]) => file !== currentFile).map(([, problem]) => problem)];
+  const own = index.facts.get(currentFile);
+  const others = Object.fromEntries(
+    NAME_KINDS.map((kind): [NameKind, ReadonlySet<string>] => [kind, new OtherFilesNames(index.counts[kind], own?.[kind])])
+  ) as Record<NameKind, ReadonlySet<string>>;
+  const internalsVisibleTo = index.internalsVisibleToFiles - (own?.internalsVisibleTo ? 1 : 0) > 0;
+  const globalSuppressions = [...index.facts].flatMap(([file, facts]) => (file === currentFile ? [] : facts.globalSuppressions));
+
+  return {
+    incomplete: problems.length > 0 ? problems.join('; ') : undefined,
+    markup: scan.markup,
+    others: {
+      ...others,
+      globalUsingAliases: settings.usingAliases.length > 0 ? new Set([...others.globalUsingAliases, ...settings.usingAliases]) : others.globalUsingAliases,
+      internalsVisibleTo,
+      globalSuppressions,
+    },
+    internalsVisibleTo: settings.internalsVisibleTo || internalsVisibleTo,
+    importsSystem: settings.importsSystem || others.globalUsings.has('System'),
+    webProject: settings.webProject,
+  };
+}
+
+/** Reads the project settings and every source of the project folder into its index. */
+function scanProject(directory: string): ProjectScan {
   const problems: string[] = [];
   const settings = readProjectSettings(directory, problems);
   // Markup default items (Razor components, pages, XAML) follow EnableDefaultItems, not EnableDefaultCompileItems.
-  const listing = settings.defaultItems ? listProjectSources(directory, problems) : undefined;
+  const listing = settings.defaultItems ? listProjectSources(directory, settings.excludesNodeModules) : undefined;
+  problems.push(...(listing?.problems ?? []));
   const files = new Set([...(settings.defaultCompileItems ? (listing?.files ?? []) : []), ...settings.compileIncludes]);
   const components = new Set(listing?.markup.filter((file) => RAZOR_COMPONENT.test(file)));
   let index = indexByDirectory.get(directory);
@@ -271,10 +502,20 @@ function readProjectFacts(directory: string, currentFile: string): ProjectFacts 
     indexByDirectory.set(directory, index);
   }
 
+  const scan: ProjectScan = {
+    settings,
+    markup: listing?.markup[0] ?? settings.markupItem,
+    files,
+    index,
+    problems,
+    unreadable: new Map(),
+    asked: new Set(),
+    lastAsked: undefined,
+    lastUse: 0,
+    unsaved: new Set(),
+  };
   for (const file of files) {
-    // The current file is counted from disk like the others and left out below; the rules read its
-    // current text themselves, so it not being on disk (yet) is no problem.
-    updateIndex(index, file, readSourceFacts(file, file === currentFile ? [] : problems));
+    readIntoScan(scan, file);
   }
 
   for (const file of components) {
@@ -285,22 +526,25 @@ function readProjectFacts(directory: string, currentFile: string): ProjectFacts 
     updateIndex(index, file, undefined);
   }
 
-  const own = index.facts.get(currentFile);
-  const others = Object.fromEntries(
-    NAME_KINDS.map((kind): [NameKind, ReadonlySet<string>] => [kind, new OtherFilesNames(index.counts[kind], own?.[kind])])
-  ) as Record<NameKind, ReadonlySet<string>>;
-  const internalsVisibleTo = index.internalsVisibleToFiles - (own?.internalsVisibleTo ? 1 : 0) > 0;
-  const globalSuppressions = [...index.facts].flatMap(([file, facts]) => (file === currentFile ? [] : facts.globalSuppressions));
-
-  return {
-    incomplete: problems.length > 0 ? problems.join('; ') : undefined,
-    markup: listing?.markup[0] ?? settings.markupItem,
-    others: { ...others, internalsVisibleTo, globalSuppressions },
-    internalsVisibleTo: settings.internalsVisibleTo || internalsVisibleTo,
-    importsSystem: settings.importsSystem || others.globalUsings.has('System'),
-    webProject: settings.webProject,
-  };
+  return scan;
 }
+
+/** Counts the facts of `file` as on disk now (read again only when its size or time changed). */
+function readIntoScan(scan: ProjectScan, file: string): void {
+  const problems: string[] = [];
+  updateIndex(scan.index, file, readSourceFacts(file, problems));
+  if (problems.length > 0) {
+    scan.unreadable.set(file, problems.join('; '));
+  } else {
+    scan.unreadable.delete(file);
+  }
+}
+
+/**
+ * The facts of an unsaved text: the same object for the same text, so counting it again changes
+ * nothing. Each call counts every unsaved file again, so the cache holds more than a few editors.
+ */
+const unsavedSourceFacts = memoizeBySource(computeSourceFacts, 64);
 
 /** Counts `facts` for `file` in place of what was counted for it before (`undefined`: the file is gone). */
 function updateIndex(index: ProjectIndex, file: string, facts: SourceFacts | undefined): void {
@@ -405,9 +649,6 @@ function readSourceFacts(file: string, problems: string[]): SourceFacts | undefi
   return facts;
 }
 
-/** Markup the SDK compiles into classes of the assembly (Razor components and pages, XAML, Avalonia XAML), which the facts do not read. */
-const MARKUP_SOURCE = /\.(?:razor|cshtml|xaml|axaml)$/i;
-
 /** A Razor component, compiled into a class named like the file. */
 const RAZOR_COMPONENT = /\.razor$/i;
 
@@ -420,11 +661,15 @@ function componentFacts(file: string): SourceFacts {
     const none = new Set<string>();
     facts = {
       derivedOrConstrainedNames: none,
+      conversionTargetNames: none,
       memberAccessNames: none,
       typeNames: new Set([path.basename(file).replace(RAZOR_COMPONENT, '')]),
       interfaceNames: none,
       interfaceMemberNames: none,
+      interfaceBases: none,
+      nestedNamespaces: none,
       globalUsings: none,
+      globalUsingAliases: none,
       internalsVisibleTo: false,
       globalSuppressions: [],
     };
@@ -432,84 +677,6 @@ function componentFacts(file: string): SourceFacts {
   }
 
   return facts;
-}
-
-interface CachedListing {
-  /** Every folder read, with its modification time: adding, removing or renaming an entry changes it. */
-  readonly folders: ReadonlyMap<string, number>;
-  readonly files: readonly string[];
-  /** The markup files (see `MARKUP_SOURCE`). */
-  readonly markup: readonly string[];
-  readonly problems: readonly string[];
-  /** No folder failed to read or changed too recently for its modification time to tell a later change. */
-  readonly reusable: boolean;
-}
-
-/** Modification times this close to the listing may not change again for an entry added right after (coarse file system clocks). */
-const RECENT_CHANGE_MS = 2000;
-
-const listingByRoot = new Map<string, CachedListing>();
-
-/** The `.cs` and markup files the SDK compiles by default; listed again only when one of the folders read changed. */
-function listProjectSources(root: string, problems: string[]): CachedListing {
-  let listing = listingByRoot.get(root);
-  if (!listing?.reusable || [...listing.folders].some(([folder, mtimeMs]) => fs.statSync(folder, { throwIfNoEntry: false })?.mtimeMs !== mtimeMs)) {
-    listing = walkProjectSources(root);
-    listingByRoot.set(root, listing);
-  }
-
-  problems.push(...listing.problems);
-
-  return listing;
-}
-
-function walkProjectSources(root: string): CachedListing {
-  const folders = new Map<string, number>();
-  const files: string[] = [];
-  const problems: string[] = [];
-  const now = Date.now();
-  let reusable = true;
-  const markup: string[] = [];
-  const pending = [root];
-  while (pending.length > 0) {
-    const directory = pending.pop() as string;
-    let entries: fs.Dirent[];
-    try {
-      const mtimeMs = fs.statSync(directory).mtimeMs;
-      folders.set(directory, mtimeMs);
-      reusable &&= now - mtimeMs > RECENT_CHANGE_MS;
-      entries = fs.readdirSync(directory, { withFileTypes: true });
-    } catch (error) {
-      problems.push(`folder ${directory} could not be read (${(error as Error).message})`);
-      reusable = false;
-      continue;
-    }
-
-    // A nested folder with its own project file belongs to that project.
-    if (directory !== root && entries.some((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.csproj'))) {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const full = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (!entry.name.startsWith('.') && SKIPPED_FOLDERS[entry.name.toLowerCase()] !== true) {
-          pending.push(full);
-        }
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.cs')) {
-        files.push(path.resolve(full));
-      } else if (entry.isFile() && MARKUP_SOURCE.test(entry.name)) {
-        markup.push(path.resolve(full));
-      }
-    }
-
-    if (files.length > MAX_PROJECT_FILES) {
-      problems.push(`the project has more than ${MAX_PROJECT_FILES} C# files`);
-      break;
-    }
-  }
-
-  return { folders, files, markup, problems, reusable };
 }
 
 interface ProjectSettings {
@@ -523,7 +690,11 @@ interface ProjectSettings {
   /** A markup file the project lists as an item (see `ProjectFacts.markup`). */
   readonly markupItem?: string;
   readonly importsSystem: boolean;
+  /** Aliases of the `<Using Include="..." Alias="Name" />` items. */
+  readonly usingAliases: readonly string[];
   readonly webProject: boolean;
+  /** The Web and Razor SDKs (Blazor WebAssembly too) leave `node_modules` out of the default items. */
+  readonly excludesNodeModules: boolean;
 }
 
 /** Reads the project file, what it imports and the `Directory.Build.props`/`.targets` files MSBuild imports for it. */
@@ -579,7 +750,9 @@ function readProjectSettings(directory: string, problems: string[]): ProjectSett
     internalsVisibleTo: /<InternalsVisibleTo\b/i.test(evaluated) || /<AssemblyAttribute\s[^>]*?\bInclude\s*=\s*["'][^"']*\bInternalsVisibleTo(?:Attribute)?["']/i.test(evaluated),
     markupItem,
     importsSystem: systemUsing === undefined ? implicitUsings : /^include$/i.test(systemUsing),
+    usingAliases: [...evaluated.matchAll(/<Using\s[^>]*?\bAlias\s*=\s*"([^"]+)"/gi)].map((match) => match[1].trim()),
     webProject: /Sdk\s*=\s*"Microsoft\.NET\.Sdk\.Web"/i.test(projectText) || /<Sdk\s+Name\s*=\s*"Microsoft\.NET\.Sdk\.Web"/i.test(projectText),
+    excludesNodeModules: /(?:\bSdk\s*=|<Sdk\s+Name\s*=)\s*"Microsoft\.NET\.Sdk\.(?:Web|Razor|BlazorWebAssembly)\b/i.test(projectText),
   };
 }
 

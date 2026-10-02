@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { findDefiningEditorConfigPath } from './editorconfig';
+import { findDefiningEditorConfigPath, readEditorConfigFiles, resolveEditorConfigProperties } from './editorconfig';
 import { RULE_SET_KEY, resolveEffectiveCleanupSettings } from './effectiveSettings';
 import { CleanupSettings } from './types';
 
@@ -19,9 +19,10 @@ export type DefiningConfigFinder = (filePath: string, key: string) => string | u
 
 /**
  * The note for each overridden setting, keyed by the `CleanupSettings` key (or the option name of a Code Style
- * rule): `Overridden by .editorconfig: <key> in <path>`, or `Overridden by the project's AnalysisLevel/AnalysisMode`
- * when the SDK rule set of those project properties decides it. The file is looked up once per `.editorconfig` key,
- * however many settings it decides.
+ * rule): `Overridden by .editorconfig: <key> in <path>`, `Overridden by a global AnalyzerConfig: <key>` when no
+ * `.editorconfig` sets the key (a `.globalconfig` or `<GlobalAnalyzerConfigFiles>` file decides it), or
+ * `Overridden by the project's AnalysisLevel/AnalysisMode` when the SDK rule set of those project properties decides
+ * it. The file is looked up once per `.editorconfig` key, however many settings it decides.
  */
 export function editorConfigOverrideNotes(
   workspaceRoot: string | undefined,
@@ -37,10 +38,16 @@ export function editorConfigOverrideNotes(
   const effective = resolveEffectiveCleanupSettings(probePath, settings);
   const keys = new Map([...effective.editorConfigKeys, ...effective.codeStyleEditorConfigKeys]);
 
+  const editorConfigEntries = resolveEditorConfigProperties(readEditorConfigFiles(probePath), probePath).entries;
   const noteByKey = new Map<string, string>();
   for (const key of new Set(keys.values())) {
     if (key === RULE_SET_KEY) {
       noteByKey.set(key, `Overridden by the project's ${key}`);
+      continue;
+    }
+
+    if (!editorConfigEntries.has(key)) {
+      noteByKey.set(key, `Overridden by a global AnalyzerConfig: ${key}`);
       continue;
     }
 

@@ -5,7 +5,7 @@ import { CleanupSettings, HeaderPosition, HeaderUpdateMode, createDefaultSetting
 
 /** The repository policy file (`.codejanitor`) shared with the Visual Studio extension, without VS Code. */
 
-const REPOSITORY_CONFIG_NAMES = ['.codejanitor', '.code-janitor.json'];
+export const REPOSITORY_CONFIG_NAMES = ['.codejanitor', '.code-janitor.json'];
 
 /**
  * `.codejanitor` keys of the Visual Studio extension that VS Code does not honor: here the
@@ -22,6 +22,12 @@ const VISUAL_STUDIO_ONLY_KEYS: Readonly<Record<string, string>> = {
 const KEY_ALIASES: Readonly<Record<string, keyof CleanupSettings>> = {
   insertBlankLineBeforeReturnAndThrow: 'insertBlankLineBeforeReturnAndThrowStatements',
 };
+
+/** The `.codejanitor` names of each header enum; a name of the other enum is invalid for the key. */
+const HEADER_ENUM_VALUES = {
+  fileHeaderPosition: { afterUsings: HeaderPosition.AfterUsings, documentStart: HeaderPosition.DocumentStart },
+  fileHeaderUpdateMode: { replace: HeaderUpdateMode.Replace, insert: HeaderUpdateMode.Insert },
+} as const;
 
 const INSERT_BLANK_LINE_PADDING_KEYS = [
   'insertBlankLinePaddingBeforeClasses',
@@ -173,11 +179,9 @@ export function parseRepositoryPolicy(text: string, onIgnoredKey?: (key: string,
   for (const [name, key] of readers) {
     const value = section[name];
     if (key === 'fileHeaderPosition' || key === 'fileHeaderUpdateMode') {
-      const enumValue = value === 'afterUsings' || value === 'replace' ? value : value === 'documentStart' || value === 'insert' ? value : undefined;
-      if (enumValue !== undefined) {
-        (overrides as Record<string, unknown>)[key] = key === 'fileHeaderPosition'
-          ? enumValue === 'afterUsings' ? HeaderPosition.AfterUsings : HeaderPosition.DocumentStart
-          : enumValue === 'replace' ? HeaderUpdateMode.Replace : HeaderUpdateMode.Insert;
+      const names: Record<string, HeaderPosition | HeaderUpdateMode> = HEADER_ENUM_VALUES[key];
+      if (typeof value === 'string' && Object.hasOwn(names, value)) {
+        (overrides as Record<string, unknown>)[key] = names[value];
       }
 
       continue;

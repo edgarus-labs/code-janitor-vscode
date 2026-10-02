@@ -18,6 +18,15 @@ describe('reorganize: preprocessor conditionals', () => {
     expect(hasPreprocessorConditionals('#region X\n#endregion\n#nullable enable\n// #if not a directive\n')).toBe(false);
   });
 
+  it('detects a directive written with whitespace after the hash', () => {
+    const spaced = WITH_CONDITIONAL.replace('#if DEBUG', '# if DEBUG').replace('#endif', '#\tendif');
+    const result = reorganizeSourceDetailed(spaced, reorganizeSettings({ performWhenPreprocessorConditionals: 'ask' }), withoutPadding());
+
+    expect(hasPreprocessorConditionals('  # pragma warning disable CS0169\n')).toBe(true);
+    expect(result.blockedByPreprocessor).toBe(true);
+    expect(result.output).toBe(spaced);
+  });
+
   it.each(['ask', 'no'] as const)('leaves a file with conditionals alone when the policy is %s', (policy) => {
     const result = reorganizeSourceDetailed(WITH_CONDITIONAL, reorganizeSettings({ performWhenPreprocessorConditionals: policy }), withoutPadding());
 

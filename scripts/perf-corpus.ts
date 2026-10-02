@@ -75,7 +75,7 @@ try {
 
   function clean(source: string, file: string, issues: string[], timed: boolean): string {
     const started = performance.now();
-    const pipeline = getCleanupPipeline(source, file, settings, disqualified, (issue) => issues.push(`${issue.kind}: ${issue.filePath}: ${issue.detail}`));
+    const pipeline = getCleanupPipeline(file, settings, disqualified, (issue) => issues.push(`${issue.kind}: ${issue.filePath}: ${issue.detail}`));
     if (timed) {
       stageTotals.set('(pipeline setup)', (stageTotals.get('(pipeline setup)') ?? 0) + performance.now() - started);
     }

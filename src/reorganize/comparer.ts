@@ -73,54 +73,46 @@ export function memberTypeKey(kind: MemberKind): MemberTypeKey | undefined {
 
 const nameCollator = new Intl.Collator('en-US');
 
-/** `CodeItemTypeComparer`: the order of two code items. */
+/**
+ * `CodeItemTypeComparer`: the order of two code items. Type and access level (whichever is primary)
+ * are compared term by term rather than in the VS weighted key, where a member type order of 10 or
+ * more outweighs one access step when the access level is primary.
+ */
 export function createMemberComparer(settings: ReorganizeSettings): (a: SortableMember, b: SortableMember) => number {
+  const accessOrder = settings.reverseOrderByAccessLevel ? [...ACCESS_ORDER].reverse() : ACCESS_ORDER;
+  const typeOrder = (member: SortableMember): number => {
+    const key = memberTypeKey(member.kind);
+
+    return key ? settings.memberTypes[key].order : 0;
+  };
+  const accessRank = (member: SortableMember): number => accessOrder.indexOf(member.access);
+  const [primary, secondary] = settings.primaryOrderByAccessLevel ? [accessRank, typeOrder] : [typeOrder, accessRank];
+
   return (a, b) => {
-    const first = calculateNumericRepresentation(a, settings);
-    const second = calculateNumericRepresentation(b, settings);
-
-    if (first === second) {
-      if (settings.alphabetizeMembersOfTheSameGroup) {
-        const byName = nameCollator.compare(normalizeName(a), normalizeName(b));
-        if (byName !== 0) {
-          return byName;
-        }
-      }
-
-      return a.offset - b.offset;
+    const difference = primary(a) - primary(b) || secondary(a) - secondary(b) || minorWeight(a, settings) - minorWeight(b, settings);
+    if (difference !== 0) {
+      return difference;
     }
 
-    return first - second;
+    if (settings.alphabetizeMembersOfTheSameGroup) {
+      const byName = nameCollator.compare(normalizeName(a), normalizeName(b));
+      if (byName !== 0) {
+        return byName;
+      }
+    }
+
+    return a.offset - b.offset;
   };
 }
 
-/**
- * The weighted sort key: type and access level (whichever is primary), then explicit interface
- * implementation, constant, static and read-only fields, in the VS weights.
- */
-export function calculateNumericRepresentation(member: SortableMember, settings: ReorganizeSettings): number {
-  const typeOffset = calculateTypeOffset(member, settings);
-  const accessOffset = calculateAccessOffset(member, settings);
+/** The VS weights below type and access level: explicit interface implementation, then constant, static and read-only fields. */
+function minorWeight(member: SortableMember, settings: ReorganizeSettings): number {
   const explicitOffset = settings.explicitMembersAtEnd && member.isExplicitInterface ? 1 : 0;
   const constantOffset = member.kind === 'field' && !member.isConstant ? 1 : 0;
   const staticOffset = member.isStatic ? 0 : 1;
   const readOnlyOffset = member.kind === 'field' && !member.isReadOnly ? 1 : 0;
 
-  const primary = settings.primaryOrderByAccessLevel ? accessOffset * 100000 + typeOffset * 10000 : typeOffset * 100000 + accessOffset * 10000;
-
-  return primary + explicitOffset * 1000 + constantOffset * 100 + staticOffset * 10 + readOnlyOffset;
-}
-
-function calculateTypeOffset(member: SortableMember, settings: ReorganizeSettings): number {
-  const key = memberTypeKey(member.kind);
-
-  return key ? settings.memberTypes[key].order : 0;
-}
-
-function calculateAccessOffset(member: SortableMember, settings: ReorganizeSettings): number {
-  const order = settings.reverseOrderByAccessLevel ? [...ACCESS_ORDER].reverse() : ACCESS_ORDER;
-
-  return order.indexOf(member.access) + 1;
+  return explicitOffset * 1000 + constantOffset * 100 + staticOffset * 10 + readOnlyOffset;
 }
 
 /** The member name after the last dot for an explicit interface implementation. */

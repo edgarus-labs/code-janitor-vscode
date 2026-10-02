@@ -186,6 +186,17 @@ function collectRemovals(
       continue;
     }
 
+    // `(this.X)(5)` would become `(X)(5)`, a cast: C# reads `(Name)` (also `(A.B)`) as one before
+    // `(`, `!`, `~`, a name, a literal or a keyword other than `is` and `as`.
+    let chain = access;
+    while (chain.parent?.type === 'member_access_expression' && chain.parent.childForFieldName('expression') === chain) {
+      chain = chain.parent;
+    }
+
+    if (chain.parent?.type === 'parenthesized_expression' && /^\s*(?:[(!~"'@$]|(?!(?:is|as)\b)\w)/.test(source.slice(chain.parent.endIndex))) {
+      continue;
+    }
+
     edits.push({ start: receiver.startIndex, end: nameNode.startIndex, text: '' });
   }
 }

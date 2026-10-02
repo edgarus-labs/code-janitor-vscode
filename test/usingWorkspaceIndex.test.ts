@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { placeUsings } from '../src/cleanup/usings/placement';
 import { ProjectContext, clearUsingIndexCache, projectContextOf } from '../src/cleanup/usings/workspaceIndex';
 
@@ -131,15 +131,29 @@ describe('project context of a file', () => {
     expect(context(write('App/Sample.cs', 'class Sample { }')).incomplete).toMatch(/Lib\.csproj/);
   });
 
-  it('notices a declaration added to the project after the first look', () => {
-    write('App/App.csproj', PLAIN_PROJECT);
-    const file = write('App/Sample.cs', 'class Sample { }');
-    expect(context(file).index.hasType('Company.Added.Late')).toBe(false);
+  it('trusts what it read during the refresh window and looks at the files again after it', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      write('App/App.csproj', PLAIN_PROJECT);
+      const file = write('App/Sample.cs', 'class Sample { }');
+      expect(context(file).index.hasType('Company.Added.Late')).toBe(false);
 
-    write('App/Late.cs', 'namespace Company.Added { class Late { } }');
-    clearUsingIndexCache();
+      write('App/Late.cs', 'namespace Company.Added { class Late { } }');
+      vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
+      expect(context(file).index.hasType('Company.Added.Late')).toBe(false);
 
-    expect(context(file).index.hasType('Company.Added.Late')).toBe(true);
+      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
+      expect(context(file).index.hasType('Company.Added.Late')).toBe(true);
+
+      // A file changed on disk is read again, not taken from the cache of files.
+      write('App/Late.cs', 'namespace Company.Added { class Later { } }');
+      vi.setSystemTime(new Date('2026-01-01T00:00:04Z'));
+      const index = context(file).index;
+      expect([index.hasType('Company.Added.Late'), index.hasType('Company.Added.Later')]).toEqual([false, true]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -293,8 +307,17 @@ describe('frameworks the index does not list', () => {
     ['Windows Forms', WINDOWS_FORMS_PROJECT],
     ['WPF', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF></PropertyGroup></Project>'],
     ['a Windows Desktop FrameworkReference', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><FrameworkReference Include="Microsoft.WindowsDesktop.App" /></ItemGroup></Project>'],
+    // System.Drawing.Common adds System.Drawing.Font and Bitmap, which the reference packs do not hold.
+    [
+      'a package',
+      '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="System.Drawing.Common" Version="9.0.0" /></ItemGroup></Project>',
+    ],
+    ['.NET Framework', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net48</TargetFramework></PropertyGroup></Project>'],
+    ['.NET Standard', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>netstandard2.0</TargetFramework></PropertyGroup></Project>'],
+    ['a platform target framework', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>net10.0;net10.0-android</TargetFrameworks></PropertyGroup></Project>'],
+    ['a target framework MSBuild has to evaluate', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>$(AppFramework)</TargetFramework></PropertyGroup></Project>'],
   ])('do not take the types of a framework namespace as all known with %s', (_name, project) => {
-    // Windows Forms adds System.Drawing.Font, which wins over Company.Font only while the directive is inside the namespace.
+    // System.Drawing.Font wins over Company.Font only while the directive is inside the namespace.
     write('App/App.csproj', project);
     write('App/Lib.cs', library);
 
@@ -305,10 +328,72 @@ describe('frameworks the index does not list', () => {
     });
   });
 
-  it('takes the types of a framework namespace as all known in a plain project', () => {
-    write('App/App.csproj', PLAIN_PROJECT);
+  it.each([
+    ['a plain project', PLAIN_PROJECT],
+    ['several .NET target frameworks', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>net8.0;net10.0</TargetFrameworks></PropertyGroup></Project>'],
+  ])('takes the types of a framework namespace as all known in %s', (_name, project) => {
+    write('App/App.csproj', project);
     write('App/Lib.cs', library);
 
     expect(placeUsings(sample, 'outside', { ...context(write('App/C.cs', sample)), indent: '    ' }).status).toBe('moved');
+  });
+});
+
+describe('namespaces of packages', () => {
+  const packageProject = (id: string): string =>
+    `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="${id}" Version="1.0.0" /></ItemGroup></Project>`;
+
+  it('keeps a relative directive in place that may name a namespace of a package sharing the root namespace', () => {
+    // From Company.App, Shared.Logging binds Company.Shared.Logging of the package; at file level it would not.
+    const sample = 'namespace Company.App\n{\n    using Shared.Logging;\n\n    public class C { Logger l; }\n}\n';
+    write('App/App.csproj', packageProject('Company.Shared.Logging'));
+
+    expect(placeUsings(sample, 'outside', { ...context(write('App/C.cs', sample)), indent: '    ' })).toMatchObject({
+      status: 'skipped',
+      reason: expect.stringMatching(/'Shared'.*package/),
+    });
+  });
+
+  it('takes the root namespaces of a package referenced by a referenced project', () => {
+    const sample = 'namespace Company.App\n{\n    using Shared.Logging;\n\n    public class C { Logger l; }\n}\n';
+    write('Lib/Lib.csproj', packageProject('company.shared.logging'));
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup></Project>');
+
+    expect(placeUsings(sample, 'outside', { ...context(write('App/C.cs', sample)), indent: '    ' }).status).toBe('skipped');
+  });
+
+  it('moves a package directive when no package shares the root namespace', () => {
+    const sample = 'namespace Company.App\n{\n    using Newtonsoft.Json.Linq;\n\n    public class C { JObject o; }\n}\n';
+    write('App/App.csproj', packageProject('Newtonsoft.Json'));
+
+    expect(placeUsings(sample, 'outside', { ...context(write('App/C.cs', sample)), indent: '    ' })).toEqual({
+      status: 'moved',
+      text: 'using Newtonsoft.Json.Linq;\n\nnamespace Company.App\n{\n    public class C { JObject o; }\n}\n',
+    });
+  });
+});
+
+describe('files the project does not compile', () => {
+  const sample = 'namespace Company.App\n{\n    using Data;\n\n    public class C { Repo r; }\n}\n';
+
+  it.each([
+    ['removed', '<Compile Remove="Legacy/**" />'],
+    ['removed under a condition', `<Compile Remove="Legacy\\Old.cs" Condition="'$(Configuration)' == 'Release'" />`],
+  ])('do not decide what a name refers to when %s', (_name, item) => {
+    // Company.App.Data exists only in a file MSBuild may leave out: Data may be the global namespace.
+    write('App/App.csproj', `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup>${item}</ItemGroup></Project>`);
+    write('App/Legacy/Old.cs', 'namespace Company.App.Data { class Old { } }');
+    write('App/Repo.cs', 'namespace Data { public class Repo { } }');
+
+    expect(placeUsings(sample, 'outside', { ...context(write('App/C.cs', sample)), indent: '    ' })).toMatchObject({
+      status: 'skipped',
+      reason: expect.stringMatching(/'Data'.*may not compile|'Data'.*preprocessor condition/),
+    });
+  });
+
+  it('marks the index incomplete for a <Compile Remove> MSBuild has to evaluate', () => {
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Remove="$(LegacyFolder)/**" /></ItemGroup></Project>');
+
+    expect(context(write('App/Sample.cs', 'class Sample { }')).incomplete).toMatch(/Compile Remove/);
   });
 });

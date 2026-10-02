@@ -278,13 +278,22 @@ function designations(node: Node): string[] {
   return names;
 }
 
-/** Names declared in `scope` outside `except`: locals, parameters, local functions, pattern, deconstruction and loop variables. */
+/**
+ * Names declared in `scope` outside `except`: locals, parameters, local functions, pattern,
+ * deconstruction and loop variables. With `except`, names declared in other anonymous and local
+ * functions (except a local function's own name) are left out: they are not in scope there.
+ */
 function declaredNames(scope: Node, except?: Node): Set<string> {
   const names = new Set<string>();
   const outside = (node: Node): boolean => !except || node.startIndex < except.startIndex || node.startIndex >= except.endIndex;
+  const otherFunctions = except
+    ? findAll(scope, ['lambda_expression', 'anonymous_method_expression', 'local_function_statement']).filter((fn) => outside(fn) && !(fn.startIndex <= except.startIndex && except.endIndex <= fn.endIndex))
+    : [];
   const kinds = ['variable_declarator', 'parameter', 'local_function_statement', 'declaration_expression', 'pattern', 'catch_declaration', 'from_clause', 'let_clause', 'join_clause', 'lambda_expression', 'invocation_expression', 'tuple_expression', 'switch_body'];
   for (const node of findAll(scope, kinds)) {
-    if (!outside(node)) {
+    // A local function's own name is declared in the enclosing scope; anything else in another function is not.
+    const inOtherFunction = otherFunctions.some((fn) => fn.startIndex <= node.startIndex && node.endIndex <= fn.endIndex && !(fn === node && node.type === 'local_function_statement'));
+    if (!outside(node) || inOtherFunction) {
       continue;
     }
 
@@ -362,6 +371,10 @@ function capturesNothing(lambda: Node, root: Node, interfaces: Set<string>): boo
     }
   }
   const inner = declaredNames(lambda);
+  // Its own parameters hide an outer name in the whole lambda; another name it declares (a nested
+  // lambda's parameter, a block's local) may not be in scope where an outer one of that name is used.
+  const parameters = lambda.childForFieldName('parameters');
+  const own = new Set(parameters?.type === 'identifier' ? [parameters.text] : (parameters?.namedChildren ?? []).map((parameter) => parameter.childForFieldName('name')?.text ?? ''));
   const members = type ? membersOf(type) : new Map<string, { isStatic: boolean }>();
   const hasBase = type !== undefined && inheritsMembers(type, interfaces);
 
@@ -370,11 +383,19 @@ function capturesNothing(lambda: Node, root: Node, interfaces: Set<string>): boo
     const parent = identifier.parent;
     const isMemberName = parent?.type === 'member_access_expression' && parent.childForFieldName('name') === identifier;
     const isKeyword = (isAsyncWrapper(parent) && asyncKeyword(parent!) === identifier) || (parent?.type === 'await_expression' && parent.children[0] === identifier);
-    if (isMemberName || isKeyword || inner.has(name) || name === 'var' || name === '_') {
+    if (isMemberName || isKeyword || own.has(name) || name === 'var' || name === '_') {
       continue;
     }
 
-    if (outer.has(name) || hasBase) {
+    if (outer.has(name)) {
+      return false;
+    }
+
+    if (inner.has(name)) {
+      continue;
+    }
+
+    if (hasBase) {
       return false;
     }
 
@@ -904,7 +925,14 @@ function collectDiscardedValues(_source: string, root: Node, context: RuleContex
 
     const declared = methods.filter((method) => method.childForFieldName('name')?.text === name);
     const returns = declared.length === 1 ? declared[0].childForFieldName('type')?.text.replace(/\s+/g, '') : undefined;
-    if (!returns || returns === 'void' || returns === 'dynamic' || AWAITABLE.test(returns) || declaredNames(enclosingMember(statement) ?? root).has(name)) {
+    const inScope = declaredNames(enclosingMember(statement) ?? root);
+    if (!returns || returns === 'void' || returns === 'dynamic' || AWAITABLE.test(returns) || inScope.has(name)) {
+      continue;
+    }
+
+    // A parameter, local, member or primary constructor parameter named `_` turns `_ = Call();` into an assignment to it.
+    const primaryParameters = type.childForFieldName('parameters')?.namedChildren ?? [];
+    if (inScope.has('_') || membersOf(type).has('_') || primaryParameters.some((parameter) => parameter.childForFieldName('name')?.text === '_')) {
       continue;
     }
 

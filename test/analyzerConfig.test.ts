@@ -85,6 +85,24 @@ describe('severity from .globalconfig files', () => {
     fs.writeFileSync(path.join(root, 'App', 'rules.globalconfig'), 'is_global = true\ndotnet_diagnostic.CA1805.severity = suggestion\n');
     expect(severities(root, 'CA1805')).toEqual({ CA1805: 'suggestion' });
   });
+
+  it('reads .globalconfig files above every folder holding compile items of the project, as the SDK does', () => {
+    const files = {
+      '.editorconfig': EDITORCONFIG_ROOT,
+      'App/Sub/.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1805.severity = warning\n',
+      'App/Sub/Other.cs': '',
+      'App/obj/.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1825.severity = warning\n',
+      'App/obj/Generated.cs': '',
+      'Shared/.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1852.severity = error\n',
+      'Shared/Shared.cs': '',
+      'App/Sample.cs': '',
+    };
+    const sdk = fixture({ ...files, 'App/App.csproj': sdkProject('', '    <Compile Include="..\\Shared\\Shared.cs" />', 'net472') });
+    expect(severities(sdk, 'CA1805', 'CA1825', 'CA1852')).toEqual({ CA1805: 'warning', CA1825: undefined, CA1852: 'error' });
+
+    const explicit = fixture({ ...files, 'App/App.csproj': sdkProject('<EnableDefaultCompileItems>false</EnableDefaultCompileItems>', '    <Compile Include="Sample.cs" />', 'net472') });
+    expect(severities(explicit, 'CA1805', 'CA1825', 'CA1852')).toEqual({ CA1805: undefined, CA1825: undefined, CA1852: undefined });
+  });
 });
 
 describe('severity from the project (MSBuild)', () => {

@@ -367,6 +367,8 @@ class StaticMembers {
   private readonly suppressions: Suppressions;
   private readonly occurrences: Occurrence[];
   private readonly interfaceMemberNames: ReadonlySet<string>;
+  /** The bases of the interfaces the file and project declare, by interface name. */
+  private readonly interfaceBases = new Map<string, string[]>();
   /** The project, or this file's current text, applies InternalsVisibleTo. */
   private readonly internalsExposed: boolean;
 
@@ -383,6 +385,13 @@ class StaticMembers {
     this.occurrences = [...this.model.occurrencesByName.values()].flat();
     const interfaces = this.model.symbols.filter((symbol) => symbol.category === 'member' && symbol.type?.kind === 'interface');
     this.interfaceMemberNames = new Set([...interfaces.map((symbol) => symbol.name), ...(project?.others.interfaceMemberNames ?? [])]);
+    const edges = [
+      ...this.model.types.filter((type) => type.kind === 'interface').flatMap((type) => baseNames(type).map((base): [string, string] => [type.name, base])),
+      ...[...(project?.others.interfaceBases ?? [])].map((edge): [string, string] => [edge.slice(0, edge.indexOf(':')), edge.slice(edge.indexOf(':') + 1)]),
+    ];
+    for (const [name, base] of edges) {
+      this.interfaceBases.set(name, [...(this.interfaceBases.get(name) ?? []), base]);
+    }
     this.internalsExposed = exposesInternals(project, source);
   }
 
@@ -449,7 +458,7 @@ class StaticMembers {
       }
 
       for (const info of [type, ...derived]) {
-        unknownBases.push(...baseNames(info).filter((base) => !this.types.declaresType(base) && WELL_KNOWN_INTERFACES[base] !== true && !unknownBases.includes(base)));
+        unknownBases.push(...this.withInheritedInterfaces(baseNames(info)).filter((base) => !this.types.declaresType(base) && WELL_KNOWN_INTERFACES[base] !== true && !unknownBases.includes(base)));
       }
     }
 
@@ -727,6 +736,16 @@ class StaticMembers {
     }
 
     return names;
+  }
+
+  /** `bases` with the interfaces the project interfaces among them extend, transitively. */
+  private withInheritedInterfaces(bases: readonly string[]): string[] {
+    const all = [...bases];
+    for (let index = 0; index < all.length; index++) {
+      all.push(...(this.interfaceBases.get(all[index]) ?? []).filter((base) => !all.includes(base)));
+    }
+
+    return all;
   }
 
   /** True when a class may inherit members this file does not show: a base class, or other parts of a partial type. */

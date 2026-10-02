@@ -60,4 +60,15 @@ namespace Oracle.Reorganize
         public int Y;
         public int X;
     }
+
+    /// <summary>`Base * 2` runs the user-defined operator, which reads Scale: Doubled must stay after Scale.</summary>
+    public struct Meters
+    {
+        public static readonly int Scale = 10;
+        public static readonly Meters Base = default;
+        public static readonly int Doubled = Base * 2;
+        public int Value;
+
+        public static int operator *(Meters meters, int factor) => (meters.Value + factor) * Scale;
+    }
 }

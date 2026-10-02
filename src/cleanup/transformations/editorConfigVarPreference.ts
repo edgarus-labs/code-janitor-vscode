@@ -20,6 +20,8 @@ const OPTION_BY_CATEGORY: Record<Category, string> = {
 
 const INT_MAX = 2147483647n;
 const UINT_MAX = 4294967295n;
+const LONG_MAX = 9223372036854775807n;
+const ULONG_MAX = 18446744073709551615n;
 
 /** Initializers that have no type of their own, so `var` can never replace the declared type. */
 const NOT_VAR_COMPATIBLE: Record<string, true> = {
@@ -265,6 +267,7 @@ function typedExpression(type: Node | null): KnownType | undefined {
   return { text: type.text, category: type.type === 'predefined_type' ? 'builtIn' : 'apparent' };
 }
 
+/** The type of an integer literal: the first type of its suffix's list (`L`: long, ulong) its value fits. */
 function integerLiteralType(literal: string): string | undefined {
   const text = literal.replace(/_/g, '');
   const suffix = /[uUlL]*$/.exec(text)?.[0].toLowerCase() ?? '';
@@ -283,10 +286,10 @@ function integerLiteralType(literal: string): string | undefined {
     case 'u':
       return value <= UINT_MAX ? 'uint' : undefined;
     case 'l':
-      return 'long';
+      return value <= LONG_MAX ? 'long' : value <= ULONG_MAX ? 'ulong' : undefined;
     case 'ul':
     case 'lu':
-      return 'ulong';
+      return value <= ULONG_MAX ? 'ulong' : undefined;
     default:
       return undefined;
   }

@@ -36,18 +36,7 @@ export async function renameSymbolsAcrossWorkspace(
   const projects = discoverProjects(roots);
   const texts = new Map<string, SourceText>();
   for (const filePath of workspaceRenameInputs(projects, files)) {
-    const document = open.get(filePath);
-    if (document) {
-      texts.set(filePath, { text: document.getText(), utf8: true });
-      continue;
-    }
-
-    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
-    try {
-      texts.set(filePath, { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), utf8: true });
-    } catch {
-      texts.set(filePath, { text: new TextDecoder('utf-8').decode(bytes), utf8: false });
-    }
+    texts.set(filePath, await currentText(filePath));
   }
 
   const read = (filePath: string): SourceText => {
@@ -96,6 +85,17 @@ export async function renameSymbolsAcrossWorkspace(
     return;
   }
 
+  // The edit replaces whole files with texts planned from the snapshot: a file changed since (by an
+  // extension, an external tool or a checkout while the dialog was open) would be overwritten.
+  for (const filePath of plan.contents.keys()) {
+    if ((await currentText(filePath)).text !== read(filePath).text) {
+      reportNotRenamed(`not renamed because ${filePath} changed since the rename was planned; run cleanup again`);
+      logInfo(`Workspace-wide rename (.editorconfig naming rules): cancelled, ${filePath} changed since the rename was planned.`);
+
+      return;
+    }
+  }
+
   const edit = new vscode.WorkspaceEdit();
   for (const [filePath, content] of plan.contents) {
     edit.replace(vscode.Uri.file(filePath), wholeText(read(filePath).text), content);
@@ -118,6 +118,21 @@ export async function renameSymbolsAcrossWorkspace(
   }
 
   logInfo(`Workspace-wide rename (.editorconfig naming rules): ${plan.renames.length} symbol(s) renamed in ${plan.contents.size} file(s): ${lines.join('; ')}.`);
+}
+
+/** The text of a file as the editor has it: the open document, else the file on disk decoded as UTF-8. */
+async function currentText(filePath: string): Promise<SourceText> {
+  const document = vscode.workspace.textDocuments.find((candidate) => !candidate.isClosed && candidate.uri.fsPath === filePath);
+  if (document) {
+    return { text: document.getText(), utf8: true };
+  }
+
+  const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), utf8: true };
+  } catch {
+    return { text: new TextDecoder('utf-8').decode(bytes), utf8: false };
+  }
 }
 
 function wholeText(text: string): vscode.Range {

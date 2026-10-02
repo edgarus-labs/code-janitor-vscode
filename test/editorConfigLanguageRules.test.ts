@@ -209,7 +209,8 @@ describe('newer rules', () => {
     const { output, issues } = codeStyle(before, `${enforced('IDE0240')}\n${enforced('IDE0241')}`);
 
     expect(output).toBe(lines('class C', '{', '}', '#nullable disable', 'enum E { A }', '#nullable restore'));
-    expect(issues).toEqual([expect.stringMatching(/^IDE0241 line 4: /)]);
+    // Issue lines count in the step's input: `#nullable disable` is line 5 before IDE0240 removes line 1.
+    expect(issues).toEqual([expect.stringMatching(/^IDE0241 line 5: /)]);
     const unknownProject = codeStyle(before, enforced('IDE0240'), { directory: '/repo' });
     expect(unknownProject.output).toBe(before);
   });
@@ -352,6 +353,36 @@ describe('newer rules', () => {
     const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
 
     expect(output).toBe(source.replace('void M() { Run(); Own(); }', 'void M() { _ = Run(); _ = Own(); }'));
+  });
+
+  it('IDE0058 leaves the call alone where _ is a parameter, local or member rather than a discard', () => {
+    const source = lines(
+      'using System.Collections.Generic;',
+      'class A',
+      '{',
+      '    int Compute() => 42;',
+      '    void Lambda(List<string> items) { items.ForEach(_ => { Compute(); }); }',
+      '    void Local() { var _ = "x"; Compute(); }',
+      '    void Parameter(string _) { Compute(); }',
+      '    void Free() { Compute(); }',
+      '}',
+      'class B',
+      '{',
+      '    private string _;',
+      '    int Compute() => 42;',
+      '    void M() { Compute(); }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('void Free() { Compute(); }', 'void Free() { _ = Compute(); }'));
+  });
+
+  it('IDE0058 leaves the call alone where _ is a primary constructor parameter', () => {
+    const source = lines('class A(string _)', '{', '    int Compute() => 42;', '    void M() { Compute(); }', '}');
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source);
   });
 
   it('IDE0058 binds a call in an interface nested in a class to the interface, not the outer class', () => {
@@ -585,6 +616,31 @@ describe('IDE0320 never makes a capturing lambda static (shapes found in real co
       '    }',
       '}'
     ));
+  });
+
+  it('keeps a lambda that reads a local a lambda nested in it declares again', () => {
+    unchanged(lines(
+      'using System;',
+      '',
+      'class C',
+      '{',
+      '    void M()',
+      '    {',
+      '        var item = Get();',
+      '        Action a = () => { Console.WriteLine(item); Func<int, int> f = item => item; };',
+      '    }',
+      '',
+      '    static int Get() => 1;',
+      '}'
+    ).replace('f = item => item', 'f = static item => item'));
+  });
+
+  it('still makes lambdas static whose locals share a name declared only in a sibling lambda', () => {
+    const before = method('Func<int, int> f = a => { var t = a; return t; };', 'Func<int, int> g = b => { var t = b; return t; };');
+    const output = codeStyle(before, RULE).output;
+
+    expect(output).toContain('f = static a =>');
+    expect(output).toContain('g = static b =>');
   });
 
   it('still makes a lambda static inside a type of a file that also has top-level statements', () => {

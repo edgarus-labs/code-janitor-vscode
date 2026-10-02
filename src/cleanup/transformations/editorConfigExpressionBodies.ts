@@ -24,8 +24,6 @@ const PREFERENCES: Record<string, Preference> = {
   when_on_single_line: 'single-line',
 };
 
-const TASK_TYPE = /^(?:System\.Threading\.Tasks\.)?(?:Task|ValueTask)$/;
-
 function accessorKeyword(accessor: Node): string | undefined {
   return accessor.children.find((child) => !child.isNamed && /^(?:get|set|init|add|remove)$/.test(child.type))?.type;
 }
@@ -40,7 +38,8 @@ function bodyKind(member: Node): 'value' | 'statement' | undefined {
         return undefined;
       }
 
-      return type === 'void' || (hasModifier(member, 'async') && TASK_TYPE.test(type)) ? 'statement' : 'value';
+      // An async method returns a value only through a generic task-like type (`Task<T>`, `UniTask<T>`).
+      return type === 'void' || (hasModifier(member, 'async') && !type.endsWith('>')) ? 'statement' : 'value';
     }
     case 'constructor_declaration':
       return 'statement';

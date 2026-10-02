@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { regionLinesAt, insertRegionAroundLines, removeRegionsInLines } from '../reorganize/regionEdits';
+import { insertRegionAroundLines, removeRegionAt, removeRegionsInLines } from '../reorganize/regionEdits';
 import { ReorganizeResult, reorganizeSourceDetailed } from '../reorganize/reorganize';
 import { ReorganizeSettings } from '../reorganize/settings';
 import { CleanupSettings } from '../cleanup/types';
@@ -222,16 +222,8 @@ async function removeRegion(): Promise<void> {
   }
 
   const source = editor.document.getText();
-  let lines: { firstLine: number; lastLine: number } | undefined;
-
-  if (!editor.selection.isEmpty) {
-    lines = selectedLines(editor.selection);
-  } else {
-    const region = regionLinesAt(source, editor.selection.active.line);
-    lines = region && { firstLine: region.startLine, lastLine: region.endLine };
-  }
-
-  const output = lines ? removeRegionsInLines(source, lines.firstLine, lines.lastLine) : source;
+  const selected = editor.selection.isEmpty ? undefined : selectedLines(editor.selection);
+  const output = selected ? removeRegionsInLines(source, selected.firstLine, selected.lastLine) : removeRegionAt(source, editor.selection.active.line);
   if (output === source) {
     void vscode.window.showInformationMessage(
       'Code Janitor: there is no region under the cursor or in the selection. Use Remove Regions to remove all the regions of the file.'

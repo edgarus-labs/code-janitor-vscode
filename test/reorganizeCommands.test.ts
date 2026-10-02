@@ -269,6 +269,17 @@ describe('region commands', () => {
     expect(editor.document.getText()).toBe('{\n  a;\n  #region B\n  b;\n  #endregion\n}\n');
   });
 
+  it('removeRegion removes only the region the cursor is on, not the regions nested in it', async () => {
+    const editor = open(
+      '{\n  #region Outer\n  #region Inner\n  a;\n  #endregion\n  #endregion\n}\n',
+      new Selection(new Position(1, 2), new Position(1, 2))
+    );
+
+    await run('codeJanitor.removeRegion');
+
+    expect(editor.document.getText()).toBe('{\n  #region Inner\n  a;\n  #endregion\n}\n');
+  });
+
   it('removeRegion removes the regions inside the selection', async () => {
     const editor = open('{\n  #region A\n  a;\n  #endregion\n  #region B\n  b;\n  #endregion\n}\n', new Selection(new Position(0, 0), new Position(7, 0)));
 

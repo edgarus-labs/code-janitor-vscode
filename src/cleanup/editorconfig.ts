@@ -183,7 +183,6 @@ const severityByName: Record<string, EditorConfigSeverity> = {
   silent: 'silent',
   refactoring: 'silent',
   suggestion: 'suggestion',
-  warn: 'warning',
   warning: 'warning',
   error: 'error',
 };
@@ -474,20 +473,10 @@ function convertGlob(glob: string, ranges: [number, number][]): string {
     }
 
     if (ch === '*') {
-      if (glob[index + 1] === '*') {
-        // `**/` at the start or `/**/` in the middle also match zero directories.
-        const atSegmentStart = index === 0 || glob[index - 1] === '/';
-        if (atSegmentStart && glob[index + 2] === '/') {
-          result += '(?:.*/)?';
-          index += 3;
-        } else {
-          result += '.*';
-          index += 2;
-        }
-      } else {
-        result += '[^/]*';
-        index++;
-      }
+      // `**` is any string, separators included (Roslyn's SectionNameMatching; no zero-directory form).
+      const double = glob[index + 1] === '*';
+      result += double ? '.*' : '[^/]*';
+      index += double ? 2 : 1;
       continue;
     }
 
@@ -529,14 +518,8 @@ function convertGlob(glob: string, ranges: [number, number][]): string {
         continue;
       }
 
+      // Even `{single}` is a (one-element) choice, as in Roslyn's TryCompileChoice.
       const alternatives = splitAlternatives(content);
-      if (alternatives.length < 2) {
-        // `{single}` is not a choice: the braces are literal.
-        result += '\\{';
-        index++;
-        continue;
-      }
-
       result += `(?:${alternatives.map((alternative) => convertGlob(alternative, ranges)).join('|')})`;
       index = close + 1;
       continue;

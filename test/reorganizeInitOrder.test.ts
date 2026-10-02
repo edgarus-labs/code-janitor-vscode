@@ -225,4 +225,63 @@ describe('reorganize: initializers that depend on declaration order', () => {
     expect(members(reorganize(literal))).toEqual(['Scale', 'Alpha', 'value', 'Meters']);
     expect(members(reorganize(cast))).toEqual(['Scale', 'Alpha']);
   });
+
+  it('treats an operator, indexer or conversion on a value of a type declared in the program as running code', () => {
+    // `Base * 2` runs `operator *(Meters, int)`, which reads Scale: Scale must stay before Doubled.
+    const operator =
+      'struct Meters\n{\n    static readonly int Scale = 10;\n    static readonly Meters Base = default;\n    static readonly int Doubled = Base * 2;\n    int value;\n    public static int operator *(Meters m, int k) => (m.value + k) * Scale;\n}\n';
+    // `Table[0]` runs the indexer of Lookup, `-Base` its unary operator, `(int)Base` and `= Base` its conversion.
+    const indexer = 'class C\n{\n    static int Scale = 10;\n    static Lookup Table = null;\n    static int Doubled = Table[0];\n}\n';
+    const unary = 'class C\n{\n    static int Scale = 10;\n    static Meters Base;\n    static Meters Doubled = -Base;\n}\n';
+    const explicitCast = 'class C\n{\n    static int Scale = 10;\n    static Meters Base;\n    static int Doubled = (int)Base;\n}\n';
+    const implicitConversion = 'class C\n{\n    static int Scale = 10;\n    static Meters Base;\n    static int Doubled = Base;\n}\n';
+    const conditionalAccess = 'class C\n{\n    static int Scale = 10;\n    static Holder Base;\n    static int? Doubled = Base?.Value;\n}\n';
+    const getter = 'class C\n{\n    static int Scale = 10;\n    static Holder Base;\n    static int Doubled = Base.Value;\n}\n';
+    const interpolated = 'class C\n{\n    static int Scale = 10;\n    static Holder Base;\n    static string Doubled = $"{Base}";\n}\n';
+    const concatenated = 'class C\n{\n    static int Scale = 10;\n    static Holder Base;\n    static string Doubled = "x" + Base;\n}\n';
+    const equality = 'class C\n{\n    static int Scale = 10;\n    static Holder Base;\n    static bool Doubled = Base == null;\n}\n';
+
+    // Base (`default`) runs nothing and may move; Doubled must stay after Scale.
+    expect(members(reorganize(operator))).toEqual(['Base', 'Scale', 'Doubled', 'value']);
+    const sources = { indexer, unary, explicitCast, implicitConversion, conditionalAccess, getter, interpolated, concatenated, equality };
+    const reordered = Object.entries(sources).filter(([, source]) => {
+      const result = reorganize(source);
+
+      return result.indexOf('Scale = 10') > result.indexOf('Doubled =');
+    });
+    expect(reordered.map(([name]) => name)).toEqual([]);
+  });
+
+  it('keeps a field read through the getter of another type declared in the program after the fields that getter reads', () => {
+    // `Cfg.Port` runs Config.Port, which reads C.BasePort: sorting BasePort before Port would make Port 8001 instead of 1.
+    const source =
+      'class Config { public int Port => C.BasePort + 1; }\nclass C\n{\n    static readonly Config Cfg = new Config();\n    static readonly int Port = Cfg.Port;\n    static readonly int BasePort = 8000;\n}\n';
+    const result = reorganize(source);
+
+    expect(result.indexOf('int Port =')).toBeLessThan(result.indexOf('int BasePort ='));
+  });
+
+  it('still sorts operators, indexers and casts on values of predefined, library and enum types', () => {
+    const source =
+      'class C\n{\n    static int[] Values = { 1 };\n    static string Z = "z" + Values[0] + -Values[0] + (long)Values[0] + (Values.Length > 0 ? 1 : 2);\n    static int A = Math.Max(1, 2) * 2;\n}\n';
+
+    expect(members(reorganize(source))).toEqual(['A', 'Values', 'Z']);
+  });
+
+  it('analyses long operator chains in linear time', () => {
+    // Each level of a left-nested `+` chain, a right-nested `?:` chain and an indexer chain is analysed once:
+    // analysing an operand twice per level makes these take seconds (2^n) instead of milliseconds.
+    const terms = Array.from({ length: 60 }, (_, i) => `"part${i} "`).join(' + ');
+    const conditions = `${Array.from({ length: 60 }, (_, i) => `B > ${i} ? ${i} : `).join('')}0`;
+    const indexers = `Grid${'[0]'.repeat(60)}`;
+    const source = `class C\n{\n    static int B = 2;\n    static string Sql = ${terms};\n    static int Pick = ${conditions};\n    static int[] Grid = { 1 };\n    static object Cell = ${indexers};\n    static int A = 1;\n}\n`;
+
+    const started = performance.now();
+    const result = reorganize(source);
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(500);
+    // Cell reads Grid, so it stays after it.
+    expect(members(result)).toEqual(['A', 'B', 'Grid', 'Cell', 'Pick', 'Sql']);
+  });
 });

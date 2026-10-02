@@ -266,6 +266,7 @@ export interface PlanOptions {
   readonly honorOnlyChangedLines?: boolean;
   /** Files of a larger size (in KiB) are skipped. */
   readonly maxFileSizeKB?: number;
+  /** Consulted between the files and once more after the last one, so a cancel pressed at any point is seen. */
   readonly isCancelled?: () => boolean;
   /** Called after each file with the number of files prepared so far. */
   readonly onProgress?: (done: number, total: number) => void;
@@ -287,8 +288,9 @@ type Source = { readonly text: string } | { readonly skip: string } | { readonly
 
 /**
  * The text a cleanup would start from: the live editor buffer of an open file (unsaved changes
- * included), otherwise the file on disk. A closed file is not opened in an editor. The byte order
- * mark is not part of the text, as VS Code's own documents do not contain it.
+ * included), otherwise the file on disk as VS Code loads it into a document, which the apply compares
+ * with. A closed file is not opened in an editor. The byte order mark is not part of the text, as
+ * VS Code's own documents do not contain it.
  */
 async function readSource(uri: vscode.Uri, maxBytes: number): Promise<Source> {
   const open = vscode.workspace.textDocuments.find((doc) => !doc.isClosed && doc.uri.toString() === uri.toString());
@@ -310,13 +312,27 @@ async function readSource(uri: vscode.Uri, maxBytes: number): Promise<Source> {
     }
 
     try {
-      return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+      return { text: asDocumentText(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) };
     } catch {
       return { skip: 'the file is not UTF-8 text, which the preview cannot apply safely' };
     }
   } catch (err) {
     return { error: `the file could not be read (${(err as Error).message})` };
   }
+}
+
+/**
+ * `text` as VS Code's document of the file holds it: with mixed line endings, the dominant one
+ * throughout (as `PieceTreeTextBufferFactory` normalizes the end of lines when it loads a file).
+ */
+function asDocumentText(text: string): string {
+  const crlf = text.match(/\r\n/g)?.length ?? 0;
+  const cr = text.match(/\r(?!\n)/g)?.length ?? 0;
+  const lf = text.match(/(?<!\r)\n/g)?.length ?? 0;
+  const eol = cr + crlf > (cr + lf + crlf) / 2 ? '\r\n' : '\n';
+  const mixed = eol === '\r\n' ? cr + lf > 0 : cr + crlf > 0;
+
+  return mixed ? text.replace(/\r\n|\r|\n/g, eol) : text;
 }
 
 /**
@@ -388,6 +404,8 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
     options.onProgress?.(++done, pending.length);
     await yieldToEventLoop();
   }
+  // A cancel pressed while the last file was planned: consulted once more so the caller sees it.
+  options.isCancelled?.();
 
   const files = entries.flatMap((entry) => {
     const file = entry.file ?? planned.get(entry.uri.toString());
@@ -427,7 +445,7 @@ async function planFile(
     if (onlyChangedLines) {
       file = await planChangedLines(uri, label, text, settings, disqualified, listen);
     } else {
-      const pipeline = getCleanupPipeline(text, uri.fsPath, settings, disqualified, listen);
+      const pipeline = getCleanupPipeline(uri.fsPath, settings, disqualified, listen);
       file = PreviewFile.planned(uri, label, text, {
         compute: (original, excludedSteps, excludedRules) => pipeline.preview(original, excludedSteps, excludedRules),
       });

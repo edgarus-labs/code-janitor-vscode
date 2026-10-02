@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { usingDirectiveOrganizer } from '../src/cleanup/transformations/usingDirectiveOrganizer';
+import { sortUsingDirectives, usingDirectiveOrganizer } from '../src/cleanup/transformations/usingDirectiveOrganizer';
 
 describe('usingDirectiveOrganizer', () => {
   const apply = (source: string) => usingDirectiveOrganizer.apply(source);
@@ -30,6 +30,22 @@ describe('usingDirectiveOrganizer', () => {
 
   it('sorts alias usings last', () => {
     expect(apply('using Foo = System.Int32;\nusing System;\n')).toBe('using System;\nusing Foo = System.Int32;\n');
+  });
+
+  it('compares the names part by part, ignoring case first and then putting lowercase first, as Roslyn does', () => {
+    expect(apply('using System.IO;\nusing System.IdentityModel.Tokens.Jwt;\n')).toBe('using System.IdentityModel.Tokens.Jwt;\nusing System.IO;\n');
+    expect(apply('using Foo.Bar;\nusing Foo.bar;\nusing foo.Bar;\nusing Zeta;\n')).toBe('using foo.Bar;\nusing Foo.bar;\nusing Foo.Bar;\nusing Zeta;\n');
+    // `@class` is the identifier `class`; `_` sorts before digits and letters, and a shorter name before a longer one.
+    expect(apply('using @class.X;\nusing Cl.X;\nusing AB;\nusing A1;\nusing A_B;\nusing A.B;\n')).toBe('using A.B;\nusing A_B;\nusing A1;\nusing AB;\nusing Cl.X;\nusing @class.X;\n');
+    expect(apply('using b = System.IO;\nusing A = System.Text;\n')).toBe('using A = System.Text;\nusing b = System.IO;\n');
+    expect(apply('using static System.Collections.Generic.List<int>;\nusing static System.Collections.Generic.List;\nusing static System.Console;\n')).toBe(
+      'using static System.Collections.Generic.List;\nusing static System.Collections.Generic.List<int>;\nusing static System.Console;\n'
+    );
+  });
+
+  it('puts System first only as the first part of the name', () => {
+    expect(apply('using Systemx;\nusing Abc.System;\nusing System.IO;\n')).toBe('using System.IO;\nusing Abc.System;\nusing Systemx;\n');
+    expect(sortUsingDirectives('using Systemx;\nusing System.IO;\nusing Abc;\n', false)).toBe('using Abc;\nusing System.IO;\nusing Systemx;\n');
   });
 
   it('sorts namespace-scoped usings preserving indentation', () => {

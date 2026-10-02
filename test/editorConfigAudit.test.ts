@@ -240,3 +240,20 @@ describe('IDE0160 block-scoped namespace', () => {
     expect(issues).toEqual([expect.stringMatching(/IDE0160 .*#if/)]);
   });
 });
+
+describe('IDE0003 this. qualification', () => {
+  it('keeps this. where (Name) followed by an operand would read as a cast', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    System.Func<int, int> Transform;',
+      '    C Self;',
+      '    int M(int x) => (this.Transform)(5) + (this.Self.Transform)(x) + (this.Transform)(-x) + this.Transform(1);',
+      '    bool N() => (this.Self) is null || (this.Self) == null;',
+      '}'
+    );
+    const { output } = codeStyle(source, 'dotnet_style_qualification_for_field = false:warning');
+
+    expect(output).toBe(source.replace('this.Transform(1)', 'Transform(1)').replace('(this.Self) is null || (this.Self) == null', '(Self) is null || (Self) == null'));
+  });
+});

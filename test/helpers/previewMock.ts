@@ -209,6 +209,7 @@ export function installPreviewMock(): void {
 
         return Promise.resolve(true);
       },
+      onDidChangeTabs: () => ({ dispose: () => undefined }),
     },
   });
 

@@ -183,6 +183,20 @@ describe('multi-file cleanup preview: the plan', () => {
     expect(previewState.pickers).toHaveLength(0);
   });
 
+  it('honors a cancel pressed while the last file is planned', async () => {
+    const project = previewProject();
+    vi.spyOn(window, 'withProgress').mockImplementation((_options, task) => {
+      const token = { isCancellationRequested: false, onCancellationRequested: () => undefined };
+      // The progress of the only file is reported once it is planned: the user cancels meanwhile.
+      return task({ report: () => (token.isCancellationRequested = true) }, token);
+    });
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Program.cs')]);
+
+    expect(state.informationMessages.at(-1)).toBe('Code Janitor: the cleanup preview was cancelled; nothing was changed.');
+    expect(previewState.pickers).toHaveLength(0);
+  });
+
   it('never offers a result with more syntax problems than the original', () => {
     const original = 'class A\n{\n}\n';
     const file = PreviewFile.planned(Uri.file('/w/A.cs'), 'A.cs', original, {
@@ -606,6 +620,20 @@ describe('multi-file cleanup preview: applying', () => {
     expect(text).not.toMatch(/[^\r]\n/);
     expect(text).toBe((await ordinaryCleanup(project, ['Services/Legacy.cs']))['Services/Legacy.cs']);
   });
+
+  it('applies a closed file with mixed line endings, planned from the text VS Code loads for it', async () => {
+    const project = previewProject();
+    const legacy = project.file('Services/Legacy.cs');
+    // A CRLF file with one stray LF line, which VS Code turns into CRLF when it loads the file.
+    state.files.set(legacy, state.files.get(legacy)!.replace('\r\n', '\n'));
+    user(accept);
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Services/Legacy.cs')]);
+
+    expect(state.warningMessages).toEqual([]);
+    expect(textOf(legacy)).not.toMatch(/[^\r]\n/);
+    expect(state.informationMessages.at(-1)).toMatch(/^Code Janitor: cleanup preview applied to 1 file\(s\)\./);
+  });
 });
 
 describe('multi-file cleanup preview: scopes', () => {
@@ -691,6 +719,44 @@ describe('multi-file cleanup preview: scopes', () => {
     const files = ['Program.cs', 'Models/Order.cs'];
     const applied = snapshot(project, files);
     expect(applied).toEqual(await ordinaryCleanup(project, files));
+  });
+
+  it('leaves the files Git reports as deleted out of the changed-files preview', async () => {
+    const project = previewProject();
+    // Git's Status: INDEX_MODIFIED = 0, INDEX_DELETED = 2, DELETED = 6, UNTRACKED = 7. Program.cs is deleted in the
+    // index and created again; Gone.cs has a staged change and is then deleted from the disk.
+    state.extensions.set('vscode.git', {
+      activate: () =>
+        Promise.resolve({
+          getAPI: () => ({
+            repositories: [
+              {
+                state: {
+                  workingTreeChanges: [
+                    { uri: project.uri('Removed.cs'), status: 6 },
+                    { uri: project.uri('Program.cs'), status: 7 },
+                    { uri: project.uri('Gone.cs'), status: 6 },
+                  ],
+                  indexChanges: [
+                    { uri: project.uri('Staged.cs'), status: 2 },
+                    { uri: project.uri('Program.cs'), status: 2 },
+                    { uri: project.uri('Gone.cs'), status: 0 },
+                  ],
+                  mergeChanges: [],
+                },
+              },
+            ],
+          }),
+        }),
+    });
+    user((picker) => {
+      expect(picker.items.map((item) => item.label)).toEqual(['$(diff) Program.cs']);
+      picker.hide();
+    });
+
+    await run('codeJanitor.previewCleanupChangedFiles');
+
+    expect(previewState.pickers).toHaveLength(1);
   });
 
   it('warns when the Git extension is unavailable, and when nothing changed', async () => {

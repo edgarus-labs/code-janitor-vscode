@@ -545,6 +545,18 @@ export function isCSharp(uri: vscode.Uri): boolean {
   return open?.languageId === 'csharp';
 }
 
+/**
+ * The text of every C# file open with unsaved changes, by full path: the project facts read these
+ * instead of the disk copies (see `ProjectInfo.unsavedSources`), as the compiler would.
+ */
+export function unsavedCSharpSources(): Map<string, string> {
+  return new Map(
+    vscode.workspace.textDocuments
+      .filter((doc) => !doc.isClosed && doc.isDirty && doc.uri.scheme === 'file' && isCSharp(doc.uri))
+      .map((doc): [string, string] => [path.resolve(doc.uri.fsPath), doc.getText()])
+  );
+}
+
 /** Other languages are only cleaned when the user opts in, and then only with the layout rules. */
 export function isSupportedFile(uri: vscode.Uri): boolean {
   if (!isPathCleanable(uri)) {
@@ -687,11 +699,7 @@ async function applyResults(groups: readonly CleanupGroup[], label: string): Pro
  */
 async function writeFileGroup(file: CollectedFile, output: string, newFiles: readonly NewFile[]): Promise<void> {
   if (file.isOpen && newFiles.length > 0) {
-    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === file.uri.toString());
-    if (!doc) {
-      throw new Error('the document was closed during cleanup; the file was not changed');
-    }
-
+    const doc = unchangedDocument(file, '; the file was not changed');
     const edit = new vscode.WorkspaceEdit();
     for (const newFile of newFiles) {
       // Fails the whole edit when the file exists: a split never overwrites a file.
@@ -739,7 +747,7 @@ async function writeFileGroup(file: CollectedFile, output: string, newFiles: rea
 
 /**
  * Writes one file's new content back - a `WorkspaceEdit` for an open document, a disk write
- * otherwise. Throws when VS Code does not apply the edit or the document was closed meanwhile.
+ * otherwise. Throws when VS Code does not apply the edit, or the document was closed or edited meanwhile.
  */
 export async function writeFileContent(file: CollectedFile, output: string): Promise<void> {
   if (!file.isOpen) {
@@ -748,16 +756,29 @@ export async function writeFileContent(file: CollectedFile, output: string): Pro
     return;
   }
 
-  const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === file.uri.toString());
-  if (!doc) {
-    throw new Error('the document was closed during cleanup');
-  }
-
+  const doc = unchangedDocument(file);
   const edit = new vscode.WorkspaceEdit();
   edit.replace(file.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), output);
   if (!(await vscode.workspace.applyEdit(edit))) {
     throw new Error('VS Code did not apply the edit');
   }
+}
+
+/**
+ * The open document of `file`, still holding the text its output was computed from: the user's
+ * edits made while the cleanup ran are never overwritten. Throws when it was closed or edited.
+ */
+function unchangedDocument(file: CollectedFile, suffix = ''): vscode.TextDocument {
+  const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === file.uri.toString());
+  if (!doc) {
+    throw new Error(`the document was closed during cleanup${suffix}`);
+  }
+
+  if (doc.getText() !== file.content) {
+    throw new Error(`the document was edited during cleanup${suffix}`);
+  }
+
+  return doc;
 }
 
 export async function expandToCleanableFiles(uri: vscode.Uri): Promise<vscode.Uri[]> {

@@ -82,7 +82,8 @@ const EMBEDDING_STATEMENTS = [
 
 /**
  * IDE2001: an embedded statement written on the line of its `if (...)`, `else`, `while (...)`...
- * moves to its own line, one level deeper. `else if` stays together; a statement spanning several
+ * moves to its own line, one level deeper; an `else` that followed it on that line moves to its
+ * own line too, aligned with its `if`. `else if` stays together; a statement spanning several
  * lines is left as it is (its other lines would need re-indenting).
  */
 function moveEmbeddedStatements(source: string, context: RuleContext): string {
@@ -109,6 +110,11 @@ function moveEmbeddedStatements(source: string, context: RuleContext): string {
         // header's last line (a wrapped condition) - for `else` that is the `else` line.
         const headerStart = previous.type === 'else' ? previous.startIndex : statement.startIndex;
         edits.push({ start: previous.endIndex, end: child.startIndex, text: `${newline}${lineIndentAt(source, headerStart)}${context.indent}` });
+
+        const next = children[i + 1];
+        if (next?.type === 'else' && next.startPosition.row === child.endPosition.row && source.slice(child.endIndex, next.startIndex).trim() === '') {
+          edits.push({ start: child.endIndex, end: next.startIndex, text: `${newline}${lineIndentAt(source, statement.startIndex)}` });
+        }
       }
     }
 

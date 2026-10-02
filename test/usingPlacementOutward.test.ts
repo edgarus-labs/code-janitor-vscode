@@ -313,8 +313,8 @@ describe('outward move: skipped with a reason', () => {
     const input = 'namespace Company.App\r\n{\r\n    using Tools;\r\n    class C { Tool t; }\r\n}\r\n';
     const other = '#if A && B\r\nnamespace Company.App.Tools { public class Tool { } }\r\n#endif\r\n';
 
-    // Tools resolves to the global namespace Tools unless Company.App.Tools exists: the index counts both branches.
-    expect(moved(input, 'namespace Tools { public class Tool { } }\r\n', other)).toContain('using Company.App.Tools;');
+    // Tools resolves to the global namespace Tools unless Company.App.Tools exists: neither qualification is right in every build.
+    expect(skipped(input, 'namespace Tools { public class Tool { } }\r\n', other)).toMatch(/'Tools'.*preprocessor condition/);
   });
 
   it('skips an alias that would join a namespace import providing a type of the same name', () => {
@@ -376,6 +376,60 @@ describe('outward move: skipped with a reason', () => {
     const input = 'using Lib;\n\nnamespace N\n{\n    using X = Box<int>;\n\n    class C { X x; }\n}\n';
 
     expect(skipped(input, 'public class Box { }\n', 'namespace Lib { public class Box<T> { } }\n')).toMatch(/'Box' through 'using Lib;'/);
+  });
+
+  it('skips a name whose declaration in an enclosing namespace sits in an #if branch', () => {
+    // With LEGACY undefined (the build that compiles), Data is the global namespace; Company.App.Data does not exist.
+    const legacy = 'namespace Company.App\n{\n#if LEGACY\n    namespace Data { class Old { } }\n#endif\n}\n';
+    const input = 'namespace Company.App\r\n{\r\n    using Data;\r\n    class C { Repo r; }\r\n}\r\n';
+
+    expect(skipped(input, legacy, 'namespace Data { public class Repo { } }\n')).toMatch(/'Data'.*preprocessor condition/);
+  });
+
+  it('qualifies a name with the namespace that declares it outside an #if branch', () => {
+    const legacy = 'namespace Company.App.Data\n{\n#if LEGACY\n    class Old { }\n#endif\n    public class Repo { }\n}\n';
+
+    expect(moved('namespace Company.App\r\n{\r\n    using Data;\r\n    class C { Repo r; }\r\n}\r\n', legacy).startsWith('using Company.App.Data;\r\n')).toBe(true);
+  });
+
+  it('skips an unresolved directive that may name a namespace of a package sharing the root of the enclosing namespace', () => {
+    // Inside Company.App, Shared.Logging may be Company.Shared.Logging from the package; at file level it is only the global one.
+    const input = 'namespace Company.App\r\n{\r\n    using Shared.Logging;\r\n    class C { Logger l; }\r\n}\r\n';
+    const result = placeUsings(input, 'outside', { index: createIndex([input], { frameworkNamespacesOpen: true, namespaceRoots: new Set(['company']) }), externalReferences: true, indent: '    ' });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: expect.stringMatching(/'Shared'.*package/) });
+  });
+
+  it('moves an unresolved directive when no package shares the root of the enclosing namespace', () => {
+    const input = 'namespace Company.App\r\n{\r\n    using Newtonsoft.Json;\r\n    class C { JObject o; }\r\n}\r\n';
+    const result = placeUsings(input, 'outside', { index: createIndex([input], { frameworkNamespacesOpen: true, namespaceRoots: new Set(['newtonsoft']) }), externalReferences: true, indent: '    ' });
+
+    expect(result).toEqual({ status: 'moved', text: 'using Newtonsoft.Json;\r\n\r\nnamespace Company.App\r\n{\r\n    class C { JObject o; }\r\n}\r\n' });
+  });
+});
+
+describe('outward move: generic arity', () => {
+  it('qualifies a name without type arguments with the namespace declaring it without type parameters', () => {
+    // In Company.App, Result passes over Result<T> and binds Company.Result.
+    const library = ['namespace Company { public class Result { } }\n', 'namespace Company.App { public class Result<T> { } }\n'];
+
+    expect(moved('namespace Company.App\r\n{\r\n    using R = Result;\r\n    class C { R r; }\r\n}\r\n', ...library).startsWith('using R = Company.Result;\r\n')).toBe(true);
+  });
+
+  it('keeps a namespace directive that passes over a generic type of the enclosing namespace', () => {
+    const library = ['namespace Data { public class Repo { } }\n', 'namespace Company.App { public class Data<T> { } }\n'];
+
+    expect(moved('namespace Company.App\r\n{\r\n    using Data;\r\n    class C { Repo r; }\r\n}\r\n', ...library).startsWith('using Data;\r\n\r\nnamespace Company.App\r\n')).toBe(true);
+  });
+
+  it('qualifies with the framework type that takes no type arguments', () => {
+    // System.Action and System.Action<T> both exist: Action binds the non-generic one either way.
+    expect(moved('namespace System.Text\r\n{\r\n    using A = Action;\r\n    class C { A a; }\r\n}\r\n').startsWith('using A = System.Action;\r\n')).toBe(true);
+  });
+
+  it('does not qualify with a framework type that only exists with type parameters', () => {
+    // System.Collections.Generic declares List<T> only: List is looked up further out (the global List).
+    expect(moved('namespace System.Collections.Generic\r\n{\r\n    using L = List;\r\n    class C { L l; }\r\n}\r\n', 'public class List { }\n').startsWith('using L = List;\r\n')).toBe(true);
   });
 });
 

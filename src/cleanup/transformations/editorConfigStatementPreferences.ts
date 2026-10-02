@@ -160,7 +160,8 @@ function throwExpressions(source: string, block: Node, statements: readonly Node
       continue;
     }
 
-    if (!isLocalOrParameter(block, checked) || hasParseErrors(check) || hasComment(source, check.startIndex, statements[i + 1].startIndex)) {
+    // The target's receiver and indexes run before `?? throw`: they must not have side effects.
+    if (!isSimpleTarget(assignment.left) || !isLocalOrParameter(block, checked) || hasParseErrors(check) || hasComment(source, check.startIndex, statements[i + 1].startIndex)) {
       continue;
     }
 
@@ -273,12 +274,18 @@ function localFunctions(source: string, block: Node, statements: readonly Node[]
       continue;
     }
 
-    const isAsyncOrStatic = /\b(?:async|static)\s*$/.test(source.slice(local.declarator.startIndex, lambda.startIndex));
     const parameters = lambdaParameters(lambda);
+    const parameterList = lambda.childForFieldName('parameters');
     const body = lambda.childForFieldName('body');
-    if (isAsyncOrStatic || !parameters || !body || parameters.length !== parameterTypes.length) {
+    // The parser makes `async`/`static` the lambda's own leading tokens; the local function keeps
+    // them (dropping `async` leaves `await` outside an async method). Anything else there (an
+    // explicit return type, a comment) keeps the lambda.
+    const leading = parameterList ? source.slice(lambda.startIndex, parameterList.startIndex) : '';
+    if (!/^(?:(?:async|static)\b\s*)*$/.test(leading) || !parameters || !body || parameters.length !== parameterTypes.length) {
       continue;
     }
+
+    const modifiers = leading.split(/\s+/).filter(Boolean).map((modifier) => `${modifier} `).join('');
 
     const names = parameters.map((parameter) => parameter.name);
     const nameNode = local.declarator.childForFieldName('name')!;
@@ -299,7 +306,7 @@ function localFunctions(source: string, block: Node, statements: readonly Node[]
     const signature = parameters.map((parameter, index) => `${parameter.type ?? parameterTypes[index]} ${parameter.name}`).join(', ');
     const bodyText = body.type === 'block' ? body.text : `=> ${body.text};`;
 
-    edits.push({ start: statement.startIndex, end: statement.endIndex, text: `${returnType} ${local.name}(${signature}) ${bodyText}` });
+    edits.push({ start: statement.startIndex, end: statement.endIndex, text: `${modifiers}${returnType} ${local.name}(${signature}) ${bodyText}` });
   }
 }
 
@@ -445,11 +452,15 @@ export function enclosingMember(node: Node): Node {
  */
 const CONDITIONAL_TARGET_TYPES = /^(?:bool|Boolean|int|Int32|long|Int64|decimal|Decimal|string|String)\??$/;
 
-/** An integer literal without suffix that fits in `int`, optionally negated: its natural type is `int`. */
-function isIntLiteral(node: Node): boolean {
+/**
+ * An integer literal without suffix that fits in `int`, optionally negated (only when `negative`):
+ * its natural type is `int`.
+ */
+function isIntLiteral(node: Node, negative: boolean): boolean {
   const value = unparenthesized(node);
-  const operand = value.type === 'prefix_unary_expression' && value.child(0)?.type === '-' ? value.namedChildren[0] : value;
-  if (operand?.type !== 'integer_literal' || /[uUlL]$/.test(operand.text)) {
+  const negated = value.type === 'prefix_unary_expression' && value.child(0)?.type === '-';
+  const operand = negated ? value.namedChildren[0] : value;
+  if ((negated && !negative) || operand?.type !== 'integer_literal' || /[uUlL]$/.test(operand.text)) {
     return false;
   }
 
@@ -462,7 +473,9 @@ function isIntLiteral(node: Node): boolean {
  * Whether `c ? a : b` for `targetType` may need target-typed conditionals (C# 9) the project
  * lacks: before C# 9 one branch has to convert to the other. Without the branch types this is
  * only certain for a `bool`/`string` target with a non-null branch, or for a numeric target with
- * an `int` literal branch (it converts to, or from, every other value the target takes).
+ * an `int` literal branch (it converts to, or from, every other value the target takes). A
+ * negative literal does not convert to `uint`/`ulong`, which `long`/`decimal` targets also take,
+ * so it only counts for an `int` target.
  */
 function needsTargetTyping(languageVersion: number | undefined, targetType: string, whenTrue: Node, whenFalse: Node): boolean {
   if (languageVersion === undefined || languageVersion >= 9) {
@@ -478,7 +491,9 @@ function needsTargetTyping(languageVersion: number | undefined, targetType: stri
     return nullish(whenTrue) && nullish(whenFalse);
   }
 
-  return !((isIntLiteral(whenTrue) && !nullish(whenFalse)) || (isIntLiteral(whenFalse) && !nullish(whenTrue)));
+  const negative = /^(?:int|Int32)$/.test(targetType);
+
+  return !((isIntLiteral(whenTrue, negative) && !nullish(whenFalse)) || (isIntLiteral(whenFalse, negative) && !nullish(whenTrue)));
 }
 
 /** The only statement of `node`: the statement itself or the single statement of a block. */
@@ -623,7 +638,11 @@ function conditionalReturns(source: string, _block: Node, statements: readonly N
 // IDE0017 / IDE0028 dotnet_style_object_initializer / dotnet_style_collection_initializer
 // ---------------------------------------------------------------------------------------------
 
-/** `var x = new T(...);` without an initializer. */
+/**
+ * `var x = new T(...);` without an initializer. The local must have the created type (`var`,
+ * `new()`, or the same type written out): through a `dynamic`, base or interface local the
+ * statements after it bind to members an initializer on `T` would not.
+ */
 function createdLocal(statement: Node | undefined): { name: string; creation: Node } | undefined {
   const local = singleLocal(statement);
   const creation = local?.value;
@@ -632,7 +651,12 @@ function createdLocal(statement: Node | undefined): { name: string; creation: No
     return undefined;
   }
 
-  return { name: local.name, creation };
+  const declared = local.type.text.replace(/\s+/g, '');
+  const created = creation.childForFieldName('type')?.text.replace(/\s+/g, '');
+  const hasCreatedType =
+    declared !== 'dynamic' && (local.type.type === 'implicit_type' || creation.type === 'implicit_object_creation_expression' || declared === created);
+
+  return hasCreatedType ? { name: local.name, creation } : undefined;
 }
 
 /** Replaces the creation of `local` and the statements after it with an initializer of `elements`. */
@@ -728,8 +752,7 @@ function collectionInitializers(source: string, block: Node, statements: readonl
 
     const name = (type?.type === 'generic_name' ? type.namedChildren[0]?.text : undefined) ?? '';
     const arity = COLLECTION_TYPES[name];
-    const declaredInFile = fileRoot.descendantsOfType(['class_declaration', 'struct_declaration', 'record_declaration']).some((declaration) => declaration.childForFieldName('name')?.text === name);
-    if (!local || !arity || declaredInFile) {
+    if (!local || !arity || typeNamesDeclaredIn(fileRoot).has(name)) {
       continue;
     }
 
@@ -751,7 +774,8 @@ function collectionInitializers(source: string, block: Node, statements: readonl
         break;
       }
 
-      elements.push(arity === 1 ? values[0]!.text : `{ ${values.map((value) => value!.text).join(', ')} }`);
+      // A lone element that is an assignment would read as a member initializer: it keeps parentheses.
+      elements.push(arity === 1 ? (values[0]!.type === 'assignment_expression' ? `(${values[0]!.text})` : values[0]!.text) : `{ ${values.map((value) => value!.text).join(', ')} }`);
     }
 
     const group = statements.slice(i, j);
@@ -762,6 +786,24 @@ function collectionInitializers(source: string, block: Node, statements: readonl
     edits.push(initializerEdit(source, local, group, elements, indent));
     i = j - 1;
   }
+}
+
+const typeNamesByRoot = new WeakMap<Node, ReadonlySet<string>>();
+
+/** The names of the classes, structs and records declared in the file, collected once per parse. */
+function typeNamesDeclaredIn(fileRoot: Node): ReadonlySet<string> {
+  let names = typeNamesByRoot.get(fileRoot);
+  if (!names) {
+    names = new Set(
+      fileRoot
+        .descendantsOfType(['class_declaration', 'struct_declaration', 'record_declaration'])
+        .map((declaration) => declaration.childForFieldName('name')?.text)
+        .filter((declared) => declared !== undefined)
+    );
+    typeNamesByRoot.set(fileRoot, names);
+  }
+
+  return names;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -836,7 +878,9 @@ function isEnumOfFile(type: string, anyNode: Node): boolean {
 function switchExpressions(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { indent }: StatementContext): void {
   for (let i = 0; i < statements.length; i++) {
     const statement = statements[i];
-    const subject = statement.type === 'switch_statement' ? statement.namedChildren[0] : undefined;
+    // `switch (a, b)` parses each tuple element as its own child: only a single subject converts.
+    const header = statement.type === 'switch_statement' ? statement.namedChildren.filter((child) => child.type !== 'switch_body') : [];
+    const subject = header.length === 1 ? header[0] : undefined;
     const body = statement.namedChildren.find((child) => child.type === 'switch_body');
     const sections = body && subject ? switchSections(source, body) : undefined;
     if (!sections || sections.length === 0 || hasParseErrors(statement) || hasComment(source, statement.startIndex, statement.endIndex)) {

@@ -320,6 +320,33 @@ describe('csharp_style_var_*', () => {
     ]);
   });
 
+  it('types an integer literal as the first of its suffix types its value fits', () => {
+    const source = method(
+      'var a = 9223372036854775807L;',
+      'var b = 9223372036854775808L;',
+      'var c = 0x8000_0000_0000_0000L;',
+      'var d = 0b1L;',
+      'var e = 18_446_744_073_709_551_615UL;',
+      'var f = 0xFFFF_FFFFu;',
+      'var g = 0x1_0000_0000u;',
+      'var h = 2_147_483_648;'
+    );
+    const { output } = codeStyle(source, 'csharp_style_var_for_built_in_types = false:warning');
+
+    expect(output).toBe(
+      method(
+        'long a = 9223372036854775807L;',
+        'ulong b = 9223372036854775808L;',
+        'ulong c = 0x8000_0000_0000_0000L;',
+        'long d = 0b1L;',
+        'ulong e = 18_446_744_073_709_551_615UL;',
+        'uint f = 0xFFFF_FFFFu;',
+        'var g = 0x1_0000_0000u;',
+        'var h = 2_147_483_648;'
+      )
+    );
+  });
+
   it('reports the locals whose type is not known once per file', () => {
     const source = method('var a = Create();', 'var b = Load(a);', 'var n = 5;', 'var c = a.Next;');
     const { output, issues } = codeStyle(source, 'csharp_style_var_elsewhere = false:warning\ncsharp_style_var_for_built_in_types = false:warning');

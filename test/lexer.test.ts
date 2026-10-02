@@ -578,4 +578,16 @@ describe('lex', () => {
 
     expect(tokens.map((t) => t.type)).toEqual(['class', 'identifier', '{', '}', 'end']);
   });
+
+  it.each([
+    ['$@ with nested regular literals', '$@"{(c ? "a" : "b")}\n  keep\n"'],
+    ['@$ with nested regular literal', '@$"{string.Join(",", x)}\n\n\nend"'],
+    ['$@ with nested verbatim literal', '$@"{F(@"a""b")}\n x"'],
+    ['$ with nested literal containing a brace', '$"{F("}")} x"'],
+  ])('lexes an interpolated string %s as one token', (_name, literal) => {
+    const { tokens } = lex(`s = ${literal};`);
+
+    expect(tokens.map((t) => t.type)).toEqual(['identifier', '=', 'interpolated_string_expression', ';', 'end']);
+    expect(tokens[2].end - tokens[2].start).toBe(literal.length);
+  });
 });

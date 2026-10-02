@@ -104,8 +104,8 @@ function readonlyStructs(source: string): string {
       const assignsThis = findAll(struct, 'assignment_expression').some(
         (assignment) => assignment.childForFieldName('left')?.type === 'this_expression' && !isInside(assignment, 'constructor_declaration')
       );
-      const parameters = new Set((struct.childForFieldName('parameters')?.namedChildren ?? []).map((parameter) => parameter.childForFieldName('name')?.text));
-      const writesParameter = !!body && findAll(body, 'identifier').some((identifier) => parameters.has(identifier.text) && isWritten(identifier));
+      const parameterTypes = primaryConstructorParameterTypes(struct);
+      const writesParameter = !!body && findAll(body, 'identifier').some((identifier) => parameterTypes.has(identifier.text) && changesParameter(identifier, parameterTypes.get(identifier.text)!));
       if (mutable || assignsThis || writesParameter || /&\s*this\b|\bref\s+this\b/.test(struct.text)) {
         continue;
       }
@@ -126,6 +126,42 @@ function isInside(node: Node, type: string): boolean {
   }
 
   return false;
+}
+
+/** Name to whitespace-free type text of every primary constructor parameter of `type`. */
+function primaryConstructorParameterTypes(type: Node): Map<string, string> {
+  const types = new Map<string, string>();
+  for (const parameter of type.childForFieldName('parameters')?.namedChildren ?? []) {
+    const name = parameter.childForFieldName('name')?.text;
+    if (name) {
+      types.set(name, parameter.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '');
+    }
+  }
+
+  return types;
+}
+
+/**
+ * True when a `readonly` struct could not change `identifier` (a captured primary constructor
+ * parameter of the given type) the way the code does: it is written, or, unless its type is a
+ * reference type, a member reached through it is written or has a method called on it (which
+ * would run on a defensive copy).
+ */
+function changesParameter(identifier: Node, type: string): boolean {
+  if (isWritten(identifier)) {
+    return true;
+  }
+
+  if (REFERENCE_FIELD_TYPE.test(type)) {
+    return false;
+  }
+
+  let chain = identifier;
+  while (chain.parent && RECEIVER_CHAINS[chain.parent.type] && (chain.parent.type === 'parenthesized_expression' || chain.parent.childForFieldName('expression') === chain)) {
+    chain = chain.parent;
+  }
+
+  return chain !== identifier && (isWritten(chain) || (chain.type === 'member_access_expression' && chain.parent?.type === 'invocation_expression' && chain.parent.childForFieldName('function') === chain));
 }
 
 /** True when `identifier` is written: assigned (also in a deconstructing tuple), incremented, or taken by `ref`/`out`. */
@@ -172,7 +208,8 @@ function readonlyStructMembers(source: string): string {
         continue;
       }
 
-      const fieldTypes = new Map<string, string>();
+      // Captured primary constructor parameters are instance state, read and called like fields.
+      const fieldTypes = primaryConstructorParameterTypes(struct);
       const safeMembers = new Set<string>();
       for (const member of members) {
         const declaration = member.namedChildren.find((child) => child.type === 'variable_declaration');
@@ -188,7 +225,7 @@ function readonlyStructMembers(source: string): string {
         }
       }
 
-      const memberNames = new Set(members.map((member) => member.childForFieldName('name')?.text).filter((name): name is string => name !== undefined));
+      const memberNames = new Set([...fieldTypes.keys(), ...members.map((member) => member.childForFieldName('name')?.text).filter((name): name is string => name !== undefined)]);
       for (const member of members) {
         const name = member.childForFieldName('name');
         const body = member.childForFieldName('body') ?? member.childForFieldName('value');
@@ -198,7 +235,8 @@ function readonlyStructMembers(source: string): string {
           !name ||
           !(member.type === 'method_declaration' || getterOnly) ||
           safeMembers.has(name.text) ||
-          ['static', 'readonly', 'abstract', 'extern', 'partial', 'unsafe'].some((modifier) => hasModifier(member, modifier)) ||
+          // `ref` returns a writable reference into the instance: `readonly` would turn it into `ref readonly`.
+          ['static', 'readonly', 'abstract', 'extern', 'partial', 'unsafe', 'ref'].some((modifier) => hasModifier(member, modifier)) ||
           !(body ?? accessors[0])
         ) {
           continue;
@@ -229,8 +267,11 @@ function isNonMutating(member: Node, memberNames: Set<string>, safeMembers: Set<
     return node.type === 'member_access_expression' && node.childForFieldName('expression')?.type === 'this_expression' && name ? name.text : undefined;
   };
 
-  for (const node of member.descendantsOfType(['assignment_expression', 'postfix_unary_expression', 'prefix_unary_expression', 'argument', 'this_expression', 'invocation_expression', 'identifier'])) {
+  for (const node of member.descendantsOfType(['assignment_expression', 'postfix_unary_expression', 'prefix_unary_expression', 'argument', 'this_expression', 'invocation_expression', 'identifier', 'ref_expression'])) {
     switch (node.type) {
+      // `ref _x` (a ref local, a ref return) can write the instance through the reference.
+      case 'ref_expression':
+        return false;
       case 'assignment_expression': {
         const left = node.childForFieldName('left');
         if (left?.type !== 'identifier' || !locals.has(left.text)) {

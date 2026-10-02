@@ -1,4 +1,4 @@
-import { parseCSharp } from '../parser';
+import { findAll, parseCSharp } from '../parser';
 import { memoizeBySource } from '../sourceCache';
 import { lex } from '../syntax/lexer';
 import { Node } from '../syntax/node';
@@ -494,7 +494,7 @@ class ModelBuilder {
           ? 'struct'
           : 'class'
         : (node.type.replace('_declaration', '') as NamingSymbolKind);
-    const accessibility = declaredAccessibility(modifiers, parent ? 'private' : 'internal');
+    const accessibility = declaredAccessibility(modifiers, parent ? defaultMemberAccessibility(parent) : 'internal');
     const body = node.childForFieldName('body');
     const memberNames = new Set<string>();
     for (const member of body?.namedChildren ?? []) {
@@ -562,7 +562,7 @@ class ModelBuilder {
     }
 
     const parent = this.containingType(node);
-    const accessibility = declaredAccessibility(modifierTexts(node), parent ? 'private' : 'internal');
+    const accessibility = declaredAccessibility(modifierTexts(node), parent ? defaultMemberAccessibility(parent) : 'internal');
     this.add({
       category: 'type',
       kind: 'delegate',
@@ -631,7 +631,7 @@ class ModelBuilder {
         declaredType,
         // An `override` event field implements its base event, which Roslyn does not analyze.
         analyzable: !modifiers.has('override'),
-        blocker: memberBlocker(type, accessibility, modifiers),
+        blocker: memberBlocker(type, accessibility, modifiers) ?? attributeBlocker(type, node),
       });
     }
   }
@@ -666,7 +666,7 @@ class ModelBuilder {
       regionPrecise: false,
       declaredType: node.childForFieldName('type')?.text,
       analyzable: !explicit && !modifiers.has('override') && !modifiers.has('extern'),
-      blocker: memberBlocker(type, accessibility, modifiers),
+      blocker: memberBlocker(type, accessibility, modifiers) ?? attributeBlocker(type, node),
     });
   }
 
@@ -712,7 +712,7 @@ class ModelBuilder {
       regionPrecise: false,
       declaredType: node.childForFieldName('type')?.text,
       analyzable: !explicit && !modifiers.has('override') && !modifiers.has('extern') && !isEntryPoint,
-      blocker,
+      blocker: blocker ?? attributeBlocker(type, node),
     });
 
     let parameterBlocker: string | undefined;
@@ -1104,6 +1104,31 @@ function hasAccessorBodies(node: Node): boolean {
   return (accessors?.namedChildren ?? []).some((accessor) => Boolean(accessor.childForFieldName('body')));
 }
 
+/** Attributes that make the names of the types and members they apply to part of a serialized format. */
+export const SERIALIZATION_ATTRIBUTES: Record<string, true> = {
+  Serializable: true, DataContract: true, DataMember: true, JsonSerializable: true, JsonProperty: true, JsonPropertyName: true,
+  JsonObject: true, XmlRoot: true, XmlType: true, XmlElement: true, XmlAttribute: true, ProtoContract: true, ProtoMember: true,
+  MessagePackObject: true, Table: true, Column: true,
+};
+
+/** Simple names, without the `Attribute` suffix, of the attributes applied directly to a declaration. */
+export function attributeNames(declaration: Node): string[] {
+  return declaration.namedChildren
+    .filter((child) => child.type === 'attribute_list')
+    .flatMap((list) => findAll(list, 'attribute'))
+    .map((attribute) => {
+      const name = attribute.childForFieldName('name')?.text ?? attribute.namedChildren[0]?.text ?? '';
+      const simple = name.split('.').pop() ?? name;
+
+      return simple.endsWith('Attribute') ? simple.slice(0, -'Attribute'.length) : simple;
+    });
+}
+
+/** Matches `name` (optionally verbatim) as a whole identifier. */
+export function wordPattern(name: string, flags = 'u'): RegExp {
+  return new RegExp(`(?<![\\p{L}\\p{Nd}_])@?${name}(?![\\p{L}\\p{Nd}_])`, flags);
+}
+
 function memberBlocker(
   type: TypeInfo | undefined,
   accessibility: NamingAccessibility,
@@ -1123,6 +1148,25 @@ function memberBlocker(
 
   if (modifiers.has('extern')) {
     return 'it is extern';
+  }
+
+  return undefined;
+}
+
+/** Why the name of an attributed member, or of a member of a serialized type, must stay as it is. */
+function attributeBlocker(type: TypeInfo | undefined, declaration: Node): string | undefined {
+  const containers = [declaration];
+  for (let outer = type; outer; outer = outer.parent) {
+    containers.push(outer.node);
+  }
+
+  const serialization = containers.flatMap((container) => attributeNames(container)).find((name) => SERIALIZATION_ATTRIBUTES[name] === true);
+  if (serialization) {
+    return `[${serialization}] makes the name part of a serialized format`;
+  }
+
+  if (declaration.namedChildren.some((child) => child.type === 'attribute_list')) {
+    return 'it has attributes, which may depend on its name';
   }
 
   return undefined;

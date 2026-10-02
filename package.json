@@ -721,7 +721,7 @@
           "codeJanitor.cleanup.reuseJsonSerializerOptionsForCA1869": {
             "type": "boolean",
             "default": false,
-            "description": "Replace direct 'new JsonSerializerOptions()' arguments in JsonSerializer calls with null to avoid per-call allocation (CA1869)."
+            "description": "Replace direct 'new JsonSerializerOptions()' arguments in JsonSerializer calls with default(JsonSerializerOptions), or with null for a named 'options:' argument, to avoid per-call allocation (CA1869)."
           },
           "codeJanitor.cleanup.simplifySingleStatementLambdas": {
             "type": "boolean",
@@ -1860,6 +1860,7 @@
     "@vscode/test-electron": "^3.1.0",
     "esbuild": "^0.23.0",
     "typescript": "^5.5.0",
+    "vite-node": "^3.2.4",
     "vitest": "^3.2.7"
   }
 }

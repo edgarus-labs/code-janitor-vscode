@@ -150,6 +150,11 @@ describe('convertToFileScoped', () => {
     expect(reasons).toEqual(['comments or code surround the namespace braces.']);
   });
 
+  it('keeps a comment between the namespace keyword and the name', () => {
+    expect(toFileScoped('namespace /* keep */ A\n{\n    class C { }\n}\n')).toEqual({ output: 'namespace /* keep */ A;\n\nclass C { }\n', reasons: [] });
+    expect(toFileScoped('namespace // keep\nA\n{\n    class C { }\n}\n')).toEqual({ output: 'namespace // keep\nA;\n\nclass C { }\n', reasons: [] });
+  });
+
   it('converts an #if block that lies entirely inside the namespace', () => {
     expect(toFileScoped('namespace A\n{\n#if X\n    class C { }\n#else\n    class D { }\n#endif\n}\n').output).toBe(
       'namespace A;\n\n#if X\nclass C { }\n#else\nclass D { }\n#endif\n'
@@ -181,6 +186,16 @@ describe('convertToBlockScoped', () => {
   it('indents a comment that follows the semicolon like the rest of the body', () => {
     expect(toBlockScoped('namespace A; // c\n\nclass C { }\n').output).toBe('namespace A\n{\n    // c\n\n    class C { }\n}\n');
     expect(toBlockScoped('namespace A;\t/* c */ class C { }\n').output).toBe('namespace A\n{\n    /* c */ class C { }\n}\n');
+  });
+
+  it('keeps a comment between the namespace keyword and the name', () => {
+    expect(toBlockScoped('namespace /* keep */ A;\n\nclass C { }\n')).toEqual({ output: 'namespace /* keep */ A\n{\n    class C { }\n}\n', reasons: [] });
+  });
+
+  it('keeps a comment between the name and the semicolon as a reason', () => {
+    const input = 'namespace A /* keep */;\n\nclass C { }\n';
+
+    expect(toBlockScoped(input)).toEqual({ output: input, reasons: ['comments or code surround the namespace semicolon.'] });
   });
 
   it.each([
@@ -257,18 +272,6 @@ describe('file-scoped namespaces need C# 10', () => {
 });
 
 describe('createUsingPlacementConverter', () => {
-  it('is named after its direction', () => {
-    const report = () => undefined;
-
-    expect(createUsingPlacementConverter({ direction: 'outside', report }).name).toBe('Move using directives outside namespace');
-    expect(createUsingPlacementConverter({ direction: 'inside', report }).name).toBe('Move using directives inside namespace');
-  });
-
-  it('is the IDE0065 step when .editorconfig decides', () => {
-    expect(createUsingPlacementConverter({ direction: 'inside', report: () => undefined, fromEditorConfig: true }).diagnosticId).toBe('IDE0065');
-    expect(createUsingPlacementConverter({ direction: 'inside', report: () => undefined }).diagnosticId).toBeUndefined();
-  });
-
   it('returns a file without directives to move untouched and silently', () => {
     const messages: string[] = [];
     const converter = createUsingPlacementConverter({ direction: 'outside', report: (message) => messages.push(message) });

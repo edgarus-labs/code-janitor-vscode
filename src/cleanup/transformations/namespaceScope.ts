@@ -186,9 +186,10 @@ export function convertToFileScoped(source: string, options: NamespaceConversion
   const kinds = classifyCSharp(source);
   const newline = newlineOf(source);
   const body = dedentBlock(source, kinds, namespace.open.end, close.start);
-  const header = source.slice(0, namespace.keywordStart);
+  // `namespace /* c */ N`: what lies between the keyword and the name stays as it is.
+  const header = source.slice(0, namespace.nameEnd);
 
-  return `${header}namespace ${source.slice(namespace.nameStart, namespace.nameEnd)};${body ? newline + newline + body : ''}${newline}`;
+  return `${header};${body ? newline + newline + body : ''}${newline}`;
 }
 
 /**
@@ -235,6 +236,12 @@ export function convertToBlockScoped(source: string, options: NamespaceConversio
     return source;
   }
 
+  if (!isBlank(source.slice(namespace.nameEnd, namespace.open.start))) {
+    options.report('comments or code surround the namespace semicolon.', namespace.keywordStart);
+
+    return source;
+  }
+
   const kinds = classifyCSharp(source);
   const newline = newlineOf(source);
   const rest = source.slice(namespace.open.end);
@@ -243,7 +250,7 @@ export function convertToBlockScoped(source: string, options: NamespaceConversio
   const content = rest.slice(leadingBlank).trimEnd();
   const body = content ? `${options.indent}${indentFollowingLines(content, options.indent, kinds, namespace.open.end + leadingBlank)}${newline}` : '';
 
-  return `${source.slice(0, namespace.keywordStart)}namespace ${source.slice(namespace.nameStart, namespace.nameEnd)}${newline}{${newline}${body}}${newline}`;
+  return `${source.slice(0, namespace.nameEnd)}${newline}{${newline}${body}}${newline}`;
 }
 
 /**

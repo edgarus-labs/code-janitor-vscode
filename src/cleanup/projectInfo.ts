@@ -26,11 +26,32 @@ export interface ProjectInfo {
    * property decides it, or its value is not a nullable context.
    */
   readonly nullable?: NullableContext;
+  /**
+   * The current text of the C# files open with unsaved changes, by full path (`path.resolve`):
+   * rules reading the project's other files read these instead of their disk copies.
+   */
+  readonly unsavedSources?: ReadonlyMap<string, string>;
 }
 
 export type NullableContext = 'enable' | 'disable' | 'annotations' | 'warnings';
 
 const NULLABLE_CONTEXTS: Record<string, true> = { enable: true, disable: true, annotations: true, warnings: true };
+
+/** Supplies the unsaved open C# documents (the extension host registers it; see `setUnsavedSourcesProvider`). */
+let unsavedSourcesProvider: (() => ReadonlyMap<string, string>) | undefined;
+
+/** Makes {@link findProject} attach the texts `provider` returns; disposing the result removes it again. */
+export function setUnsavedSourcesProvider(provider: () => ReadonlyMap<string, string>): { dispose(): void } {
+  unsavedSourcesProvider = provider;
+
+  return {
+    dispose: () => {
+      if (unsavedSourcesProvider === provider) {
+        unsavedSourcesProvider = undefined;
+      }
+    },
+  };
+}
 
 /**
  * The project of a C# file: the single `.csproj` in the nearest folder (from the file's folder up)
@@ -39,8 +60,10 @@ const NULLABLE_CONTEXTS: Record<string, true> = { enable: true, disable: true, a
  */
 export function findProject(filePath: string): ProjectInfo | undefined {
   const projectFile = filePath.trim() ? findProjectFile(filePath) : undefined;
+  const project = projectFile ? readProject(projectFile) : undefined;
+  const unsavedSources = project && unsavedSourcesProvider?.();
 
-  return projectFile ? readProject(projectFile) : undefined;
+  return project && unsavedSources && unsavedSources.size > 0 ? { ...project, unsavedSources } : project;
 }
 
 function readProject(projectFile: string): ProjectInfo | undefined {

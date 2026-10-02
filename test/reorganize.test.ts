@@ -227,6 +227,16 @@ describe('reorganize: what travels with a member', () => {
     expect(reorganize(source)).toBe('class C\n{\n    void A() { }\n    /* B does b */\n    void B() { }\n}\n');
   });
 
+  it('moves XML documentation with its member even if a blank line separates them', () => {
+    const line = 'class C\n{\n    /// <summary>Does B.</summary>\n\n    void B() { }\n\n    void A() { }\n}\n';
+    const block = 'class C\n{\n    /** <summary>Does B.</summary> */\n\n    void B() { }\n\n    void A() { }\n}\n';
+    const withNote = 'class C\n{\n    // ---- helpers ----\n\n    /// <summary>Does B.</summary>\n\n    // note\n\n    void B() { }\n\n    void A() { }\n}\n';
+
+    expect(reorganize(line)).toBe('class C\n{\n    void A() { }\n    /// <summary>Does B.</summary>\n\n    void B() { }\n}\n');
+    expect(reorganize(block)).toBe('class C\n{\n    void A() { }\n    /** <summary>Does B.</summary> */\n\n    void B() { }\n}\n');
+    expect(reorganize(withNote)).toBe('class C\n{\n    // ---- helpers ----\n\n    void A() { }\n    /// <summary>Does B.</summary>\n\n    // note\n\n    void B() { }\n}\n');
+  });
+
   it('moves a member with a stray semicolon after it as one', () => {
     const source = 'class C\n{\n    void B() { };\n    void A() { }\n}\n';
 
@@ -301,6 +311,31 @@ describe('reorganize: types and places left alone', () => {
     const source = '[StructLayout(LayoutKind.Explicit)]\nstruct S\n{\n    struct Inner\n    {\n        public void M() { }\n        public int A;\n    }\n}\n';
 
     expect(reorganize(source)).toBe(source);
+  });
+
+  it('keeps the order of the instance fields of a struct, which is its sequential layout by default', () => {
+    const native = 'struct Native\n{\n    public int Size;\n    public byte Flags;\n    public long Address;\n}\n';
+    const record = 'record struct Native\n{\n    public int Size;\n    public byte Flags;\n    public long Address;\n}\n';
+    // Auto-properties and field-like events are backed by fields of the layout too; static fields and methods are not.
+    const mixed =
+      'struct S\n{\n    public void M() { }\n    public static int Shared;\n    public int Z;\n    public int Y { get; set; }\n    public event System.Action X;\n    public int A;\n}\n';
+    const fixedBuffer = 'unsafe struct Buffer\n{\n    public int Length;\n    public fixed byte Data[16];\n}\n';
+
+    expect(reorganize(native)).toBe(native);
+    expect(reorganize(record)).toBe(record);
+    expect(reorganize(fixedBuffer)).toBe(fixedBuffer);
+    expect(reorganize(mixed)).toBe(
+      'struct S\n{\n    public static int Shared;\n    public int Z;\n    public int Y { get; set; }\n    public event System.Action X;\n    public int A;\n    public void M() { }\n}\n'
+    );
+  });
+
+  it('orders the fields of a struct with LayoutKind.Auto and of a class', () => {
+    const auto = '[StructLayout(LayoutKind.Auto)]\nstruct S\n{\n    public int Z;\n    public int A;\n}\n';
+    const qualified = '[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Auto, Pack = 1)]\nstruct S\n{\n    public int Z;\n    public int A;\n}\n';
+
+    expect(reorganize(auto)).toBe('[StructLayout(LayoutKind.Auto)]\nstruct S\n{\n    public int A;\n    public int Z;\n}\n');
+    expect(reorganize(qualified)).toContain('    public int A;\n    public int Z;\n');
+    expect(reorganize('class C\n{\n    public int Z;\n    public int A;\n}\n')).toBe('class C\n{\n    public int A;\n    public int Z;\n}\n');
   });
 
   it('reorganizes structs, interfaces, records and partial classes', () => {

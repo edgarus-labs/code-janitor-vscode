@@ -32,7 +32,7 @@ export interface ReorganizeResult {
 
 /** `CodeReorganizationAvailabilityLogic.HasPreprocessorConditionalCompilationDirectives`. */
 export function hasPreprocessorConditionals(source: string): boolean {
-  return /^[ \t]*#(if|else|elif|endif|pragma)/m.test(source);
+  return /^[ \t]*#[ \t]*(if|else|elif|endif|pragma)\b/m.test(source);
 }
 
 /** Reorganizes the members of every type in `source`; a pure function of its arguments. */
@@ -231,7 +231,8 @@ class Session {
     const context = createContainerContext(
       plan.kind,
       plan.typeName,
-      plan.atoms.filter((atom) => memberKindOf(atom) !== undefined)
+      plan.atoms.filter((atom) => memberKindOf(atom) !== undefined),
+      plan.kind === 'struct' && !hasAutoLayout(plan.node.parent)
     );
     const built = buildEntries(plan.atoms, this.environment(plan, context));
     const state = { mutated: false };
@@ -624,16 +625,32 @@ function fileScopedPlan(namespace: Node, root: Node, sourceLength: number): Cont
   };
 }
 
+const LAYOUT_ATTRIBUTE = /^(System\.Runtime\.InteropServices\.)?StructLayout(Attribute)?$/;
+
 /**
  * `ShouldReorganizeChildren`: attributes that say the order of the members matters (layout of a
  * struct, vtable of a COM interface; the Visual Studio extension knows `StructLayout` and `ComImport`).
+ * `LayoutKind.Auto` lets the runtime choose the layout.
  */
 function hasFixedLayout(node: Node): boolean {
-  return node.namedChildren.some(
-    (child) =>
-      child.type === 'attribute_list' &&
-      child.namedChildren.some((attribute) => /^(System\.Runtime\.InteropServices\.)?(StructLayout|ComImport|InterfaceType|GeneratedComInterface)(Attribute)?$/.test(attributeName(attribute)))
+  return attributesOf(node).some(
+    (attribute) =>
+      /^(System\.Runtime\.InteropServices\.)?(ComImport|InterfaceType|GeneratedComInterface)(Attribute)?$/.test(attributeName(attribute)) ||
+      (LAYOUT_ATTRIBUTE.test(attributeName(attribute)) && !isAutoLayout(attribute))
   );
+}
+
+/** A struct without `[StructLayout(LayoutKind.Auto)]` is laid out in the order of its instance fields. */
+function hasAutoLayout(node: Node | null): boolean {
+  return node !== null && attributesOf(node).some((attribute) => LAYOUT_ATTRIBUTE.test(attributeName(attribute)) && isAutoLayout(attribute));
+}
+
+function isAutoLayout(attribute: Node): boolean {
+  return /^[^(]*\(\s*(global\s*::\s*)?(System\.Runtime\.InteropServices\.)?LayoutKind\s*\.\s*Auto\s*[,)]/.test(attribute.text);
+}
+
+function attributesOf(node: Node): Node[] {
+  return node.namedChildren.filter((child) => child.type === 'attribute_list').flatMap((list) => list.namedChildren);
 }
 
 /** `[global::System.Runtime.InteropServices.StructLayout(...)]` -> `System.Runtime.InteropServices.StructLayout`. */
@@ -693,17 +710,18 @@ function sortableOf(info: MemberInfo, offset: number): SortableMember {
 
 /**
  * For each member, the members declared before it that must stay before it: initializers that depend on
- * declaration order, and parts of the same partial type (whose initializers run in the order of the parts).
+ * declaration order, parts of the same partial type (whose initializers run in the order of the parts),
+ * and the instance fields of a struct (whose order is its layout).
  */
 function orderConstraints(members: readonly MemberEntry[]): Map<number, number[]> {
   const constraints = new Map<number, number[]>();
-  const bearing = members.flatMap((member, index) => (member.info.init !== NO_INIT || member.info.partialTypes.size > 0 ? [index] : []));
+  const bearing = members.flatMap((member, index) => (member.info.init !== NO_INIT || member.info.partialTypes.size > 0 || member.info.isLayoutField ? [index] : []));
 
   bearing.forEach((second, position) => {
     for (const first of bearing.slice(0, position)) {
       const a = members[first].info;
       const b = members[second].info;
-      if (mustKeepOrder(a.init, b.init) || [...b.partialTypes].some((name) => a.partialTypes.has(name))) {
+      if (mustKeepOrder(a.init, b.init) || [...b.partialTypes].some((name) => a.partialTypes.has(name)) || (a.isLayoutField && b.isLayoutField)) {
         constraints.set(second, [...(constraints.get(second) ?? []), first]);
       }
     }

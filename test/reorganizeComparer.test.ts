@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SortableMember, calculateNumericRepresentation, createMemberComparer } from '../src/reorganize/comparer';
+import { SortableMember, createMemberComparer } from '../src/reorganize/comparer';
 import { ReorganizeSettings, createDefaultReorganizeSettings } from '../src/reorganize/settings';
 
 function member(overrides: Partial<SortableMember> & Pick<SortableMember, 'name' | 'offset'>): SortableMember {
@@ -113,12 +113,20 @@ describe('member ordering within a group', () => {
     expect(sorted(items, { memberTypes: custom })).toEqual(['m', 'f']);
   });
 
-  it('computes the weighted key of the VS comparer', () => {
-    const publicStaticMethod = member({ kind: 'method', name: 'm', offset: 1, access: 'public', isStatic: true });
+  it('orders every member of a more visible access level first when the access level is primary, whatever the member type order', () => {
+    // Structs (11) and classes (12) come after fields (1) and constructors (2): the type order must not outweigh one access step.
+    const items = [
+      member({ kind: 'field', name: 'internalField', offset: 1, access: 'internal' }),
+      member({ kind: 'constructor', name: 'C', offset: 2, access: 'internal' }),
+      member({ kind: 'class', name: 'PublicClass', offset: 3, access: 'public' }),
+      member({ kind: 'struct', name: 'PublicStruct', offset: 4, access: 'public' }),
+    ];
+    const custom = createDefaultReorganizeSettings().memberTypes;
+    custom.methods = { order: 1000, name: 'Methods' };
+    const largeOrder = [member({ kind: 'field', name: 'internalField', offset: 1, access: 'internal' }), member({ kind: 'method', name: 'M', offset: 2, access: 'public' })];
 
-    // method order 10 * 100000 + public (1) * 10000 + explicit 0 + constant 0 + static 0 + read-only 0
-    expect(calculateNumericRepresentation(publicStaticMethod, settings())).toBe(10 * 100000 + 1 * 10000);
-    expect(calculateNumericRepresentation(publicStaticMethod, settings({ primaryOrderByAccessLevel: true }))).toBe(1 * 100000 + 10 * 10000);
+    expect(sorted(items, { primaryOrderByAccessLevel: true })).toEqual(['PublicStruct', 'PublicClass', 'internalField', 'C']);
+    expect(sorted(largeOrder, { primaryOrderByAccessLevel: true, memberTypes: custom })).toEqual(['M', 'internalField']);
   });
 
   it('compares names like a culture-aware comparer', () => {

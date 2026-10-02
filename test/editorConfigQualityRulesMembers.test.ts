@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
-import { findProject } from '../src/cleanup/projectInfo';
+import { findProject, setUnsavedSourcesProvider } from '../src/cleanup/projectInfo';
 import { runCleanup } from '../src/cleanup/runCleanup';
 import { createDefaultSettings } from '../src/cleanup/types';
 import { createEditorConfigCodeStyleConverter, EditorConfigCodeStyleOptions } from '../src/cleanup/transformations/editorConfigCodeStyle';
@@ -593,6 +593,46 @@ describe('CA1822 mark members as static', () => {
     expect(crossFile.issues).toEqual([expect.stringMatching(/^CA1822 line 1: 'Count' /)]);
   });
 
+  it('reports public members that may implement an external interface a project interface extends', () => {
+    const worker = (iface: string): string =>
+      lines(
+        'using System.Threading;',
+        'using System.Threading.Tasks;',
+        iface,
+        'class Owner',
+        '{',
+        '    private sealed class Worker : IWorker',
+        '    {',
+        '        public Task StartAsync(CancellationToken t) => Task.CompletedTask;',
+        '        public Task StopAsync(CancellationToken t) => Task.CompletedTask;',
+        '    }',
+        '}'
+      );
+    const expectReported = (source: string, options = project({ 'Worker.cs': source }, 'Worker.cs')): void => {
+      const result = cleanup(source, warning, options);
+      expect(result.output).toBe(source);
+      expect(result.issues).toEqual([
+        expect.stringMatching(/^CA1822 line 8: 'StartAsync' .*IHostedService/),
+        expect.stringMatching(/^CA1822 line 9: 'StopAsync' .*IHostedService/),
+      ]);
+    };
+
+    expectReported(worker('interface IWorker : Microsoft.Extensions.Hosting.IHostedService { }'));
+    // Through another project interface, and declared in another file of the project.
+    expectReported(worker('interface IWorker : IService { } interface IService : Microsoft.Extensions.Hosting.IHostedService { }'));
+    const crossFile = worker('');
+    expectReported(
+      crossFile,
+      project({ 'Worker.cs': crossFile, 'Contracts.cs': 'interface IWorker : IService { }\ninterface IService : Microsoft.Extensions.Hosting.IHostedService { }\n' }, 'Worker.cs')
+    );
+  });
+
+  it('still makes a member static when every interface the project interfaces extend is known', () => {
+    const source = lines('interface IWorker : System.IDisposable { }', 'class Owner', '{', '    private sealed class Worker : IWorker', '    {', '        public void Dispose() { }', '        public int Twice(int x) => x * 2;', '    }', '}');
+
+    expect(cleanup(source, warning, project({ 'Worker.cs': source }, 'Worker.cs')).output).toContain('public static int Twice(int x)');
+  });
+
   it('applies only while CA1822 is enforced, including through its category', () => {
     const source = lines('class C', '{', '    private int One() => 1;', '}');
 
@@ -671,6 +711,78 @@ describe('CA1852 seal internal types', () => {
     const options = project({ 'Shape.cs': source, 'Tests/Tests.csproj': '<Project />', 'Tests/Circle.cs': 'class Circle : Shape { }\n' }, 'Shape.cs');
 
     expect(cleanup(source, warning, options).output).toBe(lines('sealed class Shape { }'));
+  });
+
+  it.each([
+    ['a cast', 'internal Foo Get(IShape s) => (Foo)s;'],
+    ['an as', 'internal Foo Get(IShape s) => s as Foo;'],
+    ['an is pattern', 'internal bool Get(IShape s) => s is Foo f && f != null;'],
+    ['a negated type pattern', 'internal bool Get(IShape s) => s is not Foo;'],
+    ['a case pattern', 'internal int Get(IShape s) { switch (s) { case Foo f: return 1; } return 0; }'],
+    ['a switch expression arm', 'internal int Get(IShape s) => s switch { IShape and Foo => 1, _ => 0 };'],
+    ['a type argument of a cast', 'internal object Get(System.Collections.Generic.IEnumerable<IShape> s) => (System.Collections.Generic.IEnumerable<Foo>)s;'],
+  ])('reports a type that is the target of %s, which sealing can turn into a compile error', (_kind, member) => {
+    const source = lines('internal interface IShape { }', 'internal class Foo { }', 'internal class User', '{', `    ${member}`, '}');
+
+    const result = cleanup(source, warning, project({ 'Foo.cs': source }, 'Foo.cs'));
+    expect(result.output).toBe(source.replace('internal class User', 'internal sealed class User'));
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1852 line 2: 'Foo' .*cast/)]);
+  });
+
+  it('reports a type another project file casts to', () => {
+    const source = lines('internal class Foo { }');
+    const options = project({ 'Foo.cs': source, 'Use.cs': 'internal interface IShape { }\nstatic class Use { static object Get(IShape s) => (Foo)s; }\n' }, 'Foo.cs');
+
+    const result = cleanup(source, warning, options);
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1852 line 1: 'Foo' .*cast/)]);
+  });
+
+  it.each([
+    ['an is pattern', 'if (w is IDisposable d) d.Dispose();'],
+    ['a cast', '((IDisposable)w).Dispose();'],
+    ['an as', '(w as IDisposable)?.Dispose();'],
+    ['a case pattern', 'switch (w) { case IDisposable d: d.Dispose(); break; }'],
+    ['a switch expression arm', '_ = w switch { IDisposable => 1, _ => 0 };'],
+    ['an is pattern to a project interface without the I prefix', 'if (w is Runnable) { }'],
+  ])('reports a class code converts with %s to an interface it does not implement, which sealing turns into a compile error', (_kind, statement) => {
+    const source = lines('using System;', 'internal interface Runnable { }', 'internal class Worker { }', 'static class Use', '{', '    static void M()', '    {', '        var w = new Worker();', `        ${statement}`, '    }', '}');
+
+    const result = cleanup(source, warning, project({ 'Worker.cs': source }, 'Worker.cs'));
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1852 line 3: 'Worker' .*converts/)]);
+  });
+
+  it('reports a class that converts itself to an interface it does not implement', () => {
+    const source = lines('using System;', 'internal class Worker', '{', '    public bool Disposable => this is IDisposable;', '}');
+
+    expect(cleanup(source, warning, project({ 'Worker.cs': source }, 'Worker.cs')).issues).toEqual([expect.stringMatching(/^CA1852 line 2: 'Worker' .*IDisposable/)]);
+  });
+
+  it('reports a class when another project file converts something to an interface it does not implement', () => {
+    const source = lines('internal class Worker { }');
+    const options = project({ 'Worker.cs': source, 'Use.cs': 'static class Use { static bool M(Worker w) => w is System.IDisposable; }\n' }, 'Worker.cs');
+
+    const result = cleanup(source, warning, options);
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1852 line 1: 'Worker' .*IDisposable/)]);
+  });
+
+  it('still seals a class that implements the interface, or whose converted values have another declared type', () => {
+    const source = lines(
+      'using System;',
+      'internal class Worker : IDisposable { public void Dispose() { } }',
+      'internal class Other { }',
+      'static class Use',
+      '{',
+      '    static bool M(object o) { var w = new Worker(); return w is IDisposable && o is IDisposable; }',
+      '}'
+    );
+
+    expect(cleanup(source, warning, project({ 'Worker.cs': source }, 'Worker.cs'))).toEqual({
+      output: source.replace('internal class Worker', 'internal sealed class Worker').replace('internal class Other', 'internal sealed class Other'),
+      issues: [],
+    });
   });
 
   it('follows InternalsVisibleTo and ignore_internalsvisibleto', () => {
@@ -788,6 +900,35 @@ describe('CA1852 seal internal types', () => {
     expect(cleanup(plain, warning, project({ 'Counter.cs': plain, 'Counter.razor': '<p>0</p>\n' }, 'Counter.cs')).output).toBe(
       lines('public class Counter', '{', '    private sealed class RowBase { }', '}')
     );
+  });
+});
+
+describe('unsaved open buffers of other project files', () => {
+  let reset: (() => void) | undefined;
+  afterEach(() => reset?.());
+
+  /** Cleans `Util.cs` while `User.cs` is open with `unsaved` text that is not on disk. */
+  function cleanWithUnsavedUser(rules: string, unsaved: string): { output: string; issues: string[] } {
+    const util = lines('internal class Util', '{', '    internal int Twice(int x) => x * 2;', '}');
+    const options = project({ 'Util.cs': util, 'User.cs': 'internal static class User { }\n' }, 'Util.cs');
+    const user = path.join(path.dirname(options.filePath as string), 'User.cs');
+    reset = setUnsavedSourcesProvider(() => new Map([[user, unsaved]])).dispose;
+
+    return cleanup(util, rules, { ...options, project: findProject(options.filePath as string) });
+  }
+
+  it('keeps a member instance that an unsaved buffer calls on an instance (CA1822)', () => {
+    const rules = 'dotnet_diagnostic.CA1822.severity = warning';
+    expect(cleanWithUnsavedUser(rules, 'internal static class User { }\n').output).toContain('internal static int Twice');
+
+    expect(cleanWithUnsavedUser(rules, 'internal static class User { static int M() => new Util().Twice(3); }\n').output).not.toContain('static int Twice');
+  });
+
+  it('keeps a class unsealed that an unsaved buffer derives from (CA1852)', () => {
+    const rules = 'dotnet_diagnostic.CA1852.severity = warning';
+    expect(cleanWithUnsavedUser(rules, 'internal static class User { }\n').output).toContain('internal sealed class Util');
+
+    expect(cleanWithUnsavedUser(rules, 'internal class Doubled : Util { }\n').output).not.toContain('sealed class Util');
   });
 });
 

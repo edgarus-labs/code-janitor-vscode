@@ -13,8 +13,9 @@ import { ImportedNames, UsedNames, describeImport, dottedName, usedNames } from 
  * when that index proves the file binds exactly as before; otherwise the file stays as it is and the
  * reason is reported. What the index cannot see are the namespaces and types of referenced packages:
  * they are assumed not to reuse the name of a namespace or type declared in the project or the framework
- * for something the file uses (`externalReferences` says whether such packages exist). A framework the index
- * is not generated from (Windows Desktop) adds to the framework namespaces, whose types are then not all known.
+ * for something the file uses (`externalReferences` says whether such packages exist), nor to declare
+ * namespaces below the root namespace of the file unless a package shares that root. A package, framework or
+ * target framework the index is not generated from adds to the framework namespaces, whose types are then not all known.
  */
 
 export type PlacementDirection = 'outside' | 'inside';
@@ -271,22 +272,37 @@ function rewriteDirective(ctx: RewriteContext, item: UsingItem): Rewritten | str
       continue;
     }
 
-    const scope = ctx.currentScopes.find((candidate) => index.memberKind(candidate, name) !== undefined);
+    // Lookup passes over types of another arity: a name without type arguments binds only what takes no type parameters.
+    const generic = item.tokens[at + 1]?.type === '<';
+    const arity = generic ? undefined : 0;
+    const scope = ctx.currentScopes.find((candidate) => index.memberKind(candidate, name, arity) !== undefined);
     if (scope === undefined) {
       const wholeName = at === item.targetFrom && item.alias === undefined;
       if (!(wholeName && ctx.externalReferences)) {
         return `'${describe}' cannot be resolved: '${name}' is not declared in the project or the framework`;
       }
+
+      // A package sharing the root of the namespace may declare the name relative to it (`Company.Shared` from `Company.App`).
+      const relative = ctx.currentScopes.find((candidate) => index.mayBeExtendedExternally(candidate));
+      if (relative !== undefined && ctx.direction === 'outside') {
+        return `'${describe}' cannot be moved: '${name}' is not declared in the project or the framework, and a referenced package may declare it in ${relative}, where the directive looks it up first`;
+      }
+
+      if (relative !== undefined) {
+        insertions.push({ at: token.start, text: 'global::' });
+      }
     } else if (scope !== '') {
       if (ctx.direction === 'inside') {
         insertions.push({ at: token.start, text: 'global::' });
-      } else if (item.tokens[at + 1]?.type === '<') {
-        // Lookup passes over a type of another arity, which the index does not record: the name may bind further out.
-        return `'${describe}' cannot be qualified: the index does not know whether ${scope}.${name} takes the type arguments of '${name}'`;
+      } else if (generic) {
+        // Lookup passes over types of another arity; the type arguments are not counted here, so the name may bind further out.
+        return `'${describe}' cannot be qualified: '${name}' is written with type arguments, which may pass over ${scope}.${name} to a type of their arity further out`;
+      } else if (index.declaredOnlyConditionally(scope, name, arity)) {
+        return `'${describe}' cannot be qualified: '${name}' is declared in ${scope} only under a preprocessor condition or in a file the project may not compile`;
       } else {
         // `Company.App.Services` written at file level starts with the global `Company`, which must be a namespace there.
         const root = scope.split('.')[0];
-        if (index.memberKind('', root) === 'both') {
+        if (index.memberKind('', root, 0) === 'both') {
           return `'${describe}' cannot be written from the global namespace: '${root}' is a namespace and a type there`;
         }
 
@@ -381,8 +397,10 @@ function findHiddenBinding(source: string, item: UsingItem, scopes: readonly str
 
   for (const { at, name, qualifier } of lookedUpNames(source, item)) {
     // In front of `::` stands `global`, an extern alias or a using alias of a namespace: only the last is a directive.
-    // A generic name passes over a declaration of another arity, which the index does not record.
-    const declared = item.tokens[at + 1]?.type !== '<' && scopes.some((scope) => index.memberKind(scope, name) !== undefined);
+    // A name without type arguments passes over generic types; the type arguments of a generic name are not counted. A
+    // declaration a build may leave out does not stop the lookup in that build.
+    const declared =
+      item.tokens[at + 1]?.type !== '<' && scopes.some((scope) => index.memberKind(scope, name, 0) !== undefined && !index.declaredOnlyConditionally(scope, name, 0));
     if (qualifier ? name === 'global' : declared) {
       continue;
     }

@@ -1,6 +1,6 @@
 import { memoizeBySource } from '../sourceCache';
 import { Token, lex } from '../syntax/lexer';
-import { BCL_EXTENSION_METHODS, BCL_TYPES } from './bclIndex.generated';
+import { BCL_EXTENSION_METHODS, BCL_GENERIC_TYPES, BCL_TYPES } from './bclIndex.generated';
 
 /**
  * What the using-directive placement knows about the names a C# file can refer to: the namespaces,
@@ -9,11 +9,16 @@ import { BCL_EXTENSION_METHODS, BCL_TYPES } from './bclIndex.generated';
  * JavaScript, so this index stands in for the parts of it the placement needs.
  *
  * Every declaration is found by scanning tokens, so a declaration in an `#if` branch counts whether
- * or not the branch is active: the index errs towards knowing more names, which only makes the
- * placement more conservative.
+ * or not the branch is active. Such a declaration (and any declaration of a file MSBuild may leave out)
+ * is also marked as one that may not exist: a name is only qualified with a namespace that surely
+ * declares it, while a name that may exist still makes the placement more careful.
  */
 
-/** The declarations of one file, as keys (`N:` namespace, `T:` type, `E:ns:name` extension method, `X:` unknown extension members, `G:` global using). */
+/**
+ * The declarations of one file, as keys: `N:` namespace, `T:` type by its metadata name (`T:N.Box` takes no type
+ * parameters, ``T:N.Box`1`` takes one), `C:` in front of an `N:` or `T:` key that a preprocessor condition or MSBuild
+ * may leave out, `E:ns:name` extension method, `X:` unknown extension members, `G:` global using.
+ */
 export interface FileSummary {
   readonly keys: ReadonlySet<string>;
 }
@@ -32,8 +37,12 @@ export const summarizeDeclarations: (source: string) => FileSummary = memoizeByS
 function scanDeclarations(file: string): FileSummary {
   // Visual Studio saves C# files with a byte order mark, which the lexer would read as part of the first word.
   const source = file.replace(/^\uFEFF/, '');
-  const tokens = lex(source).tokens;
+  const lexed = lex(source);
+  const tokens = lexed.tokens;
   const keys = new Set<string>();
+  const certain = new Set<string>();
+  const conditional = new Set<string>();
+  const conditionalRanges = conditionalRangesOf(lexed.trivia);
   const scopes: Scope[] = [];
   let depth = 0;
 
@@ -58,10 +67,15 @@ function scanDeclarations(file: string): FileSummary {
 
     return scope === undefined ? depth === 0 : scope.depth === -1 ? depth === 0 : depth === scope.depth;
   };
-  const declareNamespace = (full: string): void => {
+  /** Adds the key of a declaration at `at`, noting whether a preprocessor condition may leave it out. */
+  const declare = (key: string, at: number): void => {
+    keys.add(key);
+    (conditionalRanges.some((range) => range.start <= at && at < range.end) ? conditional : certain).add(key);
+  };
+  const declareNamespace = (full: string, at: number): void => {
     const segments = full.split('.');
     for (let i = 1; i <= segments.length; i++) {
-      keys.add(`N:${segments.slice(0, i).join('.')}`);
+      declare(`N:${segments.slice(0, i).join('.')}`, at);
     }
   };
 
@@ -95,7 +109,7 @@ function scanDeclarations(file: string): FileSummary {
       }
 
       const full = qualify(nameParts.join('.'));
-      declareNamespace(full);
+      declareNamespace(full, token.start);
       if (tokens[j]?.type === '{') {
         scopes.push({ kind: 'namespace', name: full, depth: depth + 1 });
         depth++;
@@ -127,7 +141,7 @@ function scanDeclarations(file: string): FileSummary {
     const declared = declarationAt(tokens, i, text);
     if (declared) {
       const full = qualify(declared.name);
-      keys.add(`T:${full}`);
+      declare(typeKey(full, declared.arity), token.start);
       if (declared.bodyAt !== undefined) {
         scopes.push({ kind: 'type', name: full, depth: depth + 1 });
         depth++;
@@ -155,7 +169,31 @@ function scanDeclarations(file: string): FileSummary {
     }
   }
 
+  for (const key of conditional) {
+    if (!certain.has(key)) {
+      keys.add(`C:${key}`);
+    }
+  }
+
   return { keys };
+}
+
+/** The text spans from each `#if` to its `#endif`: what lies in them may not be compiled. */
+function conditionalRangesOf(trivia: readonly Token[]): { start: number; end: number }[] {
+  const ranges: { start: number; end: number }[] = [];
+  const open: number[] = [];
+  for (const item of trivia) {
+    if (item.type === 'preproc_if') {
+      open.push(item.start);
+    } else if (item.type === 'preproc_endif' && open.length > 0) {
+      ranges.push({ start: open.pop() as number, end: item.end });
+    }
+  }
+
+  // An `#if` without its `#endif` lasts to the end of the file.
+  ranges.push(...open.map((start) => ({ start, end: Number.POSITIVE_INFINITY })));
+
+  return ranges;
 }
 
 const PARAMETER_MODIFIERS = new Set(['ref', 'in', 'readonly']);
@@ -183,6 +221,8 @@ function receiverIsThis(tokens: readonly Token[], open: number, text: (token: To
 
 interface DeclaredType {
   readonly name: string;
+  /** The number of type parameters. */
+  readonly arity: number;
   /** Index of the `{` opening the body, when the declaration has one. */
   readonly bodyAt?: number;
   /** Index of the last token of a declaration without a body. */
@@ -244,6 +284,7 @@ function declarationAt(tokens: readonly Token[], i: number, text: (token: Token)
     }
 
     let nameToken = tokens[j - 1];
+    let arity = 0;
     if (nameToken?.type === '>') {
       let angle = 0;
       while (j > i) {
@@ -256,9 +297,10 @@ function declarationAt(tokens: readonly Token[], i: number, text: (token: Token)
       }
 
       nameToken = tokens[j - 1];
+      arity = typeParameterCount(tokens, j);
     }
 
-    return nameToken?.type === 'identifier' ? { name: text(nameToken), endAt: j } : undefined;
+    return nameToken?.type === 'identifier' ? { name: text(nameToken), arity, endAt: j } : undefined;
   } else {
     return undefined;
   }
@@ -268,6 +310,7 @@ function declarationAt(tokens: readonly Token[], i: number, text: (token: Token)
     return undefined;
   }
 
+  const arity = tokens[nameAt + 1]?.type === '<' ? typeParameterCount(tokens, nameAt + 1) : 0;
   // The body starts at the first `{` outside parentheses; a record without a body ends at `;`.
   let parens = 0;
   for (let j = nameAt + 1; j < tokens.length; j++) {
@@ -277,13 +320,37 @@ function declarationAt(tokens: readonly Token[], i: number, text: (token: Token)
     } else if (type === ')') {
       parens--;
     } else if (parens === 0 && type === '{') {
-      return { name: text(nameToken), bodyAt: j, endAt: j };
+      return { name: text(nameToken), arity, bodyAt: j, endAt: j };
     } else if (parens === 0 && (type === ';' || type === 'end')) {
-      return { name: text(nameToken), endAt: j };
+      return { name: text(nameToken), arity, endAt: j };
     }
   }
 
   return undefined;
+}
+
+/** The number of type parameters in the list opened by the `<` at `tokens[open]`: its commas outside attributes, plus one. */
+function typeParameterCount(tokens: readonly Token[], open: number): number {
+  let count = 1;
+  let nested = 0;
+  for (let j = open + 1; j < tokens.length; j++) {
+    const type = tokens[j].type;
+    if (type === '<' || type === '[' || type === '(') {
+      nested++;
+    } else if (type === '>' || type === ']' || type === ')') {
+      if (nested === 0) {
+        break;
+      }
+
+      nested--;
+    } else if (type === ',' && nested === 0) {
+      count++;
+    } else if (type === '{' || type === ';' || type === 'end') {
+      break;
+    }
+  }
+
+  return count;
 }
 
 /** The name of a generic method whose `>` closes its type parameter list at `tokens[closeAt]`. */
@@ -307,6 +374,8 @@ function genericMethodName(tokens: readonly Token[], closeAt: number, text: (tok
 interface BclData {
   readonly namespaces: ReadonlySet<string>;
   readonly types: Map<string, ReadonlySet<string>>;
+  /** Full name -> the arities of a type name that has a generic declaration; a name not listed takes no type parameters. */
+  readonly arities: Map<string, ReadonlySet<number>>;
   readonly extensions: Map<string, ReadonlySet<string>>;
   readonly children: Map<string, ReadonlySet<string>>;
 }
@@ -321,6 +390,7 @@ function bcl(): BclData {
   const namespaces = new Set<string>();
   const children = new Map<string, Set<string>>();
   const types = new Map<string, ReadonlySet<string>>();
+  const arities = new Map<string, Set<number>>();
   const extensions = new Map<string, ReadonlySet<string>>();
   for (const [namespace, names] of Object.entries(BCL_TYPES)) {
     types.set(namespace, new Set(names.split(' ')));
@@ -337,13 +407,35 @@ function bcl(): BclData {
     }
   }
 
+  for (const [namespace, names] of Object.entries(BCL_GENERIC_TYPES)) {
+    for (const metadataName of names.split(' ')) {
+      const [name, arity] = metadataName.split('`');
+      const full = namespace ? `${namespace}.${name}` : name;
+      if (!arities.has(full)) {
+        arities.set(full, new Set());
+      }
+
+      (arities.get(full) as Set<number>).add(Number(arity));
+    }
+  }
+
   for (const [namespace, names] of Object.entries(BCL_EXTENSION_METHODS)) {
     extensions.set(namespace, new Set(names.split(' ')));
   }
 
-  bclData = { namespaces, types, extensions, children };
+  bclData = { namespaces, types, arities, extensions, children };
 
   return bclData;
+}
+
+/** True when the reference assemblies declare the type `full` with `arity` type parameters, or with any arity when it is `undefined`. */
+function bclHasType(full: string, arity?: number): boolean {
+  const dot = full.lastIndexOf('.');
+  if (bcl().types.get(dot < 0 ? '' : full.slice(0, dot))?.has(full.slice(dot + 1)) !== true) {
+    return false;
+  }
+
+  return arity === undefined || (bcl().arities.get(full)?.has(arity) ?? arity === 0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -352,21 +444,33 @@ function bcl(): BclData {
 
 export type MemberKind = 'namespace' | 'type';
 
+/** What the assemblies a project references besides the indexed ones (packages, other frameworks) may add to the index. */
+export interface ExternalDeclarations {
+  /** They may add types and extension methods to the namespaces of the reference packs, which are then not all known. */
+  readonly frameworkNamespacesOpen: boolean;
+  /** The first segments, in lower case, of the namespaces they may declare; `'any'` when these cannot be told. */
+  readonly namespaceRoots: ReadonlySet<string> | 'any';
+}
+
+const NO_EXTERNAL_DECLARATIONS: ExternalDeclarations = { frameworkNamespacesOpen: false, namespaceRoots: new Set() };
+
 /** The per-scope lookup tables derived from declaration keys. */
 interface Tables {
-  /** Scope -> names of the namespaces and types declared directly in it. */
+  /** Scope -> names of the namespaces and types declared directly in it (types without their arity). */
   readonly children: Map<string, Set<string>>;
+  /** Full name of a type -> the numbers of type parameters of its generic declarations. */
+  readonly arities: Map<string, Set<number>>;
   /** Namespace -> names of its extension methods. */
   readonly extensions: Map<string, Set<string>>;
   readonly globalUsings: Set<string>;
 }
 
 function emptyTables(): Tables {
-  return { children: new Map(), extensions: new Map(), globalUsings: new Set() };
+  return { children: new Map(), arities: new Map(), extensions: new Map(), globalUsings: new Set() };
 }
 
 function addToTables(tables: Tables, keys: Iterable<string>): void {
-  const push = (map: Map<string, Set<string>>, scope: string, name: string): void => {
+  const push = <T>(map: Map<string, Set<T>>, scope: string, name: T): void => {
     let names = map.get(scope);
     if (!names) {
       map.set(scope, (names = new Set()));
@@ -378,9 +482,12 @@ function addToTables(tables: Tables, keys: Iterable<string>): void {
   for (const key of keys) {
     const tag = key.slice(0, 2);
     if (tag === 'N:' || tag === 'T:') {
-      const full = key.slice(2);
+      const [full, arity] = key.slice(2).split('`');
       const dot = full.lastIndexOf('.');
       push(tables.children, dot < 0 ? '' : full.slice(0, dot), full.slice(dot + 1));
+      if (arity !== undefined) {
+        push(tables.arities, full, Number(arity));
+      }
     } else if (tag === 'E:') {
       const colon = key.indexOf(':', 2);
       push(tables.extensions, key.slice(2, colon), key.slice(colon + 1));
@@ -389,6 +496,9 @@ function addToTables(tables: Tables, keys: Iterable<string>): void {
     }
   }
 }
+
+/** The `T:` key of the type `full` with `arity` type parameters. */
+const typeKey = (full: string, arity: number): string => (arity === 0 ? `T:${full}` : `T:${full}\`${arity}`);
 
 /** Read-only view of the declarations of a project: the other files as they are on disk, the file being cleaned as it is now. */
 export class DeclarationIndex {
@@ -400,32 +510,44 @@ export class DeclarationIndex {
     private readonly tables: Tables = emptyTables(),
     private readonly removed: ReadonlySet<string> = EMPTY,
     private readonly added: ReadonlySet<string> = EMPTY,
-    /** The project uses a framework the index does not list (Windows Desktop), which adds to the namespaces of the listed ones. */
-    private readonly frameworkNamespacesOpen = false
+    private readonly external: ExternalDeclarations = NO_EXTERNAL_DECLARATIONS
   ) {
     this.addedTables = emptyTables();
     addToTables(this.addedTables, added);
   }
 
+  private count(key: string): number {
+    return (this.counts.get(key) ?? 0) - (this.removed.has(key) ? 1 : 0) + (this.added.has(key) ? 1 : 0);
+  }
+
   private has(key: string): boolean {
-    return (this.counts.get(key) ?? 0) - (this.removed.has(key) ? 1 : 0) + (this.added.has(key) ? 1 : 0) > 0;
+    return this.count(key) > 0;
+  }
+
+  /** True when a file declares `key` outside every `#if` and is surely compiled. */
+  private hasCertainly(key: string): boolean {
+    return this.count(key) > this.count(`C:${key}`);
+  }
+
+  /** The `T:` keys of the type `full`, one per arity the project declares it with. */
+  private typeKeys(full: string): string[] {
+    const arities = new Set([...(this.tables.arities.get(full) ?? []), ...(this.addedTables.arities.get(full) ?? [])]);
+
+    return [`T:${full}`, ...[...arities].map((arity) => typeKey(full, arity))];
   }
 
   hasNamespace(full: string): boolean {
     return full === '' || this.has(`N:${full}`) || bcl().namespaces.has(full);
   }
 
-  hasType(full: string): boolean {
-    if (this.has(`T:${full}`)) {
-      return true;
-    }
+  /** True when the framework or the project declares the type `full` with `arity` type parameters, or with any arity when it is `undefined`. */
+  hasType(full: string, arity?: number): boolean {
+    const keys = arity === undefined ? this.typeKeys(full) : [typeKey(full, arity)];
 
-    const dot = full.lastIndexOf('.');
-
-    return bcl().types.get(dot < 0 ? '' : full.slice(0, dot))?.has(full.slice(dot + 1)) === true;
+    return keys.some((key) => this.has(key)) || bclHasType(full, arity);
   }
 
-  /** True when a file of the project declares the type `full`: its nested types are then known too, unlike those of the framework. */
+  /** True when a file of the project declares the type `full` without type parameters: its nested types are then known too, unlike those of the framework. */
   declaresType(full: string): boolean {
     return this.has(`T:${full}`);
   }
@@ -435,13 +557,35 @@ export class DeclarationIndex {
     return this.hasNamespace(full) || this.hasType(full);
   }
 
-  /** What the member `name` of `scope` is (`''` is the global namespace); `undefined` when `scope` has no such member. */
-  memberKind(scope: string, name: string): MemberKind | 'both' | undefined {
+  /**
+   * What the member `name` of `scope` is (`''` is the global namespace); `undefined` when `scope` has no such member.
+   * With `arity`, only types with that many type parameters count, as for a name written with that many type arguments.
+   */
+  memberKind(scope: string, name: string, arity?: number): MemberKind | 'both' | undefined {
     const full = scope ? `${scope}.${name}` : name;
     const namespace = this.hasNamespace(full);
-    const type = this.hasType(full);
+    const type = this.hasType(full, arity);
 
     return namespace && type ? 'both' : namespace ? 'namespace' : type ? 'type' : undefined;
+  }
+
+  /**
+   * True when `scope` has the member `name` (with `arity` as for {@link memberKind}) only through declarations in an
+   * `#if` branch or in a file MSBuild may leave out: in some builds the member does not exist.
+   */
+  declaredOnlyConditionally(scope: string, name: string, arity?: number): boolean {
+    const full = scope ? `${scope}.${name}` : name;
+    const typeKeys = arity === undefined ? this.typeKeys(full) : [typeKey(full, arity)];
+    const certain = bcl().namespaces.has(full) || this.hasCertainly(`N:${full}`) || bclHasType(full, arity) || typeKeys.some((key) => this.hasCertainly(key));
+
+    return !certain && this.memberKind(scope, name, arity) !== undefined;
+  }
+
+  /** True when a referenced assembly the index does not list may declare namespaces below the namespace `full`. */
+  mayBeExtendedExternally(full: string): boolean {
+    const roots = this.external.namespaceRoots;
+
+    return full !== '' && (roots === 'any' || roots.has(full.split('.')[0].toLowerCase()));
   }
 
   /** The namespaces and types declared directly in `scope`. */
@@ -470,9 +614,9 @@ export class DeclarationIndex {
     return result;
   }
 
-  /** The type names declared directly in the namespace `full`; `null` when a framework the index does not list may add more to it. */
+  /** The type names declared directly in the namespace `full`; `null` when an assembly the index does not list may add more to it. */
   typesOf(full: string): Set<string> | null {
-    if (this.frameworkNamespacesOpen && bcl().namespaces.has(full)) {
+    if (this.external.frameworkNamespacesOpen && bcl().namespaces.has(full)) {
       return null;
     }
 
@@ -486,9 +630,9 @@ export class DeclarationIndex {
     return result;
   }
 
-  /** The names of the extension methods declared in the namespace `full`, or `undefined` when C# 14 extension blocks or a framework the index does not list may add unknown ones. */
+  /** The names of the extension methods declared in the namespace `full`, or `undefined` when C# 14 extension blocks or an assembly the index does not list may add unknown ones. */
   extensionMethodsOf(full: string): Set<string> | undefined {
-    if (this.has(`X:${full}`) || (this.frameworkNamespacesOpen && bcl().namespaces.has(full))) {
+    if (this.has(`X:${full}`) || (this.external.frameworkNamespacesOpen && bcl().namespaces.has(full))) {
       return undefined;
     }
 
@@ -527,17 +671,29 @@ export class DeclarationAggregate {
     addToTables(this.tables, summary.keys);
   }
 
-  view(removed?: FileSummary, added?: FileSummary, frameworkNamespacesOpen = false): DeclarationIndex {
-    return new DeclarationIndex(this.counts, this.tables, removed?.keys, added?.keys, frameworkNamespacesOpen);
+  view(removed?: FileSummary, added?: FileSummary, external?: ExternalDeclarations): DeclarationIndex {
+    return new DeclarationIndex(this.counts, this.tables, removed?.keys, added?.keys, external);
   }
 }
 
+/** The summary of a file MSBuild may leave out of the compilation: each of its declarations may not exist. */
+export function asConditional(summary: FileSummary): FileSummary {
+  const keys = new Set(summary.keys);
+  for (const key of summary.keys) {
+    if (key.startsWith('N:') || key.startsWith('T:')) {
+      keys.add(`C:${key}`);
+    }
+  }
+
+  return { keys };
+}
+
 /** An index of exactly the given sources (for tests and for a file outside any project). */
-export function createIndex(sources: readonly string[]): DeclarationIndex {
+export function createIndex(sources: readonly string[], external?: ExternalDeclarations): DeclarationIndex {
   const aggregate = new DeclarationAggregate();
   for (const source of sources) {
     aggregate.add(summarizeDeclarations(source));
   }
 
-  return aggregate.view();
+  return aggregate.view(undefined, undefined, external);
 }

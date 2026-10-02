@@ -39,6 +39,8 @@ export type MemberNameClass = 'initialized' | 'plain' | 'constant' | 'method' | 
 export interface InitContext {
   typeName: string;
   names: ReadonlyMap<string, MemberNameClass>;
+  /** The declared types of the fields and properties. */
+  types: ReadonlyMap<string, string>;
 }
 
 /** BCL types whose constructors have no side effect on state of the program being initialized. */
@@ -80,11 +82,12 @@ const LITERAL_TYPES = new Set([
   'null_literal',
 ]);
 
-/** Syntax without side effects whose value is computed from its children. */
+/**
+ * Syntax without side effects whose value is computed from its children. Operators, indexers, conditions,
+ * conversions and member reads are not here: on a value of a type declared in the program they run its code.
+ */
 const PURE_CONTAINERS = new Set([
   'parenthesized_expression',
-  'binary_expression',
-  'conditional_expression',
   'checked_expression',
   'argument',
   'argument_list',
@@ -95,12 +98,10 @@ const PURE_CONTAINERS = new Set([
   'implicit_array_creation_expression',
   'array_rank_specifier',
   'equals_value_clause',
-  'element_access_expression',
   'bracketed_argument_list',
   'range_expression',
   'pattern',
   'anonymous_object_creation_expression',
-  'conditional_access_expression',
   'switch_expression',
   'switch_expression_arm',
   'with_expression',
@@ -146,7 +147,7 @@ export function analyzeInitializers(declaration: Node, isStatic: boolean, contex
   for (const { name, value, typeName } of initializersOf(declaration)) {
     declares.add(name);
     scanExpression(value, context, typeName, scan);
-    if (mayRunUserConversion(value, typeName, declaration)) {
+    if (mayRunUserConversion(value, typeName, declaration, context)) {
       scan.opaque = true;
     }
   }
@@ -219,19 +220,299 @@ function intersects(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return false;
 }
 
-/** Predefined types: they declare no user-defined conversion operator. */
-const PREDEFINED_TYPES = new Set([
+/** Predefined value types and `string`: the language defines their operators. */
+const PRIMITIVE_TYPES = new Set([
   'bool', 'byte', 'sbyte', 'char', 'decimal', 'double', 'float', 'int', 'uint', 'nint', 'nuint', 'long', 'ulong', 'short', 'ushort',
-  'object', 'string', 'dynamic', 'var',
+  'string',
 ]);
+
+/** Binary operators that yield `bool` when the language defines them. */
+const BOOLEAN_OPERATORS = new Set(['==', '!=', '<', '>', '<=', '>=', '&&', '||']);
+
+/**
+ * What the syntax proves about the type of a value: `primitive` (a predefined value type, `string` or an
+ * enum), `library` (`object` or a known library type, with known library type arguments) or `array`. The
+ * operators, indexers, conversions and accessors of these types are the language's or the library's. A value
+ * of any other type (`undefined`) may be of a type declared in the program, whose user-defined operators,
+ * indexers, conversions and accessors run its code, which may read this type's statics.
+ */
+type ValueKind = 'primitive' | 'library' | 'array' | undefined;
+
+function kindOfType(typeText: string, node: Node): ValueKind {
+  // `int?` is `Nullable<int>`: its lifted operators are the language's.
+  const text = typeText.trim().replace(/\s*\?$/, '');
+  if (/\[[\s,]*\]$/.test(text)) {
+    return 'array';
+  }
+
+  if (PRIMITIVE_TYPES.has(text) || isEnumName(text, node)) {
+    return 'primitive';
+  }
+
+  // Every type named, `List` and its type arguments alike, must be known (a tuple names its elements too).
+  const names = text.match(/[A-Za-z_]\w*(?:\s*(?:\.|::)\s*[A-Za-z_]\w*)*/g) ?? [];
+  const isLibrary = (name: string): boolean => {
+    const last = lastIdentifier(name.replace(/^.*::/, ''));
+
+    return last === 'object' || PRIMITIVE_TYPES.has(last) || PURE_CONSTRUCTED_TYPES.has(last) || PURE_STATIC_TYPES.has(last) || isEnumName(name, node);
+  };
+
+  return names.length > 0 && names.every(isLibrary) ? 'library' : undefined;
+}
+
+function isEnumName(name: string, node: Node): boolean {
+  return LIBRARY_ENUMS.has(lastIdentifier(name)) || isDeclaredEnum(node, name);
+}
+
+/** Both values are of known types: `primitive` if both are, else `library`. */
+function joinKinds(a: ValueKind, b: ValueKind): ValueKind {
+  if (a === undefined || b === undefined) {
+    return undefined;
+  }
+
+  return a === 'primitive' && b === 'primitive' ? 'primitive' : 'library';
+}
+
+/** The kind of the declared type of a field or property of this type read by name. */
+function kindOfMember(name: string, node: Node, context: InitContext): ValueKind {
+  const type = context.types.get(name);
+
+  return type === undefined ? undefined : kindOfType(type, node);
+}
+
+/**
+ * The kinds already computed for the nodes of each container: the operator checks ask for the kinds of the
+ * operands at every level of an expression, so each subtree is analysed once rather than once per level.
+ */
+const KIND_CACHE = new WeakMap<InitContext, Map<Node, ValueKind>>();
+
+function kindOfValue(node: Node, context: InitContext): ValueKind {
+  let kinds = KIND_CACHE.get(context);
+  if (!kinds) {
+    kinds = new Map();
+    KIND_CACHE.set(context, kinds);
+  }
+
+  if (kinds.has(node)) {
+    return kinds.get(node);
+  }
+
+  const kind = computeKind(node, context);
+  kinds.set(node, kind);
+
+  return kind;
+}
+
+function computeKind(node: Node, context: InitContext): ValueKind {
+  if (LITERAL_TYPES.has(node.type)) {
+    return node.type === 'null_literal' ? 'library' : 'primitive';
+  }
+
+  switch (node.type) {
+    case 'interpolated_string_expression':
+    case 'sizeof_expression':
+    case 'is_pattern_expression':
+      return 'primitive';
+
+    case 'typeof_expression':
+    case 'lambda_expression':
+    case 'anonymous_method_expression':
+      return 'library';
+
+    case 'identifier':
+      return kindOfMember(node.text, node, context);
+
+    case 'member_access_expression':
+      return kindOfMemberAccess(node, context);
+
+    case 'parenthesized_expression':
+    case 'checked_expression': {
+      const inner = node.namedChildren[0];
+
+      return inner ? kindOfValue(inner, context) : undefined;
+    }
+
+    case 'prefix_unary_expression':
+    case 'postfix_unary_expression': {
+      // `-x`, `!x`, `x!`: the operators of a known type are the language's or the library's.
+      const operand = node.namedChildren[0];
+
+      return operand ? kindOfValue(operand, context) : undefined;
+    }
+
+    case 'cast_expression':
+    case 'default_expression': {
+      const type = node.type === 'cast_expression' ? node.childForFieldName('type') : node.namedChildren[0];
+
+      return type ? kindOfType(type.text, node) : undefined;
+    }
+
+    case 'binary_expression': {
+      const operator = binaryOperator(node);
+      const right = node.childForFieldName('right');
+      if (operator === 'as') {
+        return right ? kindOfType(right.text, node) : undefined;
+      }
+
+      if (binaryRunsUserCode(node, context)) {
+        return undefined;
+      }
+
+      if (BOOLEAN_OPERATORS.has(operator)) {
+        return 'primitive';
+      }
+
+      const left = node.childForFieldName('left');
+
+      return left && right ? joinKinds(kindOfValue(left, context), kindOfValue(right, context)) : undefined;
+    }
+
+    case 'conditional_expression': {
+      const [, consequence, alternative] = node.namedChildren;
+
+      return !conditionalRunsUserCode(node, context) && consequence && alternative ? joinKinds(kindOfValue(consequence, context), kindOfValue(alternative, context)) : undefined;
+    }
+
+    case 'range_expression':
+      return rangeRunsUserCode(node, context) ? undefined : 'primitive';
+
+    case 'element_access_expression': {
+      // A character of a string, an element of a library collection, or one of an array member of this type.
+      const target = node.namedChildren[0];
+      const kind = target && !elementAccessRunsUserCode(node, context) ? kindOfValue(target, context) : undefined;
+      if (kind !== 'array') {
+        return kind;
+      }
+
+      const arrayType = target?.type === 'identifier' ? context.types.get(target.text) : undefined;
+
+      return arrayType === undefined ? undefined : kindOfType(arrayType.replace(/\s*\[[\s,]*\]\s*\??$/, ''), node);
+    }
+
+    case 'invocation_expression': {
+      // A call of a known library method returns a library type, unless type arguments make it return
+      // (or infer it from) a type of the program.
+      const callee = node.namedChildren[0];
+      const args = node.childForFieldName('arguments') ?? node.namedChildren.find((child) => child.type === 'argument_list');
+      const isPure = callee?.type === 'member_access_expression' && isPureStaticCall(callee) && callee.namedChildren[callee.namedChildren.length - 1]?.type !== 'generic_name';
+
+      return isPure && (args?.namedChildren ?? []).every((arg) => arg.namedChildren[0] !== undefined && kindOfValue(arg.namedChildren[0], context) !== undefined) ? 'library' : undefined;
+    }
+
+    case 'object_creation_expression':
+      return kindOfType(node.childForFieldName('type')?.text ?? '', node) === undefined ? undefined : 'library';
+
+    default:
+      return undefined;
+  }
+}
+
+function kindOfMemberAccess(node: Node, context: InitContext): ValueKind {
+  const children = node.namedChildren;
+  const target = children[0];
+  const member = children[children.length - 1];
+  if (!target || !member || target === member) {
+    return undefined;
+  }
+
+  const typeName = target.type === 'generic_name' ? target.namedChildren[0]?.text : target.type === 'identifier' ? target.text : undefined;
+  if (target.type === 'this_expression' || typeName === context.typeName) {
+    return kindOfMember(member.text, node, context);
+  }
+
+  if (target.type === 'predefined_type') {
+    // `int.MaxValue`, `string.Empty`.
+    return PRIMITIVE_TYPES.has(target.text) ? 'primitive' : 'library';
+  }
+
+  if (typeName !== undefined && (target.type === 'generic_name' || !context.names.has(typeName))) {
+    if (isEnumName(typeName, node)) {
+      return 'primitive';
+    }
+
+    // A static member of a known library type (`EqualityComparer<int>.Default`) is of a library type.
+    return kindOfType(target.text, node) === undefined ? undefined : 'library';
+  }
+
+  // A property of a primitive is `string.Length`, and the counts of an array are `int` and `long`;
+  // any other property of a known type is of a library type.
+  const targetKind = TYPE_NODES.has(target.type) ? undefined : kindOfValue(target, context);
+  if (targetKind === 'primitive' || (targetKind === 'array' && ['Length', 'LongLength', 'Rank'].includes(member.text))) {
+    return 'primitive';
+  }
+
+  return targetKind === undefined ? undefined : 'library';
+}
+
+/** The operator of a binary expression: the tokens between its operands (`>>` is two `>` tokens). */
+function binaryOperator(node: Node): string {
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+
+  return node.children
+    .filter((child) => child !== left && child !== right)
+    .map((child) => child.text)
+    .join('');
+}
+
+/**
+ * Whether a binary expression may call a user-defined operator: the operators of known types are the
+ * language's or the library's. `+` needs primitive operands, since adding another value to a string calls
+ * its `ToString`, which a type of the program may override. `as` converts by reference only.
+ */
+function binaryRunsUserCode(node: Node, context: InitContext): boolean {
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  const operator = binaryOperator(node);
+  if (operator === 'as') {
+    return false;
+  }
+
+  if (!left || !right) {
+    return true;
+  }
+
+  const leftKind = kindOfValue(left, context);
+  const rightKind = kindOfValue(right, context);
+  if (operator === '+') {
+    return leftKind !== 'primitive' || rightKind !== 'primitive';
+  }
+
+  return leftKind === undefined || rightKind === undefined;
+}
+
+/** `c ? a : b` may call a user-defined `operator true` of c or convert one branch to the type of the other. */
+function conditionalRunsUserCode(node: Node, context: InitContext): boolean {
+  const [condition, consequence, alternative] = node.namedChildren;
+
+  return (
+    !condition || !consequence || !alternative || kindOfValue(condition, context) !== 'primitive' || kindOfValue(consequence, context) === undefined || kindOfValue(alternative, context) === undefined
+  );
+}
+
+/** `a..b` converts its operands to `Index`, which runs a user-defined conversion of another type. */
+function rangeRunsUserCode(node: Node, context: InitContext): boolean {
+  return node.namedChildren.some((operand) => kindOfValue(operand, context) !== 'primitive');
+}
+
+/** `a[i]` runs the indexer of a's type, and converts i to the parameter type of that indexer. */
+function elementAccessRunsUserCode(node: Node, context: InitContext): boolean {
+  const [target, args] = node.namedChildren;
+  if (!target || !args || kindOfValue(target, context) === undefined) {
+    return true;
+  }
+
+  return args.namedChildren.some((arg) => arg.namedChildren[0] === undefined || kindOfValue(arg.namedChildren[0], context) !== 'primitive');
+}
 
 /**
  * Whether storing `value` in a member of type `typeName` may run a user-defined conversion operator, which
- * the syntax does not show (`static Meters M = 2;` calls `implicit operator Meters(int)`) and which may read
- * this type's statics. Predefined types, the known library types and enums declare none; a `null` or
- * `default` literal, a lambda and a creation of the declared type itself convert nothing.
+ * the syntax does not show (`static Meters M = 2;` calls `implicit operator Meters(int)`, `static int I = m;`
+ * calls `implicit operator int(Meters)`) and which may read this type's statics. A conversion to a primitive
+ * or library type is user-defined only from a value of another type; a `null` or `default` literal, a lambda
+ * and a creation of the declared type itself convert nothing.
  */
-function mayRunUserConversion(value: Node, typeName: string, declaration: Node): boolean {
+function mayRunUserConversion(value: Node, typeName: string, declaration: Node, context: InitContext): boolean {
   if (DEFERRED.has(value.type) || value.type === 'null_literal' || value.type === 'implicit_object_creation_expression' || (value.type === 'default_expression' && value.namedChildren.length === 0)) {
     return false;
   }
@@ -240,10 +521,36 @@ function mayRunUserConversion(value: Node, typeName: string, declaration: Node):
     return false;
   }
 
-  // `Meters?` and `Meters[]` convert their values (or elements) to `Meters`.
-  const name = lastIdentifier(typeName.replace(/(?:\s*(?:\?|\[[\s,]*\]))+$/, ''));
+  // `Meters?` and `Meters[]` convert their values (or elements) to `Meters`; no user-defined conversion converts to `object` or `dynamic`.
+  const elementType = typeName.replace(/(?:\s*(?:\?|\[[\s,]*\]))+$/, '').trim();
+  if (elementType === 'object' || elementType === 'dynamic') {
+    return false;
+  }
 
-  return !(PREDEFINED_TYPES.has(name) || PURE_CONSTRUCTED_TYPES.has(name) || PURE_STATIC_TYPES.has(name) || LIBRARY_ENUMS.has(name) || isDeclaredEnum(declaration, name));
+  return kindOfType(elementType, declaration) === undefined || mayBeOfProgramType(value, context);
+}
+
+/** Whether `value`, or an element of an array or collection it lists, may be of a type declared in the program. */
+function mayBeOfProgramType(value: Node, context: InitContext): boolean {
+  switch (value.type) {
+    case 'initializer_expression':
+    case 'collection_expression':
+      return value.namedChildren.some((element) => mayBeOfProgramType(element, context));
+
+    case 'array_creation_expression':
+    case 'implicit_array_creation_expression': {
+      const type = value.childForFieldName('type');
+      const elements = value.namedChildren.find((child) => child.type === 'initializer_expression');
+      if (type && kindOfType(type.text, value) === undefined) {
+        return true;
+      }
+
+      return elements !== undefined && mayBeOfProgramType(elements, context);
+    }
+
+    default:
+      return kindOfValue(value, context) === undefined;
+  }
 }
 
 interface Initializer {
@@ -292,7 +599,7 @@ function scanExpression(node: Node, context: InitContext, declaredType: string, 
       return;
 
     case 'interpolated_string_expression':
-      scanInterpolation(node.text, context, scan);
+      scanInterpolation(node, context, scan);
 
       return;
 
@@ -317,16 +624,55 @@ function scanExpression(node: Node, context: InitContext, declaredType: string, 
       return;
 
     case 'cast_expression': {
-      // The cast type names a type; only the operand is read.
+      // The cast type names a type; only the operand is read. Converting a value of (or to) a type that
+      // may be declared in the program may run its user-defined conversion.
       const operand = node.childForFieldName('value');
+      if (!operand || kindOfValue(node, context) === undefined || kindOfValue(operand, context) === undefined) {
+        scan.opaque = true;
+      }
+
       if (operand) {
         scanExpression(operand, context, declaredType, scan);
-      } else {
-        scan.opaque = true;
       }
 
       return;
     }
+
+    case 'binary_expression':
+      if (binaryRunsUserCode(node, context)) {
+        scan.opaque = true;
+      }
+
+      scanChildren(node, context, declaredType, scan);
+
+      return;
+
+    case 'conditional_expression':
+      if (conditionalRunsUserCode(node, context)) {
+        scan.opaque = true;
+      }
+
+      scanChildren(node, context, declaredType, scan);
+
+      return;
+
+    case 'element_access_expression':
+      if (elementAccessRunsUserCode(node, context)) {
+        scan.opaque = true;
+      }
+
+      scanChildren(node, context, declaredType, scan);
+
+      return;
+
+    case 'range_expression':
+      if (rangeRunsUserCode(node, context)) {
+        scan.opaque = true;
+      }
+
+      scanChildren(node, context, declaredType, scan);
+
+      return;
 
     case 'is_pattern_expression': {
       // Type and constant patterns only name types or constants. Property, positional and list patterns
@@ -345,8 +691,9 @@ function scanExpression(node: Node, context: InitContext, declaredType: string, 
 
     case 'prefix_unary_expression':
     case 'postfix_unary_expression':
-      // `++x`, `x--` change what they read; `x!` (null-forgiving) and `-x` only compute from it.
-      if (node.children.some((child) => child.type === '++' || child.type === '--')) {
+      // `++x`, `x--` change what they read; `x!` (null-forgiving) and `-x` only compute from it, unless x
+      // is of a type whose user-defined operator runs code.
+      if (node.children.some((child) => child.type === '++' || child.type === '--') || kindOfValue(node, context) === undefined) {
         scan.opaque = true;
 
         return;
@@ -435,6 +782,11 @@ function scanMemberAccess(node: Node, context: InitContext, declaredType: string
     }
 
     return;
+  }
+
+  // `value.Member` runs the accessor of a property, which a type declared in the program may have.
+  if (!TYPE_NODES.has(target.type) && kindOfValue(target, context) === undefined) {
+    scan.opaque = true;
   }
 
   scanExpression(target, context, declaredType, scan);
@@ -547,10 +899,11 @@ function lastIdentifier(typeText: string): string {
 
 /**
  * The holes of `$"...{expression}..."` are scanned by their identifiers: a call in a hole runs code, and
- * so may a hole with braces of its own (a switch expression, an object or collection initializer).
+ * so may a hole with braces of its own (a switch expression, an object or collection initializer), and a
+ * member of a type that may be declared in the program (its `ToString`, operators and accessors).
  */
-function scanInterpolation(text: string, context: InitContext, scan: Scan): void {
-  for (const hole of interpolationHoles(text)) {
+function scanInterpolation(node: Node, context: InitContext, scan: Scan): void {
+  for (const hole of interpolationHoles(node.text)) {
     const expression = holeExpression(hole);
     if (/[({]/.test(expression)) {
       scan.opaque = true;
@@ -558,6 +911,9 @@ function scanInterpolation(text: string, context: InitContext, scan: Scan): void
 
     for (const identifier of expression.match(/[A-Za-z_]\w*/g) ?? []) {
       readName(identifier, context, scan);
+      if (context.types.has(identifier) && kindOfMember(identifier, node, context) === undefined) {
+        scan.opaque = true;
+      }
     }
   }
 }

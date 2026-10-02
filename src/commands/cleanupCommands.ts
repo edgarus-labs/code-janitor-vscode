@@ -332,7 +332,15 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
   );
 }
 
-/** Uses the built-in Git extension; returns `undefined` when it is not installed. */
+/** The Git extension's `Status` numbers before `IGNORED`, the same in every version of its API. */
+const INDEX_DELETED = 2;
+const DELETED = 6;
+
+/**
+ * The changed files that still exist: a file deleted from the working tree is left out, and so is one
+ * deleted from the index unless the working tree has it again. Uses the built-in Git extension;
+ * returns `undefined` when it is not installed.
+ */
 async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> {
   const gitExtension = vscode.extensions.getExtension('vscode.git');
   if (!gitExtension) {
@@ -345,8 +353,15 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
   }
 
   const seen = new Map<string, vscode.Uri>();
+  const deleted = new Set<string>();
 
   for (const repository of api.repositories ?? []) {
+    for (const change of repository.state.workingTreeChanges ?? []) {
+      if (change.status === DELETED) {
+        deleted.add(change.uri.toString());
+      }
+    }
+
     const changes = [
       ...(repository.state.workingTreeChanges ?? []),
       ...(repository.state.indexChanges ?? []),
@@ -355,7 +370,7 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
 
     for (const change of changes) {
       const uri: vscode.Uri = change.uri;
-      if (isCleanupTarget(uri)) {
+      if (isCleanupTarget(uri) && change.status !== INDEX_DELETED && !deleted.has(uri.toString())) {
         seen.set(uri.toString(), uri);
       }
     }
@@ -427,7 +442,7 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   // Only the first, complete preview reports issues: previews without some rules repeat them.
   const issues = createEditorConfigIssueLog(true);
   let reporting = true;
-  const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings, disqualifiedTypeNames, (issue) => {
+  const pipeline = getCleanupPipeline(document.uri.fsPath, settings, disqualifiedTypeNames, (issue) => {
     if (reporting) {
       issues.report(issue);
     }

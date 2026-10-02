@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { formatCodeStyleScopeSetting, formatCodeStyleSetting, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
+import { formatCodeStyleScopeSetting, getCodeStyleRule, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
 import { CleanupSettings, createDefaultSettings } from '../cleanup/types';
 import { readRepositoryPolicy } from '../cleanup/repositoryOverrides';
 import { logInfo } from '../logging';
@@ -115,7 +115,8 @@ export async function exportRepositorySettings(workspaceRoot?: string): Promise<
   // scope) are exported; the others keep following each user's setting, unless the overwritten file
   // already lists them.
   const config = vscode.workspace.getConfiguration('codeJanitor');
-  const overrides = readRepositoryPolicy(root, logInfo).overrides;
+  const policy = readRepositoryPolicy(root, logInfo);
+  const overrides = policy.overrides;
   const configured = (settingKey: string): unknown => {
     const inspected = config.inspect(`cleanup.${settingKey}`);
 
@@ -150,9 +151,25 @@ export async function exportRepositorySettings(workspaceRoot?: string): Promise<
     }
   }
 
-  // Only the enabled Code Style rules: a disabled rule is not pinned and follows each user's setting
-  // (add a `null` entry by hand to pin a rule off).
-  cleanup.codeStyle = formatCodeStyleSetting(parseCodeStyleSetting(config.get('cleanup.codeStyleRules', {})));
+  // The overwritten file's rules, `null` pins included, under the rules set in VS Code: an enabled
+  // rule wins, and a rule VS Code turns off (`null`) pins a rule the file lists off. A rule only VS
+  // Code disables is not pinned and follows each user's setting (add a `null` entry by hand to pin it).
+  const rules = config.get<unknown>('cleanup.codeStyleRules', {});
+  const offInVsCode = new Set(
+    typeof rules === 'object' && rules !== null && !Array.isArray(rules)
+      ? Object.entries(rules).flatMap(([key, value]) => (value === null ? [getCodeStyleRule(key.trim())?.key] : []))
+      : []
+  );
+  const fileRules: Record<string, string> = {};
+  const off: string[] = [];
+  for (const [key, value] of Object.entries(policy.codeStyle)) {
+    if (value === null || offInVsCode.has(key)) {
+      off.push(key);
+    } else {
+      fileRules[key] = value;
+    }
+  }
+  cleanup.codeStyle = formatCodeStyleScopeSetting({ ...fileRules, ...parseCodeStyleSetting(rules) }, off);
 
   fs.writeFileSync(filePath, `${JSON.stringify({ cleanup }, null, 2)}\n`, 'utf8');
   void vscode.window.showInformationMessage(`Code Janitor: exported repository settings to ${REPOSITORY_CONFIG_FILE}.`);

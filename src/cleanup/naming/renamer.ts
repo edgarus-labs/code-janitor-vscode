@@ -1,3 +1,4 @@
+import { STRING, classifyCSharp } from '../csharpScanner';
 import { TextEdit } from '../parser';
 import { Node } from '../syntax/node';
 import {
@@ -11,6 +12,7 @@ import {
   namePath,
   spans,
   typeAt,
+  wordPattern,
 } from './sourceModel';
 
 /**
@@ -44,6 +46,9 @@ const RESERVED_KEYWORDS = new Set([
 const IDENTIFIER = /^[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}\p{Cf}]*$/u;
 
 class RenameRefused extends Error {}
+
+/** Lexical classification of a model's source, computed once for every rename planned in it. */
+const KINDS = new WeakMap<SourceModel, Uint8Array>();
 
 export function planRename(model: SourceModel, symbol: DeclaredSymbol, newName: string, targetName: TargetNameLookup): RenamePlan {
   try {
@@ -171,6 +176,7 @@ class Planner {
     }
 
     this.scopes.push(type.node);
+    this.refuseStrings(type.node);
     this.refuseCollisions(type.node, `'${this.newName}' is already used in ${type.name}`);
 
     const body = type.node.childForFieldName('body');
@@ -217,8 +223,14 @@ class Planner {
             refuse(`'${this.oldName}' is set in a target-typed object initializer`);
           }
 
-          if (role.creation.type === 'with_expression' ? this.withTargets(occurrence, role.creation, type) : this.createsType(role.creation, type)) {
+          if (role.creation.type === 'with_expression') {
+            if (this.withTargets(occurrence, role.creation, type)) {
+              this.edit(occurrence);
+            }
+          } else if (this.createsType(role.creation, type)) {
             this.edit(occurrence);
+          } else {
+            this.refuseInitializerOfDerivedType(role.creation, type);
           }
 
           break;
@@ -244,6 +256,7 @@ class Planner {
     this.refuseCollisions(region, `'${this.newName}' is already used in the scope of '${symbol.name}'`);
     this.refuseEnclosingDeclarations(region);
     this.scopes.push(region);
+    this.refuseStrings(region);
     this.renameInScope(symbol, region, false);
   }
 
@@ -273,6 +286,7 @@ class Planner {
       this.refuseCollisions(region, `'${this.newName}' is already used in the scope of '${symbol.name}'`);
       this.refuseEnclosingDeclarations(region);
       this.scopes.push(region);
+      this.refuseStrings(parameter.owner ?? region);
       this.renameInScope(parameter, region, false);
       this.renameDocNames(parameter.owner ?? region, ['param', 'paramref']);
     }
@@ -294,6 +308,7 @@ class Planner {
     this.refuseCollisions(region, `'${this.newName}' is already used in the scope of '${symbol.name}'`);
     this.refuseEnclosingDeclarations(region);
     this.scopes.push(region);
+    this.refuseStrings(region);
     this.renameInScope(symbol, region, true);
     this.renameDocNames(region, ['typeparam', 'typeparamref']);
     for (const comment of this.model.docComments) {
@@ -514,8 +529,14 @@ class Planner {
 
   private memberAccessTargets(occurrence: Occurrence, receiver: Receiver, type: TypeInfo): boolean {
     switch (receiver.kind) {
-      case 'this':
-        return typeAt(this.model, occurrence.start) === type;
+      case 'this': {
+        const inner = typeAt(this.model, occurrence.start);
+        if (inner !== type && inner?.hasBaseList) {
+          refuse(`'${this.oldName}' is accessed through this in nested type ${inner.name}, which may derive from ${type.name}`);
+        }
+
+        return inner === type;
+      }
       case 'base':
         this.refuseBaseInNestedType(typeAt(this.model, occurrence.start), type, `'${this.oldName}' is accessed through base`);
         return false;
@@ -575,6 +596,14 @@ class Planner {
     }
 
     this.refuseQualified(type);
+  }
+
+  /** Within `type`, an initializer of a type of the file that may derive from it reaches its private members. */
+  private refuseInitializerOfDerivedType(creation: Node, type: TypeInfo): void {
+    const created = creation.type === 'object_creation_expression' ? typeName(creation.childForFieldName('type')) : undefined;
+    if (created !== undefined && this.model.types.some((candidate) => candidate.name === created && candidate.hasBaseList)) {
+      refuse(`'${this.oldName}' is set in an object initializer of ${created}, which may derive from ${type.name}`);
+    }
   }
 
   private refuseQualified(type: TypeInfo): never {
@@ -757,6 +786,34 @@ class Planner {
 
   private occurrencesIn(region: Node, name: string): Occurrence[] {
     return this.occurrences(name).filter((occurrence) => spans(region, occurrence.start, occurrence.end));
+  }
+
+  /**
+   * Refuses when the old name is the text of a string in `scope` (outside the interpolation holes the
+   * model already resolved): reflection, `nameof`-like attribute arguments (`CallerArgumentExpression`,
+   * `NotNullIfNotNull`, `MemberNotNull`, `DebuggerDisplay`) and the like name the symbol there.
+   */
+  private refuseStrings(scope: Node): void {
+    const source = this.model.source;
+    const text = scope.text;
+    if (!text.includes(this.oldName)) {
+      return;
+    }
+
+    let kinds = KINDS.get(this.model);
+    if (!kinds) {
+      kinds = classifyCSharp(source);
+      KINDS.set(this.model, kinds);
+    }
+
+    const resolvedEnds = new Set(this.occurrencesIn(scope, this.oldName).map((occurrence) => occurrence.end));
+    for (const match of text.matchAll(wordPattern(this.oldName, 'gu'))) {
+      const start = scope.startIndex + (match.index ?? 0);
+      if (kinds[start] === STRING && !resolvedEnds.has(start + match[0].length)) {
+        const line = source.slice(0, start).split('\n').length;
+        refuse(`'${this.oldName}' appears in a string on line ${line}, which may name it`);
+      }
+    }
   }
 
   private edit(occurrence: Occurrence): void {

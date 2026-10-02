@@ -2,7 +2,7 @@ import { Node, TextEdit, applyEdits, walk } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
 import { FileView, countComparison, positionalArguments, viewOf } from './editorConfigQualityRulesExpressions';
 import { targetFrameworksOf } from './editorConfigQualityRulesProject';
-import { frameworksSupport, isGenericType, isRuleActive, simpleTypeName, unwrapParentheses } from './editorConfigQualityRulesSupport';
+import { frameworksSupport, isGenericType, isInsideLambda, isRuleActive, simpleTypeName, unwrapParentheses } from './editorConfigQualityRulesSupport';
 
 /**
  * Collection code-quality rules: CA1836 (IsEmpty), CA1841 (ContainsKey/ContainsValue), CA1854
@@ -101,16 +101,18 @@ function statementsOf(statement: Node): Node[] {
 
 /** Nodes that run their body later, or more than once: a use there is not ordered with the guard. */
 const DEFERRED = new Set(['lambda_expression', 'anonymous_method_expression', 'local_function_statement']);
-const LOOPS = new Set(['for_statement', 'foreach_statement', 'while_statement', 'do_statement']);
+const LOOPS = new Set(['for_statement', 'for_each_statement', 'while_statement', 'do_statement']);
 
-function isWithin(node: Node, types: ReadonlySet<string>, stop?: Node): boolean {
-  for (let current = node.parent; current && current !== stop; current = current.parent) {
+/** `node` and its ancestors of one of `types`, below `stop` (none when `node` is `stop`). */
+function ancestorsWithin(node: Node, types: ReadonlySet<string>, stop?: Node): Node[] {
+  const ancestors: Node[] = [];
+  for (let current: Node | null = node; current && current !== stop; current = current.parent) {
     if (types.has(current.type)) {
-      return true;
+      ancestors.push(current);
     }
   }
 
-  return false;
+  return ancestors;
 }
 
 /** Expressions that may change state: calls, creations, assignments, increments and awaits. */
@@ -252,15 +254,20 @@ export function applyTryGetValue(source: string, context: RuleContext): string {
 
 /** Why the guarded reads cannot become one TryGetValue, or `undefined` when they can. */
 function tryGetValueBlocker(guarded: Node, reads: readonly Node[], dictionary: Node, key: Node, guard: Node): string | undefined {
-  if (isWithin(guard, new Set(['query_expression']))) {
+  if (ancestorsWithin(guard, new Set(['query_expression'])).length > 0) {
     return 'out variables are not allowed in a query';
+  }
+
+  // A statement lambda is never an expression tree; an expression-bodied one may be.
+  if (guard.type === 'conditional_expression' && isInsideLambda(guard)) {
+    return 'it is inside a lambda that may be an expression tree, which cannot declare an out variable';
   }
 
   if (reads.some(isWritten)) {
     return `${reads[0].text} is also assigned`;
   }
 
-  if (reads.some((read) => isWithin(read, DEFERRED, guarded))) {
+  if (reads.some((read) => ancestorsWithin(read, DEFERRED, guarded).length > 0)) {
     return `${reads[0].text} is read in a lambda or local function, which may run after the dictionary changed`;
   }
 
@@ -283,15 +290,18 @@ function tryGetValueBlocker(guarded: Node, reads: readonly Node[], dictionary: N
     }
   }
 
-  // The value is read once, at the guard: nothing may run between the guard and a read.
+  // The value is read once, at the guard: nothing may run between the guard and a read, and in a
+  // loop that reads it, nothing may run at all, since the next iteration reads it again.
   const lastRead = Math.max(...reads.map((read) => read.startIndex));
+  const loopsWithRead = reads.flatMap((read) => ancestorsWithin(read, LOOPS, guarded));
   for (const candidate of walk(guarded)) {
-    if (!isEffect(candidate) || candidate.startIndex >= lastRead || reads.some((read) => isAncestor(candidate, read))) {
+    if (!isEffect(candidate)) {
       continue;
     }
 
-    const inLoopWithRead = reads.some((read) => isWithin(read, LOOPS, guarded)) && isWithin(candidate, LOOPS, guarded);
-    if (candidate.endIndex <= lastRead || inLoopWithRead) {
+    const repeatedRead = loopsWithRead.some((loop) => isAncestor(loop, candidate));
+    const beforeRead = candidate.endIndex <= lastRead && !reads.some((read) => isAncestor(candidate, read));
+    if (repeatedRead || beforeRead) {
       return `${candidate.text} runs between the guard and a read and may change the dictionary`;
     }
   }

@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import { ProjectInfo } from '../src/cleanup/projectInfo';
 import { createEditorConfigCodeStyleConverter } from '../src/cleanup/transformations/editorConfigCodeStyle';
@@ -10,6 +13,21 @@ function lines(...text: string[]): string {
 /** A project without files on disk: only its target frameworks matter to these rules. */
 function targeting(...targetFrameworks: string[]): ProjectInfo {
   return { directory: '/nonexistent-cj-project', targetFrameworks };
+}
+
+const folders: string[] = [];
+afterAll(() => folders.forEach((folder) => fs.rmSync(folder, { recursive: true, force: true })));
+
+/** A project of the given other files (the cleaned file itself is not on disk). */
+function projectWith(files: Record<string, string>): ProjectInfo {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-quality-expressions-'));
+  folders.push(directory);
+  fs.writeFileSync(path.join(directory, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+  for (const [name, text] of Object.entries(files)) {
+    fs.writeFileSync(path.join(directory, name), text);
+  }
+
+  return { directory, targetFrameworks: ['net8.0'] };
 }
 
 /** `project` null: no project was found for the file. */
@@ -124,6 +142,76 @@ describe('CA1825 avoid zero-length array allocations', () => {
     expect(lambda.issues).toEqual([expect.stringMatching(/^CA1825 line 4: .*expression tree/)]);
 
     expect(cleanup(source, 'dotnet_diagnostic.CA1825.severity = warning', targeting('net45'))).toEqual({ output: source, issues: [] });
+  });
+
+  it.each([
+    ['property', '    public int[] Array { get; set; }'],
+    ['field', '    int Array;'],
+    ['method', '    void Array() { }'],
+  ])('qualifies Array when a %s of that name would bind instead of the type', (_kind, member) => {
+    const source = lines('using System;', 'class C', '{', member, '    int[] M() { return new int[0]; }', '}');
+
+    expect(cleanup(source, 'dotnet_diagnostic.CA1825.severity = warning').output).toBe(source.replace('new int[0]', 'System.Array.Empty<int>()'));
+  });
+
+  it('qualifies Array when a local, parameter or inherited member of that name may be in scope', () => {
+    for (const source of [
+      lines('using System;', 'class C', '{', '    int[] M(object Array) { return new int[0]; }', '}'),
+      lines('using System;', 'class C', '{', '    int[] M() { var Array = 1; return new int[0]; }', '}'),
+      lines('using System;', 'class C : Base', '{', '    int[] M() { return new int[0]; }', '}'),
+    ]) {
+      expect(cleanup(source, 'dotnet_diagnostic.CA1825.severity = warning').output).toBe(source.replace('new int[0]', 'System.Array.Empty<int>()'));
+    }
+  });
+
+  it('reports instead of fixing when System itself names a member, since System.Array would bind to it', () => {
+    const source = lines('class C', '{', '    int System;', '    int[] M() { return new int[0]; }', '}');
+
+    expect(cleanup(source, 'dotnet_diagnostic.CA1825.severity = warning')).toEqual({ output: source, issues: [expect.stringMatching(/^CA1825 line 4: .*named System/)] });
+  });
+
+  it('qualifies Array when a using alias of that name, in the file or global in the project, would bind instead of the type', () => {
+    const source = lines('using System;', 'class C', '{', '    int[] M() { return new int[0]; }', '}');
+    const aliased = source.replace('using System;\n', 'using System;\nusing Array = System.Collections.ArrayList;\n');
+    expect(cleanup(aliased, 'dotnet_diagnostic.CA1825.severity = warning').output).toBe(aliased.replace('new int[0]', 'System.Array.Empty<int>()'));
+
+    const globalAlias = projectWith({ 'Aliases.cs': 'global using Array = System.Collections.ArrayList;\n' });
+    expect(cleanup(source, 'dotnet_diagnostic.CA1825.severity = warning', globalAlias).output).toBe(source.replace('new int[0]', 'System.Array.Empty<int>()'));
+  });
+
+  it('qualifies Array when another file of the project declares a namespace named Array inside another namespace', () => {
+    const source = lines('using System;', 'namespace Acme', '{', '    class C', '    {', '        int[] M() { return new int[0]; }', '    }', '}');
+
+    expect(cleanup(source, 'dotnet_diagnostic.CA1825.severity = warning', projectWith({ 'Formats.cs': 'namespace Acme.Array { class X { } }\n' })).output).toBe(
+      source.replace('new int[0]', 'System.Array.Empty<int>()')
+    );
+  });
+
+  it('reports instead of qualifying with System when another file of the project declares a namespace named System inside another namespace', () => {
+    const source = lines('namespace Acme', '{', '    class C', '    {', '        int[] M() { return new int[0]; }', '        bool B(string s) => s.IndexOf("x") >= 0;', '    }', '}');
+    const rules = 'dotnet_diagnostic.CA1825.severity = warning\ndotnet_diagnostic.CA2249.severity = warning';
+
+    expect(cleanup(source, rules, projectWith({ 'Shim.cs': 'namespace Acme.System { class X { } }\n' }))).toEqual({
+      output: source,
+      issues: [expect.stringMatching(/^CA1825 line 5: .*named System/), expect.stringMatching(/^CA2249 line 6: .*named System/)],
+    });
+    // The global System namespace itself (a polyfill) hides nothing.
+    expect(cleanup(source, rules, projectWith({ 'Shim.cs': 'namespace System.Runtime.CompilerServices { class IsExternalInit { } }\n' })).output).toBe(
+      source.replace('new int[0]', 'System.Array.Empty<int>()').replace('s.IndexOf("x") >= 0', 's.Contains("x", System.StringComparison.CurrentCulture)')
+    );
+  });
+
+  it('still fixes code outside the namespace that declares a namespace named System or Array', () => {
+    const rules = 'dotnet_diagnostic.CA1825.severity = warning\ndotnet_diagnostic.CA2249.severity = warning';
+    const shim = projectWith({ 'Shim.cs': 'namespace Acme.Tools.System { class X { } }\nnamespace Acme.Tools.Array { class Y { } }\n' });
+    const qualified = lines('namespace Acme.Models;', 'class C', '{', '    int[] M() { return new int[0]; }', '    bool B(string s) => s.IndexOf("x") >= 0;', '}');
+    const imported = `using System;\n${qualified}`;
+
+    expect(cleanup(qualified, rules, shim)).toEqual({
+      output: qualified.replace('new int[0]', 'System.Array.Empty<int>()').replace('s.IndexOf("x") >= 0', 's.Contains("x", System.StringComparison.CurrentCulture)'),
+      issues: [],
+    });
+    expect(cleanup(imported, rules, shim).output).toBe(imported.replace('new int[0]', 'Array.Empty<int>()').replace('s.IndexOf("x") >= 0', 's.Contains("x", StringComparison.CurrentCulture)'));
   });
 });
 
@@ -332,6 +420,14 @@ describe('string and StringBuilder rules', () => {
     );
   });
 
+  it('CA2249 qualifies StringComparison when a member of that name would bind instead of the type', () => {
+    const source = method('var a = s.IndexOf("ab") >= 0;').replace('class C\n{\n', 'class C\n{\n    string StringComparison;\n');
+
+    expect(cleanup(source, 'dotnet_diagnostic.CA2249.severity = warning').output).toBe(
+      source.replace('s.IndexOf("ab") >= 0', 's.Contains("ab", System.StringComparison.CurrentCulture)')
+    );
+  });
+
   it('CA2249 reports comparisons whose argument type is unknown and needs a framework with the Contains overloads', () => {
     const source = method('var a = s.IndexOf(Pick()) >= 0;', "var b = s.IndexOf('x') == -1;");
 
@@ -350,6 +446,39 @@ describe('IDE0004 remove unnecessary cast', () => {
       method('int i = 1;', 'var x = (int)i + (int)0 + (long)2L;', 'var t = (string)s;', 'Func<int> f = () => { return(int)i; };', 'var y = (long)i + (int?)i + ((int)i).GetHashCode();'),
       method('int i = 1;', 'var x = i + 0 + 2L;', 'var t = s;', 'Func<int> f = () => { return i; };', 'var y = (long)i + (int?)i + ((int)i).GetHashCode();')
     );
+  });
+});
+
+describe('pattern and query variables that shadow a field', () => {
+  /** A class whose field `name` (declared as `fieldType`) is shadowed inside `body`. */
+  function shadowing(fieldType: string, name: string, ...body: string[]): string {
+    return lines('using System;', 'using System.Collections.Generic;', 'using System.Linq;', 'class C', '{', `    ${fieldType} ${name};`, ...body.map((line) => `    ${line}`), '}');
+  }
+
+  it.each([
+    ['IDE0004', 'is pattern', shadowing('int', 'value', 'int M(object o) { if (o is long value) { int r = (int)value; return r; } return 0; }')],
+    ['IDE0004', 'case pattern', shadowing('int', 'value', 'int M(object o) { switch (o) { case long value: return (int)value; } return 0; }')],
+    ['IDE0004', 'switch expression arm', shadowing('int', 'value', 'int M(object o) => o switch { long value => (int)value, _ => 0 };')],
+    ['IDE0004', 'property pattern designation', shadowing('int', 'value', 'int M(object o) => o is long { } value ? (int)value : 0;')],
+    ['IDE0004', 'lambda pattern', shadowing('int', 'value', 'Func<object, int> F = o => o is long value ? (int)value : 0;')],
+    ['IDE0004', 'query let', shadowing('int', 'value', 'IEnumerable<int> M(int[] xs) => from x in xs let value = (long)x select (int)value;')],
+    ['IDE0004', 'query join', shadowing('int', 'value', 'IEnumerable<int> M(int[] xs, long[] ys) => from x in xs join value in ys on x equals value select (int)value;')],
+    ['IDE0004', 'query into', shadowing('int', 'value', 'IEnumerable<int> M(long[] xs) => from x in xs select x into value select (int)value;')],
+    ['CA1829', 'is pattern', shadowing('List<int>', 'items', 'int M(object o) { if (o is IEnumerable<int> items) return items.Count(); return 0; }')],
+    ['CA2249', 'is pattern', shadowing('string', 's', 'bool M(object o) => o is List<string> s && s.IndexOf("x") >= 0;')],
+    ['CA1829', 'is pattern of another type', shadowing('string', 'items', 'int M(object o) => o is List<int> items ? items.Count() : 0;')],
+    ['CA1829', 'var deconstruction', shadowing('string', 'items', 'int M((List<int>, int) t) { var (items, b) = t; return items.Count(); }')],
+    ['CA1829', 'typed deconstruction', shadowing('string', 'items', 'int M((List<int>, int) t) { (List<int> items, int b) = t; return items.Count(); }')],
+    ['CA1829', 'mixed deconstruction', shadowing('string', 'items', 'int M((int, List<int>) t) { (var b, var items) = t; return items.Count(); }')],
+    ['CA1829', 'foreach deconstruction', shadowing('string', 'items', 'int M((List<int>, int)[] ts) { foreach (var (items, b) in ts) { return items.Count(); } return 0; }')],
+  ])('%s does not resolve a %s variable to the field', (diagnosticId, _kind, source) => {
+    expect(cleanup(source, `dotnet_diagnostic.${diagnosticId}.severity = warning`).output).toBe(source);
+  });
+
+  it('still resolves the field where no pattern variable of that name is declared', () => {
+    const source = shadowing('int', 'value', 'int M(object o) => o is long other ? (int)value : 0;');
+
+    expect(cleanup(source, 'dotnet_diagnostic.IDE0004.severity = warning').output).toBe(source.replace('(int)value', 'value'));
   });
 });
 
@@ -376,5 +505,22 @@ describe('IDE0005 remove unnecessary using directives', () => {
     const source = lines('using App;', '[assembly: Marker]', 'namespace App.Models;', 'class C { }');
 
     expect(cleanup(source, 'dotnet_diagnostic.IDE0005.severity = warning')).toEqual({ output: source, issues: [] });
+  });
+});
+
+describe('IDE0005 and conditional compilation inside a namespace', () => {
+  it.each([
+    ['#if/#else branches', ['#if NET8_0', '    using System.Text;', '#else', '    using System.Text;', '#endif']],
+    ['an #if before a later copy', ['#if NET8_0', '    using System.Text;', '#endif', '    using System.Text;']],
+  ])('keeps duplicates separated by %s', (_kind, usings) => {
+    const source = lines('namespace N', '{', ...usings, '    class C { }', '}');
+
+    expect(cleanup(source, 'dotnet_diagnostic.IDE0005.severity = warning')).toEqual({ output: source, issues: [] });
+  });
+
+  it('still removes duplicates of a namespace without conditional directives', () => {
+    const source = lines('namespace N', '{', '    using System.Text;', '    using System.Text;', '    class C { }', '}');
+
+    expect(cleanup(source, 'dotnet_diagnostic.IDE0005.severity = warning').output).toBe(lines('namespace N', '{', '    using System.Text;', '    class C { }', '}'));
   });
 });

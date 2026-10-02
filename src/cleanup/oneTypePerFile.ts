@@ -97,17 +97,22 @@ export function planOneTypePerFile(
     );
   const nameMismatch = (id: string, type: TopLevelTypeInfo) =>
     describe(id, type, `the file name does not match type '${type.name}' (expected '${type.fileName}'); files are not renamed.`);
+  // As in the split: the type whose own file name it is (`Result` in `Result.cs`, not `Result<T>`), else
+  // one whose generic name matches the stem.
+  const named =
+    remaining.find((type) => type.fileName.slice(0, -'.cs'.length).toUpperCase() === fileStem.toUpperCase()) ??
+    remaining.find((type) => matchesFileName(type, fileStem));
 
   if (severities.has('SA1402')) {
     // As in the split: a type named like the file stays whatever its kind, else the first class.
     const classes = remaining.filter((type) => type.kind === 'class');
-    const kept = remaining.find((type) => matchesFileName(type, fileStem)) ?? classes[0];
+    const kept = named ?? classes[0];
     classes.filter((type) => type !== kept).forEach((type) => notMoved('SA1402', type));
   }
 
   if (severities.has('MA0048')) {
-    const kept = remaining.find((type) => matchesFileName(type, fileStem));
-    for (const type of remaining.filter((other) => other !== kept && !matchesFileName(other, fileStem))) {
+    // MA0048 accepts every type named like the file, generic or not.
+    for (const type of remaining.filter((other) => !matchesFileName(other, fileStem))) {
       if (remaining.length > 1) {
         notMoved('MA0048', type);
       } else {

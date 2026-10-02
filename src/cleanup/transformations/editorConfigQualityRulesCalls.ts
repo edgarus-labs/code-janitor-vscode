@@ -1,7 +1,7 @@
 import { findApplicableRule, parseNamingRules } from '../naming/namingRules';
 import { Node, TextEdit, applyEdits, walk } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
-import { hasModifier } from './editorConfigSupport';
+import { hasModifier, newlineOf } from './editorConfigSupport';
 import { FileView, isString, positionalArguments, viewOf } from './editorConfigQualityRulesExpressions';
 import { targetFrameworksOf } from './editorConfigQualityRulesProject';
 import { FrameworkApi, frameworksSupport, isRuleActive, normalizeType, simpleTypeName, unwrapParentheses } from './editorConfigQualityRulesSupport';
@@ -140,9 +140,10 @@ class FieldPlanner {
         : `${/^[ \t]*/.exec(this.view.source.slice(this.view.source.lastIndexOf('\n', type.startIndex) + 1))?.[0] ?? ''}${this.context.indent}`;
       // Blank-line padding separates multi-line fields and members other than single-line fields from
       // what follows them; give the added fields that layout too, so a later cleanup has nothing to add.
-      const lines = declarations.map((declaration, index) => `${index > 0 && declarations[index - 1].includes('\n') ? '\n' : ''}\n${indent}${declaration}`).join('');
+      const newline = newlineOf(this.view.source);
+      const lines = declarations.map((declaration, index) => `${index > 0 && declarations[index - 1].includes('\n') ? newline : ''}${newline}${indent}${declaration}`).join('');
       const lastIsMultiLine = declarations[declarations.length - 1].includes('\n');
-      const blank = firstMember && (lastIsMultiLine || firstMember.type !== 'field_declaration' || firstMember.text.includes('\n')) ? '\n' : '';
+      const blank = firstMember && (lastIsMultiLine || firstMember.type !== 'field_declaration' || firstMember.text.includes('\n')) ? newline : '';
       edits.push({ start: brace.endIndex, end: brace.endIndex, text: `${lines}${blank}` });
     }
 

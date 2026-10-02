@@ -7,6 +7,7 @@
  * identifiers get grammar names (`identifier`, `string_literal`, `null_literal`).
  */
 
+import { scanCharLiteral, scanStringLiteral } from '../csharpScanner';
 import { memoizeBySource } from '../sourceCache';
 
 export interface Token {
@@ -116,7 +117,7 @@ function lexSource(source: string): LexResult {
     }
 
     if (c === '"' || ((c === '@' || c === '$') && isStringStart(source, i))) {
-      const literal = scanStringLiteral(source, i);
+      const literal = scanLiteral(source, i);
       tokens.push({ type: literal.type, start: i, end: literal.end, isNamed: true });
       i = literal.end;
       continue;
@@ -274,31 +275,6 @@ function scanNumber(source: string, start: number): { type: string; end: number 
   return { type: isReal ? 'real_literal' : 'integer_literal', end: i };
 }
 
-function scanCharLiteral(source: string, start: number): number {
-  const length = source.length;
-  let i = start + 1;
-
-  while (i < length) {
-    const c = source[i];
-    if (c === '\\') {
-      i += 2;
-      continue;
-    }
-
-    if (c === "'") {
-      return i + 1;
-    }
-
-    if (c === '\n') {
-      return i;
-    }
-
-    i++;
-  }
-
-  return length;
-}
-
 /** `@` and `$` only start a literal when a quote (possibly after further prefixes) follows. */
 function isStringStart(source: string, index: number): boolean {
   let i = index;
@@ -309,13 +285,12 @@ function isStringStart(source: string, index: number): boolean {
   return source[i] === '"';
 }
 
-function scanStringLiteral(source: string, start: number): { type: string; end: number } {
-  const length = source.length;
+function scanLiteral(source: string, start: number): { type: string; end: number } {
   let i = start;
   let interpolated = false;
   let verbatim = false;
 
-  while (i < length && (source[i] === '$' || source[i] === '@')) {
+  while (source[i] === '$' || source[i] === '@') {
     if (source[i] === '$') {
       interpolated = true;
     } else {
@@ -325,27 +300,14 @@ function scanStringLiteral(source: string, start: number): { type: string; end: 
     i++;
   }
 
-  let quotes = 0;
-  while (source[i + quotes] === '"') {
-    quotes++;
+  const end = scanStringLiteral(source, start);
+  if (interpolated) {
+    return { type: 'interpolated_string_expression', end };
   }
 
-  if (quotes >= 3) {
-    const end = scanRawString(source, i, quotes);
+  const raw = source.startsWith('"""', i);
 
-    return interpolated
-      ? { type: 'interpolated_string_expression', end }
-      : { type: 'raw_string_literal', end: withUtf8Suffix(source, end) };
-  }
-
-  const end =
-    quotes === 2 && !verbatim
-      ? i + 2
-      : verbatim
-        ? scanVerbatimString(source, i)
-        : scanRegularString(source, i, interpolated);
-
-  return { type: literalType(interpolated, verbatim), end: interpolated ? end : withUtf8Suffix(source, end) };
+  return { type: raw ? 'raw_string_literal' : verbatim ? 'verbatim_string_literal' : 'string_literal', end: withUtf8Suffix(source, end) };
 }
 
 /** A UTF-8 string literal (`"text"u8`) ends after its `u8` suffix. */
@@ -355,102 +317,3 @@ function withUtf8Suffix(source: string, end: number): number {
     : end;
 }
 
-function literalType(interpolated: boolean, verbatim: boolean): string {
-  if (interpolated) {
-    return 'interpolated_string_expression';
-  }
-
-  return verbatim ? 'verbatim_string_literal' : 'string_literal';
-}
-
-function scanRegularString(source: string, quoteIndex: number, interpolated: boolean): number {
-  const length = source.length;
-  let i = quoteIndex + 1;
-  let braceDepth = 0;
-
-  while (i < length) {
-    const c = source[i];
-
-    if (c === '\\') {
-      i += 2;
-      continue;
-    }
-
-    if (interpolated) {
-      if ((c === '{' && source[i + 1] === '{') || (c === '}' && source[i + 1] === '}')) {
-        i += 2;
-        continue;
-      }
-
-      if (c === '{') {
-        braceDepth++;
-        i++;
-        continue;
-      }
-
-      if (c === '}' && braceDepth > 0) {
-        braceDepth--;
-        i++;
-        continue;
-      }
-    }
-
-    if (c === '"' && braceDepth === 0) {
-      return i + 1;
-    }
-
-    if (c === '\n') {
-      return i;
-    }
-
-    i++;
-  }
-
-  return length;
-}
-
-function scanVerbatimString(source: string, quoteIndex: number): number {
-  const length = source.length;
-  let i = quoteIndex + 1;
-
-  while (i < length) {
-    if (source[i] === '"') {
-      if (source[i + 1] === '"') {
-        i += 2;
-        continue;
-      }
-
-      return i + 1;
-    }
-
-    i++;
-  }
-
-  return length;
-}
-
-function scanRawString(source: string, quoteIndex: number, quotes: number): number {
-  const length = source.length;
-  const terminator = '"'.repeat(quotes);
-  let i = quoteIndex + quotes;
-
-  while (i < length) {
-    const next = source.indexOf(terminator, i);
-    if (next < 0) {
-      return length;
-    }
-
-    let run = 0;
-    while (source[next + run] === '"') {
-      run++;
-    }
-
-    if (run >= quotes) {
-      return next + run;
-    }
-
-    i = next + run;
-  }
-
-  return length;
-}

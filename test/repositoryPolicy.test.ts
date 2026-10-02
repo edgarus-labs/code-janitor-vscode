@@ -49,6 +49,8 @@ describe('parseRepositoryPolicy', () => {
       fileHeaderUpdateMode: HeaderUpdateMode.Replace,
     });
     expect(parseRepositoryPolicy('{ "cleanup": { "fileHeaderPosition": "middle" } }').overrides).toEqual({});
+    expect(parseRepositoryPolicy('{ "cleanup": { "fileHeaderPosition": "replace", "fileHeaderUpdateMode": "afterUsings" } }').overrides).toEqual({});
+    expect(parseRepositoryPolicy('{ "cleanup": { "fileHeaderPosition": "insert", "fileHeaderUpdateMode": "documentStart" } }').overrides).toEqual({});
   });
 
   it('accepts the VS Code alias for return and throw padding, and the long key', () => {
