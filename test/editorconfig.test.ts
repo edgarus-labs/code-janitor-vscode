@@ -128,6 +128,20 @@ describe('resolveEditorConfigProperties', () => {
     expect(matches('a+(b).cs', '/repo/a+(b).cs')).toBe(true);
   });
 
+  it('treats an escaped character inside a character class as that literal character', () => {
+    expect(matches('[\\d].cs', '/repo/d.cs')).toBe(true);
+    expect(matches('[\\d].cs', '/repo/5.cs')).toBe(false);
+    expect(matches('[\\w].cs', '/repo/w.cs')).toBe(true);
+    expect(matches('[\\w].cs', '/repo/x.cs')).toBe(false);
+    expect(matches('[\\s].cs', '/repo/s.cs')).toBe(true);
+    expect(matches('[\\b].cs', '/repo/b.cs')).toBe(true);
+    expect(matches('[!\\d].cs', '/repo/5.cs')).toBe(true);
+    expect(matches('[!\\d].cs', '/repo/d.cs')).toBe(false);
+    expect(matches('[a\\]].cs', '/repo/].cs')).toBe(true);
+    expect(matches('[a\\-c].cs', '/repo/-.cs')).toBe(true);
+    expect(matches('[a\\-c].cs', '/repo/b.cs')).toBe(false);
+  });
+
   it('matches globs case-sensitively', () => {
     expect(matches('*.CS', '/repo/a.cs')).toBe(false);
   });

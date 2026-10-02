@@ -177,12 +177,127 @@ const collectParameterNameOf: Collect = (_source, root, _context, { suppressed }
 
 const TYPE_DECLARATIONS = ['class_declaration', 'struct_declaration', 'record_declaration'];
 
-/** Names declared in `scope` outside `except`: locals, parameters, local functions, pattern and loop variables. */
+/** The innermost class, struct, record or interface declaration around `node`: the type whose members a simple name sees first. */
+function enclosingType(node: Node): Node | undefined {
+  for (let current = node.parent; current; current = current.parent) {
+    if (TYPE_DECLARATIONS.includes(current.type) || current.type === 'interface_declaration') {
+      return current;
+    }
+  }
+
+  return undefined;
+}
+
+/** Interfaces of the .NET base library that base lists commonly name. */
+const BCL_INTERFACES: Record<string, true> = {
+  IDisposable: true, IAsyncDisposable: true, IEquatable: true, IComparable: true, IComparer: true, IEqualityComparer: true,
+  IEnumerable: true, IEnumerator: true, IAsyncEnumerable: true, IAsyncEnumerator: true, ICollection: true, IList: true,
+  IDictionary: true, IReadOnlyCollection: true, IReadOnlyList: true, IReadOnlyDictionary: true, ISet: true, ICloneable: true,
+  IFormattable: true, ISpanFormattable: true, IParsable: true, ISpanParsable: true, IObservable: true, IObserver: true,
+  IServiceProvider: true, INotifyPropertyChanged: true, INotifyPropertyChanging: true,
+};
+
+/** The simple name a base-list entry ends in: `IFoo` for `IFoo`, `IFoo<T>`, `N.IFoo` or `global::N.IFoo<T>`. */
+function baseName(entry: Node): string | undefined {
+  if (entry.type === 'identifier') {
+    return entry.text;
+  }
+
+  if (entry.type === 'generic_name') {
+    return entry.namedChildren.find((child) => child.type === 'identifier')?.text;
+  }
+
+  const name = entry.type === 'qualified_name' || entry.type === 'alias_qualified_name' ? entry.childForFieldName('name') : null;
+  return name ? baseName(name) : undefined;
+}
+
+/**
+ * The interfaces a base list can name: those the file declares, those the other files of a fully
+ * known project declare and well-known base-library ones, except names the file also gives to a
+ * class, struct, record, enum or delegate.
+ */
+function knownInterfaces(root: Node, context: RuleContext): Set<string> {
+  const names = (kinds: string[]): string[] => findAll(root, kinds).map((type) => type.childForFieldName('name')?.text ?? '');
+  const others = new Set(names([...TYPE_DECLARATIONS, 'enum_declaration', 'delegate_declaration']));
+  const facts = context.project ? loadProjectFacts(context.project, context.filePath) : undefined;
+  const project = facts && !facts.incomplete ? facts.others.interfaceNames : [];
+  return new Set([...names(['interface_declaration']), ...project, ...Object.keys(BCL_INTERFACES)].filter((name) => name && !others.has(name)));
+}
+
+/**
+ * True when simple names in `type` may bind to members it does not declare: a partial type, an
+ * interface with base interfaces, or a class or record whose base list names a base class (an
+ * entry not among `interfaces`). Implemented interfaces add nothing to lookup inside a class.
+ */
+function inheritsMembers(type: Node, interfaces: Set<string>): boolean {
+  const bases = type.namedChildren.find((child) => child.type === 'base_list')?.namedChildren ?? [];
+  if (hasModifier(type, 'partial')) {
+    return true;
+  }
+
+  if (type.type === 'struct_declaration' || bases.length === 0) {
+    return false;
+  }
+
+  return type.type === 'interface_declaration' || bases.some((entry) => !interfaces.has(baseName(entry) ?? ''));
+}
+
+/**
+ * The variables a flat token run declares: `(int p, Foo q)` in a deconstruction, `case string t:`
+ * in a switch statement (up to `when`). The parser keeps both as plain tokens; as no expression is
+ * followed directly by a name, a designation is an identifier right after a named node (its type),
+ * and a tuple literal `(a, b)` declares nothing.
+ */
+function designations(node: Node): string[] {
+  const names: string[] = [];
+  const inner = node.children.slice(1, -1);
+  let inLabel = node.type !== 'switch_body';
+  let depth = 0;
+  inner.forEach((child, index) => {
+    const previous = inner[index - 1];
+    if (child.type === 'case') {
+      inLabel = true;
+    } else if (child.type === '(' || child.type === '{' || child.type === '[') {
+      depth++;
+    } else if (child.type === ')' || child.type === '}' || child.type === ']') {
+      depth--;
+    } else if (node.type === 'switch_body' && ((child.type === ':' && depth === 0) || (child.type === 'identifier' && child.text === 'when'))) {
+      inLabel = false;
+    } else if (inLabel && child.type === 'identifier' && previous && (previous.isNamed || /^[)\]}>]$/.test(previous.type)) && previous.type !== 'comment') {
+      names.push(child.text);
+    } else if (inLabel && child.type === 'conditional_expression' && !child.children.some((part) => part.type === ':')) {
+      // `(Foo? z, ...)`: a nullable type and its designation read as a conditional without `:`.
+      const last = child.namedChildren[child.namedChildCount - 1];
+      if (last?.type === 'identifier') {
+        names.push(last.text);
+      }
+    }
+  });
+
+  return names;
+}
+
+/** Names declared in `scope` outside `except`: locals, parameters, local functions, pattern, deconstruction and loop variables. */
 function declaredNames(scope: Node, except?: Node): Set<string> {
   const names = new Set<string>();
   const outside = (node: Node): boolean => !except || node.startIndex < except.startIndex || node.startIndex >= except.endIndex;
-  for (const node of findAll(scope, ['variable_declarator', 'parameter', 'local_function_statement', 'declaration_expression', 'pattern', 'catch_declaration', 'from_clause', 'let_clause', 'join_clause', 'lambda_expression'])) {
+  const kinds = ['variable_declarator', 'parameter', 'local_function_statement', 'declaration_expression', 'pattern', 'catch_declaration', 'from_clause', 'let_clause', 'join_clause', 'lambda_expression', 'invocation_expression', 'tuple_expression', 'switch_body'];
+  for (const node of findAll(scope, kinds)) {
     if (!outside(node)) {
+      continue;
+    }
+
+    if (node.type === 'invocation_expression') {
+      // `var (a, (b, c)) = ...` reads as a call of `var` whose arguments are all designations.
+      if (node.childForFieldName('function')?.text === 'var') {
+        node.childForFieldName('arguments')?.descendantsOfType('identifier').forEach((identifier) => names.add(identifier.text));
+      }
+
+      continue;
+    }
+
+    if (node.type === 'tuple_expression' || node.type === 'switch_body') {
+      designations(node).forEach((name) => names.add(name));
       continue;
     }
 
@@ -225,21 +340,15 @@ function membersOf(type: Node): Map<string, { isStatic: boolean }> {
 /**
  * True when the anonymous function provably captures nothing: no `this`/`base`, no local or
  * parameter of the enclosing code, no instance member. Other names must be types or namespaces
- * (followed by `.`, or used as a type), or static members of the type; in a type with a base
- * class, where inherited members are unknown, only names declared in the function itself.
+ * (followed by `.`, or used as a type), or static members of the type; in a type that may inherit
+ * or share members (base class, base interface, partial), only names declared in the function itself.
  */
-function capturesNothing(lambda: Node, root: Node): boolean {
+function capturesNothing(lambda: Node, root: Node, interfaces: Set<string>): boolean {
   if (findAll(lambda, ['this_expression', 'base_expression']).length > 0 || /\bnameof\s*\(/.test(lambda.text) || /\b(?:this|base)\b/.test(lambda.text)) {
     return false;
   }
 
-  let type: Node | undefined;
-  for (let current = lambda.parent; current; current = current.parent) {
-    if (TYPE_DECLARATIONS.includes(current.type)) {
-      type = current;
-      break;
-    }
-  }
+  const type = enclosingType(lambda);
 
   const member = enclosingMember(lambda) ?? root;
   const outer = declaredNames(member, lambda);
@@ -253,7 +362,7 @@ function capturesNothing(lambda: Node, root: Node): boolean {
   }
   const inner = declaredNames(lambda);
   const members = type ? membersOf(type) : new Map<string, { isStatic: boolean }>();
-  const hasBase = type !== undefined && type.type !== 'struct_declaration' && type.namedChildren.some((child) => child.type === 'base_list');
+  const hasBase = type !== undefined && inheritsMembers(type, interfaces);
 
   for (const identifier of findAll(lambda, 'identifier')) {
     const name = identifier.text;
@@ -317,11 +426,12 @@ const asyncKeyword = (node: Node): Node | undefined => {
 };
 const isAsyncWrapper = (node: Node | null): boolean => node?.type === 'lambda_expression' && asyncKeyword(node) !== undefined;
 
-function collectStaticLambdas(_source: string, root: Node): TextEdit[] {
+function collectStaticLambdas(_source: string, root: Node, context: RuleContext): TextEdit[] {
+  const interfaces = knownInterfaces(root, context);
   return findAll(root, ['lambda_expression', 'anonymous_method_expression']).flatMap((lambda): TextEdit[] => {
     // The lambda an `async` wrapper modifies is decided with (and made static through) its wrapper.
     const isStatic = lambda.children[0]?.type === 'static' || isAsyncWrapper(lambda.parent);
-    if (isStatic || hasParseErrors(lambda) || isInTopLevelStatements(lambda) || isInPossibleExpressionTree(lambda) || !capturesNothing(lambda, root)) {
+    if (isStatic || hasParseErrors(lambda) || isInTopLevelStatements(lambda) || isInPossibleExpressionTree(lambda) || !capturesNothing(lambda, root, interfaces)) {
       return [];
     }
 
@@ -336,16 +446,22 @@ function collectStaticLambdas(_source: string, root: Node): TextEdit[] {
 /** `get { return field; }` / `get => field;` become `get;`, `set { field = value; }` / `set => field = value;` become `set;` (C# 14). */
 function collectSimpleAccessors(_source: string, root: Node): TextEdit[] {
   const edits: TextEdit[] = [];
+  // Whether a type has a member named `field`: in its accessors `field` may read that member. Once per type.
+  const declaresField = new Map<Node, boolean>();
   for (const accessor of findAll(root, 'accessor_declaration')) {
     const keyword = accessor.children.find((child) => !child.isNamed && ['get', 'set', 'init'].includes(child.type));
-    const type = findAll(root, TYPE_DECLARATIONS).filter((declaration) => declaration.startIndex < accessor.startIndex && declaration.endIndex > accessor.endIndex).pop();
-    if (!keyword || hasParseErrors(accessor) || (type && membersOf(type).has('field'))) {
+    const body = keyword ? accessor.text.slice(keyword.endIndex - accessor.startIndex).replace(/\s+/g, ' ').trim() : '';
+    const simple = keyword?.type === 'get' ? /^(?:\{ return field; \}|=> field;)$/.test(body) : /^(?:\{ field = value; \}|=> field = value;)$/.test(body);
+    if (!keyword || !simple || hasParseErrors(accessor)) {
       continue;
     }
 
-    const body = accessor.text.slice(keyword.endIndex - accessor.startIndex).replace(/\s+/g, ' ').trim();
-    const simple = keyword.type === 'get' ? /^(?:\{ return field; \}|=> field;)$/.test(body) : /^(?:\{ field = value; \}|=> field = value;)$/.test(body);
-    if (simple) {
+    const type = enclosingType(accessor);
+    if (type && !declaresField.has(type)) {
+      declaresField.set(type, membersOf(type).has('field'));
+    }
+
+    if (!type || !declaresField.get(type)) {
       edits.push({ start: keyword.endIndex, end: accessor.endIndex, text: ';' });
     }
   }
@@ -575,6 +691,8 @@ const collectOfType: Collect = (_source, root, _context, { suppressed }) => {
 /** IDE0002: inside type `C`, `C.Member` becomes `Member` for a static member of `C` no local hides. */
 const collectTypeQualifiedMembers: Collect = (_source, root, _context, { suppressed }) => {
   const edits: TextEdit[] = [];
+  // Names a member declares, worked out once per member: a type can hold thousands of accesses.
+  const scopeNames = new Map<Node, Set<string>>();
   for (const type of findAll(root, TYPE_DECLARATIONS)) {
     const name = type.childForFieldName('name')?.text;
     if (!name || type.namedChildren.some((child) => child.type === 'type_parameter_list')) {
@@ -585,18 +703,19 @@ const collectTypeQualifiedMembers: Collect = (_source, root, _context, { suppres
     for (const access of findAll(type, 'member_access_expression')) {
       const qualifier = access.childForFieldName('expression');
       const member = access.childForFieldName('name');
-      const innermost = findAll(type, TYPE_DECLARATIONS).filter((declaration) => declaration.startIndex <= access.startIndex && declaration.endIndex >= access.endIndex).pop() ?? type;
+      if (qualifier?.type !== 'identifier' || qualifier.text !== name || !member || members.get(member.text)?.isStatic !== true) {
+        continue;
+      }
+
+      const innermost = enclosingType(access) ?? type;
       const scope = enclosingMember(access) ?? type;
-      if (
-        qualifier?.type !== 'identifier' ||
-        qualifier.text !== name ||
-        !member ||
-        innermost !== type && innermost.startIndex !== type.startIndex ||
-        members.get(member.text)?.isStatic !== true ||
-        declaredNames(scope).has(member.text) ||
-        declaredNames(scope).has(name) ||
-        suppressed(access)
-      ) {
+      let declared = scopeNames.get(scope);
+      if (!declared) {
+        declared = declaredNames(scope);
+        scopeNames.set(scope, declared);
+      }
+
+      if ((innermost !== type && innermost.startIndex !== type.startIndex) || declared.has(member.text) || declared.has(name) || suppressed(access)) {
         continue;
       }
 
@@ -675,24 +794,39 @@ const ASSIGNMENT_OPTION = 'csharp_style_unused_value_assignment_preference';
 const AWAITABLE = /^(?:System\.Threading\.Tasks\.)?(?:Task|ValueTask)(?:<.+>)?$/;
 
 /**
- * IDE0058: a call to a method of the file that returns a value, as a statement, becomes
- * `_ = Call();` (`discard_variable`). Only methods declared once in the file (no overloads); the
- * value of any other call is unknown.
+ * IDE0058: a call to a method of the calling type that returns a value, as a statement, becomes
+ * `_ = Call();` (`discard_variable`). Only methods declared once in a type whose members are all
+ * in view (no base class or base interface, not partial); the value of any other call is unknown.
  */
 function collectDiscardedValues(_source: string, root: Node, context: RuleContext, value: string, report: (node: Node, message: string) => void): TextEdit[] {
   if (languageVersion(context) < 7) {
     return [];
   }
 
-  const methods = findAll(root, 'method_declaration');
+  // The methods of each type a call can bind to without seeing members declared elsewhere.
+  const methodsOf = new Map<Node, Node[]>();
+  let interfaces: Set<string> | undefined;
   const edits: TextEdit[] = [];
   for (const statement of findAll(root, 'expression_statement')) {
     const call = statement.namedChildren[0];
     const callee = call?.type === 'invocation_expression' ? call.childForFieldName('function') : undefined;
     const name = callee?.type === 'identifier' ? callee.text : callee?.type === 'member_access_expression' && callee.childForFieldName('expression')?.type === 'this_expression' ? callee.childForFieldName('name')?.text : undefined;
+    const type = name ? enclosingType(statement) : undefined;
+    if (!call || !name || !type) {
+      continue;
+    }
+
+    let methods = methodsOf.get(type);
+    if (!methods) {
+      const hidden = inheritsMembers(type, (interfaces ??= knownInterfaces(root, context)));
+      const body = type.childForFieldName('body') ?? type.namedChildren.find((child) => child.type === 'declaration_list');
+      methods = hidden ? [] : (body?.namedChildren ?? []).filter((member) => member.type === 'method_declaration');
+      methodsOf.set(type, methods);
+    }
+
     const declared = methods.filter((method) => method.childForFieldName('name')?.text === name);
     const returns = declared.length === 1 ? declared[0].childForFieldName('type')?.text.replace(/\s+/g, '') : undefined;
-    if (!call || !returns || returns === 'void' || returns === 'dynamic' || AWAITABLE.test(returns) || declaredNames(enclosingMember(statement) ?? root).has(name ?? '')) {
+    if (!returns || returns === 'void' || returns === 'dynamic' || AWAITABLE.test(returns) || declaredNames(enclosingMember(statement) ?? root).has(name)) {
       continue;
     }
 

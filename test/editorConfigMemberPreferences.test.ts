@@ -88,6 +88,27 @@ describe('IDE0250 csharp_style_prefer_readonly_struct', () => {
   });
 });
 
+describe('IDE0251 csharp_style_prefer_readonly_struct_member through field chains', () => {
+  it('leaves members that call methods on a struct reached through a struct field alone', () => {
+    const source = lines(
+      'struct S',
+      '{',
+      '    private Outer _o;',
+      '    private int[] _items;',
+      '    public void Touch() { _o.A.Bump(); }',
+      '    public void TouchThis() { this._o.A.Bump(); }',
+      '    public void TouchParenthesized() { (_o.A).Bump(); }',
+      '    public void TouchIndexed() { _o[0].A.Bump(); }',
+      '    public int First() { return _items[0].A.GetHashCode(); }',
+      '}'
+    );
+
+    expect(codeStyle(source, 'csharp_style_prefer_readonly_struct_member = true:warning').output).toBe(
+      source.replace('public int First', 'public readonly int First')
+    );
+  });
+});
+
 describe('IDE0062 csharp_prefer_static_local_function', () => {
   it('makes local functions that capture nothing static', () => {
     expectRewrite(

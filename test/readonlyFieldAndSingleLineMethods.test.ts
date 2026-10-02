@@ -250,6 +250,10 @@ describe('readonlyFieldConverter and writes inside interpolated strings', () => 
     ['raw interpolated string', 'class C { private int _n; string M() => $"""{System.Threading.Interlocked.Increment(ref _n)}"""; }'],
     ['nested interpolation', 'class C { private int _n; string M() => $"a{$"b{_n++}"}"; }'],
     ['format specifier after the write', 'class C { private int _n; string M() => $"{_n++:D3}"; }'],
+    ['@$ verbatim string with a backslash', 'class C { private int _n; string M() => @$"C:\\{_n++}"; }'],
+    ['@$ verbatim string with a doubled quote', 'class C { private int _n; string M() => @$"a""b{_n++}"; }'],
+    ['global:: qualified ref argument', 'class C { private int _n; string M() => $"{global::System.Threading.Interlocked.Increment(ref _n)}"; }'],
+    ['global:: qualified call with an increment', 'class C { private int _n; string M() => $"{global::System.Math.Abs(_n++)}"; }'],
   ])('keeps a field that is written in an interpolation hole: %s', (_name, input) => {
     expect(apply(input)).toBe(input);
   });
@@ -264,5 +268,22 @@ describe('readonlyFieldConverter and writes inside interpolated strings', () => 
 
   it('does not take a write to another member with the same suffix for a write to the field', () => {
     expect(apply('class C { private int _n; int other_n; string M() => $"{other_n++}"; }')).toContain('private readonly int _n');
+  });
+
+  it.each([
+    ['method call', 'class C { private Counter _c; string M() => $"{_c.Increment()}"; }'],
+    ['this-qualified call', 'class C { private Counter _c; string M() => $"{this._c.Increment()}"; }'],
+    ['element access', 'class C { private Counter _c; string M() => $"{_c[0]}"; }'],
+    ['conditional access', 'class C { private Counter? _c; string M() => $"{_c?.Increment()}"; }'],
+    ['nested interpolation', 'class C { private Counter _c; string M() => $"a{$"b{_c.Increment()}"}"; }'],
+    ['@$ verbatim string with a backslash', 'class C { private Counter _c; string M() => @$"C:\\{_c.Increment()}"; }'],
+    ['parenthesized receiver', 'class C { private Counter _c; string M() => $"{(_c).Increment()}"; }'],
+    ['global:: qualified call', 'class C { private Counter _c; string M() => $"{global::System.Convert.ToString(_c.Increment())}"; }'],
+  ])('keeps a field of a possible struct type accessed in an interpolation hole: %s', (_name, input) => {
+    expect(apply(input)).toBe(input);
+  });
+
+  it('still makes a field of a known reference type readonly when a hole accesses its members', () => {
+    expect(apply('class C { private string _s; string M() => $"{_s.Length}"; }')).toContain('private readonly string _s');
   });
 });

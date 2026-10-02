@@ -17,7 +17,7 @@ import {
   isCSharp,
   isPathCleanable,
 } from './cleanupCore';
-import { readCleanupSettings } from './settings';
+import { readCleanupSettings, readCleanupSettingsForUri } from './settings';
 
 /**
  * The plan of a multi-file cleanup preview (the port of the Visual Studio "Preview C# Text
@@ -357,7 +357,8 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
   }
 
   const first = pending[0];
-  const settings = readCleanupSettings(first ? vscode.workspace.getWorkspaceFolder(first.uri)?.uri.fsPath : undefined);
+  // Like the batch cleanup: batch-wide flags come from the first file; each file is planned with the `.codejanitor` nearest to it.
+  const settings = first ? readCleanupSettingsForUri(first.uri) : readCleanupSettings();
   // Like the batch cleanup: a subclass or generic constraint in one file of the batch keeps a class of another unsealed.
   const covered = new Set(pending.map((item) => item.uri.toString()));
   const disqualified = new Set<string>();
@@ -380,7 +381,10 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
       break;
     }
 
-    planned.set(item.uri.toString(), await planFile(item.uri, item.label, item.text, settings, disqualified, issues.report, onlyChangedLines));
+    planned.set(
+      item.uri.toString(),
+      await planFile(item.uri, item.label, item.text, readCleanupSettingsForUri(item.uri), disqualified, issues.report, onlyChangedLines)
+    );
     options.onProgress?.(++done, pending.length);
     await yieldToEventLoop();
   }

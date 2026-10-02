@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EffectiveCleanupSettings, resolveEffectiveCleanupSettings } from '../src/cleanup/effectiveSettings';
+import { effectiveEditorConfigValue, isDiagnosticEnforced } from '../src/cleanup/editorConfigRegistry';
 import { applyRepositoryPolicy, readRepositoryPolicy } from '../src/cleanup/repositoryOverrides';
 import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
 
@@ -35,6 +36,14 @@ function writeRootEditorConfig(...csharpOptions: (string | undefined)[]): void {
 
 function writePolicy(cleanupEntries: string): void {
   fs.writeFileSync(path.join(tempDirectory, '.codejanitor'), `{ "cleanup": { ${cleanupEntries} } }`);
+}
+
+/** The project of `Sample.cs`, with the given MSBuild properties. */
+function writeProject(properties: string, framework = 'net472'): void {
+  fs.writeFileSync(
+    path.join(tempDirectory, 'Sample.csproj'),
+    `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${framework}</TargetFramework>${properties}</PropertyGroup></Project>`
+  );
 }
 
 /** The effective settings of `Sample.cs`: the repository policy over the user's settings, then `.editorconfig`. */
@@ -143,6 +152,15 @@ describe('namespace declarations', () => {
     expect(effective.namespaceDeclarations).toBe('fileScoped');
     expect(effective.settings.convertToFileScopedNamespace).toBe(true);
     expect(keyOf(effective, 'convertToFileScopedNamespace')).toBe('csharp_style_namespace_declarations');
+  });
+
+  it('does not enforce the default block_scoped through the file-scoped diagnostic IDE0161, so the user setting decides', () => {
+    writeRootEditorConfig('dotnet_diagnostic.IDE0161.severity = warning');
+
+    const effective = resolve({ convertToFileScopedNamespace: true });
+
+    expect(effective.namespaceDeclarations).toBe('fileScoped');
+    expect(keyOf(effective, 'convertToFileScopedNamespace')).toBeUndefined();
   });
 
   it.each(['sometimes', 'block_scoped:loud', 'block_scoped:none:warning'])('ignores the unrecognized option %s and falls back to the repository policy', (option) => {
@@ -367,6 +385,9 @@ describe('linked options', () => {
       'dotnet_style_prefer_collection_expression',
     ],
     [undefined, 'dotnet_diagnostic.IDE0300.severity = suggestion', 'convertToCollectionExpressions', true, 'dotnet_diagnostic.ide0300.severity'],
+    // The option value selects one diagnostic (true: IDE0007, false: IDE0008); the other one's severity does not matter.
+    ['csharp_style_var_when_type_is_apparent = true:warning', 'dotnet_diagnostic.IDE0007.severity = none', 'convertToVarWhenApparent', false, undefined],
+    [undefined, 'dotnet_diagnostic.IDE0007.severity = warning', 'convertToVarWhenApparent', true, undefined],
   ] as const)('resolves %s with %s per diagnostic (%s = %s, decided by %s)', (option, severity, setting, expected, expectedKey) => {
     // A locked setting must beat the opposite user setting; an unlocked one must keep the user setting.
     writeRootEditorConfig(option, severity);
@@ -516,6 +537,61 @@ describe('bulk severities', () => {
   );
 });
 
+describe('project severities (NoWarn, rule sets)', () => {
+  it('lets NoWarn beat an enforcing .editorconfig severity, as the rule engine does', () => {
+    writeRootEditorConfig('dotnet_diagnostic.CA1852.severity = warning');
+    writeProject('<NoWarn>CA1852</NoWarn>');
+
+    const effective = resolve({ sealClassesWhenSafe: false });
+
+    expect(isDiagnosticEnforced(effective.properties, 'CA1852')).toBe(false);
+    expect(effective.settings.sealClassesWhenSafe).toBe(false);
+    expect(effective.editorConfigKeys.has('sealClassesWhenSafe')).toBe(false);
+  });
+
+  it('lets NoWarn beat an option suffix that would enforce a Code Style rule', () => {
+    writeRootEditorConfig('csharp_prefer_braces = false:warning');
+    writeProject('<NoWarn>$(NoWarn);IDE0011</NoWarn>');
+
+    const effective = resolve({ codeStyleRules: { csharp_prefer_braces: 'true' } });
+
+    expect(effective.codeStyleEditorConfigKeys.has('csharp_prefer_braces')).toBe(false);
+    expect(effective.codeStyleValues.get('csharp_prefer_braces')).toBe('true');
+  });
+
+  it('lets a rule set none beat a bulk severity', () => {
+    writeRootEditorConfig('dotnet_analyzer_diagnostic.severity = warning');
+    writeProject('<AnalysisMode>None</AnalysisMode>', 'net8.0');
+
+    const effective = resolve({ convertToStringNameOf: false });
+
+    expect(isDiagnosticEnforced(effective.properties, 'CA1507')).toBe(false);
+    expect(effective.settings.convertToStringNameOf).toBe(false);
+    expect(effective.editorConfigKeys.has('convertToStringNameOf')).toBe(false);
+  });
+
+  it('enforces a rule its rule set raises over a bulk severity none, naming the rule set', () => {
+    writeRootEditorConfig('dotnet_analyzer_diagnostic.category-Maintainability.severity = none');
+    writeProject('<AnalysisMode>All</AnalysisMode>', 'net8.0');
+
+    const effective = resolve({ convertToStringNameOf: false });
+
+    expect(isDiagnosticEnforced(effective.properties, 'CA1507')).toBe(true);
+    expect(effective.settings.convertToStringNameOf).toBe(true);
+    expect(keyOf(effective, 'convertToStringNameOf')).toBe('AnalysisLevel/AnalysisMode');
+  });
+
+  it('reads a severity of default as the rule default, not as a missing entry the bulk severity fills', () => {
+    writeRootEditorConfig('dotnet_analyzer_diagnostic.severity = warning', 'dotnet_diagnostic.CA1507.severity = default');
+    writeProject('');
+
+    const effective = resolve({ convertToStringNameOf: false });
+
+    expect(isDiagnosticEnforced(effective.properties, 'CA1507')).toBe(false);
+    expect(effective.settings.convertToStringNameOf).toBe(false);
+  });
+});
+
 describe('option values and locations', () => {
   it('reads a nested .editorconfig over its parent and inherits the other keys', () => {
     writeRootEditorConfig('trim_trailing_whitespace = true', 'csharp_style_var_when_type_is_apparent = true');
@@ -617,6 +693,43 @@ describe('Code Style rules', () => {
 
     expect(effective.codeStyleEditorConfigKeys.get('dotnet_style_qualification_for_field')).toBe('dotnet_style_qualification_for_field');
     expect(effective.codeStyleValues.has('dotnet_style_qualification_for_field')).toBe(false);
+  });
+
+  it('reads only the diagnostic the option value selects, so a none severity on it leaves the rule to Code Janitor', () => {
+    writeRootEditorConfig('dotnet_style_qualification_for_property = true:warning', 'dotnet_diagnostic.IDE0009.severity = none');
+
+    const effective = resolve({ codeStyleRules: { dotnet_style_qualification_for_field: 'false' } });
+
+    expect(effectiveEditorConfigValue(effective.properties, 'dotnet_style_qualification_for_property')).toBeUndefined();
+    expect(effective.codeStyleEditorConfigKeys.has('dotnet_style_qualification_for_property')).toBe(false);
+    expect(effective.analyzerConfigOverrides.get('dotnet_style_qualification_for_property')).toBe('true:none');
+  });
+
+  it('selects the diagnostic of the default option value when only a severity is set', () => {
+    writeRootEditorConfig('dotnet_diagnostic.IDE0009.severity = warning');
+
+    const effective = resolve({ codeStyleRules: { dotnet_style_qualification_for_field: 'false' } });
+
+    expect(effective.codeStyleEditorConfigKeys.has('dotnet_style_qualification_for_field')).toBe(false);
+    expect(effective.codeStyleValues.get('dotnet_style_qualification_for_field')).toBe('false');
+  });
+
+  it('lets IDE0047 enforce the always_for_clarity parentheses default, which reports both IDE0047 and IDE0048', () => {
+    writeRootEditorConfig('dotnet_diagnostic.IDE0047.severity = warning');
+
+    const effective = resolve({ codeStyleRules: { dotnet_style_parentheses_in_arithmetic_binary_operators: 'never_if_unnecessary' } });
+
+    expect(effective.codeStyleEditorConfigKeys.has('dotnet_style_parentheses_in_arithmetic_binary_operators')).toBe(true);
+    expect(effective.codeStyleValues.has('dotnet_style_parentheses_in_arithmetic_binary_operators')).toBe(false);
+    expect(effective.analyzerConfigOverrides.has('dotnet_style_parentheses_in_relational_binary_operators')).toBe(false);
+  });
+
+  it('reads only IDE0047 for never_if_unnecessary parentheses', () => {
+    writeRootEditorConfig('dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning', 'dotnet_diagnostic.IDE0047.severity = none');
+
+    const effective = resolve({ codeStyleRules: {} });
+
+    expect(effective.codeStyleEditorConfigKeys.has('dotnet_style_parentheses_in_other_operators')).toBe(false);
   });
 
   it('lets the repository policy beat the user setting, null disabling the rule', () => {

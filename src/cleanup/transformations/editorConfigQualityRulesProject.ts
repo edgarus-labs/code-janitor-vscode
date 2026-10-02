@@ -2,7 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { findAll, parseCSharp } from '../parser';
 import { ProjectInfo } from '../projectInfo';
-import { lex } from '../syntax/lexer';
+import { Token, lex } from '../syntax/lexer';
+import { interpolationHoles } from './interpolation';
 import { collectDisqualifiedTypeNames } from './sealedClass';
 
 /**
@@ -15,7 +16,11 @@ import { collectDisqualifiedTypeNames } from './sealedClass';
 export interface SourceFacts {
   /** Simple names of types used as a base type or generic constraint. */
   readonly derivedOrConstrainedNames: ReadonlySet<string>;
-  /** Names accessed on a receiver (`x.Name`, `x?.Name`, `x->Name`). */
+  /**
+   * Names used on an instance from outside its type: accessed on a receiver (`x.Name`, `x?.Name`,
+   * `x->Name`, also inside interpolation holes) or read by a property pattern (`{ Name: 1 }`,
+   * `{ Name.Inner: 1 }`).
+   */
   readonly memberAccessNames: ReadonlySet<string>;
   /** Simple names of the declared types. */
   readonly typeNames: ReadonlySet<string>;
@@ -32,6 +37,12 @@ export interface SourceFacts {
 export interface ProjectFacts {
   /** Why the project's sources are not all known, if so: rules needing all of them report instead of fixing. */
   readonly incomplete?: string;
+  /**
+   * A Razor or XAML file the project compiles into the assembly, if any. The facts do not read
+   * markup, which may use any internal member or derive from any internal type; it declares no type
+   * whose name could clash (a Razor component's name, its file name, is in `others.typeNames`).
+   */
+  readonly markup?: string;
   /** The facts of every other C# file of the project, merged. */
   readonly others: SourceFacts;
   /** The assembly exposes its internals (`InternalsVisibleTo` attribute or MSBuild item). */
@@ -56,9 +67,7 @@ export function computeSourceFacts(source: string): SourceFacts {
   const text = (index: number): string => source.slice(tokens[index].start, tokens[index].end);
   for (let i = 0; i < tokens.length - 1; i++) {
     const type = tokens[i].type;
-    if ((type === '.' || type === '?.' || type === '->') && tokens[i + 1].type === 'identifier') {
-      memberAccessNames.add(text(i + 1).replace(/^@/, ''));
-    } else if (type === 'identifier' && /^InternalsVisibleTo(?:Attribute)?$/.test(text(i))) {
+    if (type === 'identifier' && /^InternalsVisibleTo(?:Attribute)?$/.test(text(i))) {
       internalsVisibleTo = true;
     } else if (type === 'identifier' && text(i) === 'global' && tokens[i + 1].type === 'using') {
       let end = i + 2;
@@ -72,6 +81,8 @@ export function computeSourceFacts(source: string): SourceFacts {
       }
     }
   }
+
+  collectMemberUses(source, tokens, memberAccessNames);
 
   const tree = parseCSharp(source);
   try {
@@ -101,6 +112,43 @@ export function computeSourceFacts(source: string): SourceFacts {
   }
 }
 
+/** Tokens or contextual keywords after which `Name :` declares a base list or a constraint, not a pattern. */
+const DECLARING_KEYWORDS: Record<string, true> = { class: true, struct: true, interface: true, enum: true, record: true, where: true };
+
+/**
+ * Adds the names `source` uses on an instance (see `SourceFacts.memberAccessNames`). A name read by
+ * a property pattern is any `Name:` or `Name.Inner:` after `{` or `,`, which also matches named
+ * arguments: an extra name only makes a rule report.
+ */
+function collectMemberUses(source: string, tokens: readonly Token[], names: Set<string>): void {
+  const text = (index: number): string => source.slice(tokens[index].start, tokens[index].end);
+  for (let i = 0; i < tokens.length; i++) {
+    const type = tokens[i].type;
+    if (type === 'interpolated_string_expression') {
+      for (const hole of interpolationHoles(text(i))) {
+        collectMemberUses(hole, lex(hole).tokens, names);
+      }
+    } else if (type === 'identifier') {
+      const previous = i > 0 ? tokens[i - 1].type : '';
+      const accessed = previous === '.' || previous === '?.' || previous === '->';
+      const labeled = tokens[i + 1]?.type === ':' && (i === 0 || DECLARING_KEYWORDS[text(i - 1)] !== true);
+      if (accessed || labeled || ((previous === '{' || previous === ',') && startsPropertySubpattern(tokens, i))) {
+        names.add(text(i).replace(/^@/, ''));
+      }
+    }
+  }
+}
+
+/** True when the identifier at `index` starts `Name:` or `Name.Inner...:` (a property subpattern). */
+function startsPropertySubpattern(tokens: readonly Token[], index: number): boolean {
+  let end = index + 1;
+  while (tokens[end]?.type === '.' && tokens[end + 1]?.type === 'identifier') {
+    end += 2;
+  }
+
+  return tokens[end]?.type === ':';
+}
+
 interface CachedFacts {
   readonly mtimeMs: number;
   readonly size: number;
@@ -109,6 +157,9 @@ interface CachedFacts {
 
 const factsByFile = new Map<string, CachedFacts>();
 const factsByProject = new WeakMap<ProjectInfo, Map<string, ProjectFacts>>();
+
+/** An XML comment: MSBuild ignores what it holds. */
+const XML_COMMENT = /<!--[\s\S]*?-->/g;
 
 const frameworksByProject = new WeakMap<ProjectInfo, readonly string[] | undefined>();
 
@@ -126,7 +177,7 @@ export function targetFrameworksOf(project: ProjectInfo | undefined): readonly s
     let frameworks: string[] | undefined;
     try {
       const projectFiles = fs.readdirSync(project.directory).filter((name) => name.toLowerCase().endsWith('.csproj'));
-      const text = projectFiles.length === 1 ? fs.readFileSync(path.join(project.directory, projectFiles[0]), 'utf8') : '';
+      const text = projectFiles.length === 1 ? fs.readFileSync(path.join(project.directory, projectFiles[0]), 'utf8').replace(XML_COMMENT, '') : '';
       const version = /<TargetFrameworkVersion>\s*v(\d+)\.(\d+)(?:\.(\d+))?\s*</i.exec(text);
       frameworks = version ? [`net${version[1]}${version[2]}${version[3] ?? ''}`] : undefined;
     } catch {
@@ -144,7 +195,8 @@ export function targetFrameworksOf(project: ProjectInfo | undefined): readonly s
  * The facts of every C# file of `project` except `currentFile` (whose current text the rules read
  * themselves). Files are the `.cs` files under the project folder, outside `bin`, `obj`, hidden
  * folders and folders of other projects, as the .NET SDK's default compile items, plus explicit
- * `<Compile Include>` items. Computed once per project object (one cleanup) and file version.
+ * `<Compile Include>` items. Computed once per project object (one cleanup); across cleanups only
+ * the files and folders whose modification time changed are read again.
  */
 export function loadProjectFacts(project: ProjectInfo, currentFile: string | undefined): ProjectFacts {
   const key = currentFile ? path.resolve(currentFile) : '';
@@ -163,46 +215,141 @@ export function loadProjectFacts(project: ProjectInfo, currentFile: string | und
   return facts;
 }
 
+type NameKind = 'derivedOrConstrainedNames' | 'memberAccessNames' | 'typeNames' | 'interfaceNames' | 'interfaceMemberNames' | 'globalUsings';
+
+const NAME_KINDS: readonly NameKind[] = ['derivedOrConstrainedNames', 'memberAccessNames', 'typeNames', 'interfaceNames', 'interfaceMemberNames', 'globalUsings'];
+
+/**
+ * The facts of every file of a project folder, merged as how many files hold each name. Kept per
+ * folder and updated for the files that changed, so cleaning many files of a project does not merge
+ * all of them again for each file.
+ */
+interface ProjectIndex {
+  readonly facts: Map<string, SourceFacts>;
+  readonly counts: Readonly<Record<NameKind, Map<string, number>>>;
+  internalsVisibleToFiles: number;
+}
+
+const indexByDirectory = new Map<string, ProjectIndex>();
+
 function readProjectFacts(directory: string, currentFile: string): ProjectFacts {
   const problems: string[] = [];
   const settings = readProjectSettings(directory, problems);
-  const files = new Set([...(settings.defaultCompileItems ? listProjectSources(directory, problems) : []), ...settings.compileIncludes]);
-  const merged = {
-    derivedOrConstrainedNames: new Set<string>(),
-    memberAccessNames: new Set<string>(),
-    typeNames: new Set<string>(),
-    interfaceNames: new Set<string>(),
-    interfaceMemberNames: new Set<string>(),
-    globalUsings: new Set<string>(),
-    internalsVisibleTo: false,
-  };
+  const listing = settings.defaultCompileItems ? listProjectSources(directory, problems) : undefined;
+  const files = new Set([...(listing?.files ?? []), ...settings.compileIncludes]);
+  const components = new Set(listing?.markup.filter((file) => RAZOR_COMPONENT.test(file)));
+  let index = indexByDirectory.get(directory);
+  if (!index) {
+    index = { facts: new Map(), counts: Object.fromEntries(NAME_KINDS.map((kind) => [kind, new Map()])) as ProjectIndex['counts'], internalsVisibleToFiles: 0 };
+    indexByDirectory.set(directory, index);
+  }
 
   for (const file of files) {
-    if (file === currentFile) {
-      continue;
-    }
-
-    const facts = readSourceFacts(file, problems);
-    if (!facts) {
-      continue;
-    }
-
-    for (const name of facts.derivedOrConstrainedNames) merged.derivedOrConstrainedNames.add(name);
-    for (const name of facts.memberAccessNames) merged.memberAccessNames.add(name);
-    for (const name of facts.typeNames) merged.typeNames.add(name);
-    for (const name of facts.interfaceNames) merged.interfaceNames.add(name);
-    for (const name of facts.interfaceMemberNames) merged.interfaceMemberNames.add(name);
-    for (const name of facts.globalUsings) merged.globalUsings.add(name);
-    merged.internalsVisibleTo ||= facts.internalsVisibleTo;
+    // The current file is counted from disk like the others and left out below; the rules read its
+    // current text themselves, so it not being on disk (yet) is no problem.
+    updateIndex(index, file, readSourceFacts(file, file === currentFile ? [] : problems));
   }
+
+  for (const file of components) {
+    updateIndex(index, file, componentFacts(file));
+  }
+
+  for (const file of [...index.facts.keys()].filter((known) => !files.has(known) && !components.has(known))) {
+    updateIndex(index, file, undefined);
+  }
+
+  const own = index.facts.get(currentFile);
+  const others = Object.fromEntries(
+    NAME_KINDS.map((kind): [NameKind, ReadonlySet<string>] => [kind, new OtherFilesNames(index.counts[kind], own?.[kind])])
+  ) as Record<NameKind, ReadonlySet<string>>;
+  const internalsVisibleTo = index.internalsVisibleToFiles - (own?.internalsVisibleTo ? 1 : 0) > 0;
 
   return {
     incomplete: problems.length > 0 ? problems.join('; ') : undefined,
-    others: merged,
-    internalsVisibleTo: settings.internalsVisibleTo || merged.internalsVisibleTo,
-    importsSystem: settings.importsSystem || merged.globalUsings.has('System'),
+    markup: listing?.markup[0] ?? settings.markupItem,
+    others: { ...others, internalsVisibleTo },
+    internalsVisibleTo: settings.internalsVisibleTo || internalsVisibleTo,
+    importsSystem: settings.importsSystem || others.globalUsings.has('System'),
     webProject: settings.webProject,
   };
+}
+
+/** Counts `facts` for `file` in place of what was counted for it before (`undefined`: the file is gone). */
+function updateIndex(index: ProjectIndex, file: string, facts: SourceFacts | undefined): void {
+  const old = index.facts.get(file);
+  if (old === facts) {
+    return;
+  }
+
+  for (const [counted, step] of [[old, -1], [facts, 1]] as const) {
+    if (!counted) {
+      continue;
+    }
+
+    for (const kind of NAME_KINDS) {
+      const counts = index.counts[kind];
+      for (const name of counted[kind]) {
+        const count = (counts.get(name) ?? 0) + step;
+        if (count > 0) {
+          counts.set(name, count);
+        } else {
+          counts.delete(name);
+        }
+      }
+    }
+
+    index.internalsVisibleToFiles += counted.internalsVisibleTo ? step : 0;
+  }
+
+  if (facts) {
+    index.facts.set(file, facts);
+  } else {
+    index.facts.delete(file);
+  }
+}
+
+/** The names of a project index held by a file other than the current one (whose names are `own`). */
+class OtherFilesNames implements ReadonlySet<string> {
+  constructor(
+    private readonly counts: ReadonlyMap<string, number>,
+    private readonly own: ReadonlySet<string> | undefined
+  ) {}
+
+  has(name: string): boolean {
+    return (this.counts.get(name) ?? 0) > (this.own?.has(name) ? 1 : 0);
+  }
+
+  get size(): number {
+    return [...this.keys()].length;
+  }
+
+  *keys(): IterableIterator<string> {
+    for (const [name, count] of this.counts) {
+      if (count > (this.own?.has(name) ? 1 : 0)) {
+        yield name;
+      }
+    }
+  }
+
+  values(): IterableIterator<string> {
+    return this.keys();
+  }
+
+  [Symbol.iterator](): IterableIterator<string> {
+    return this.keys();
+  }
+
+  *entries(): IterableIterator<[string, string]> {
+    for (const name of this.keys()) {
+      yield [name, name];
+    }
+  }
+
+  forEach(callback: (value: string, key: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+    for (const name of this.keys()) {
+      callback.call(thisArg, name, name, this);
+    }
+  }
 }
 
 function readSourceFacts(file: string, problems: string[]): SourceFacts | undefined {
@@ -227,16 +374,82 @@ function readSourceFacts(file: string, problems: string[]): SourceFacts | undefi
   return facts;
 }
 
-function listProjectSources(root: string, problems: string[]): string[] {
+/** Markup the SDK compiles into classes of the assembly (Razor components and pages, XAML), which the facts do not read. */
+const MARKUP_SOURCE = /\.(?:razor|cshtml|xaml)$/i;
+
+/** A Razor component, compiled into a class named like the file. */
+const RAZOR_COMPONENT = /\.razor$/i;
+
+const factsByComponent = new Map<string, SourceFacts>();
+
+/** The facts of a Razor component: the class it compiles into, `Counter` for `Counter.razor`. */
+function componentFacts(file: string): SourceFacts {
+  let facts = factsByComponent.get(file);
+  if (!facts) {
+    const none = new Set<string>();
+    facts = {
+      derivedOrConstrainedNames: none,
+      memberAccessNames: none,
+      typeNames: new Set([path.basename(file).replace(RAZOR_COMPONENT, '')]),
+      interfaceNames: none,
+      interfaceMemberNames: none,
+      globalUsings: none,
+      internalsVisibleTo: false,
+    };
+    factsByComponent.set(file, facts);
+  }
+
+  return facts;
+}
+
+interface CachedListing {
+  /** Every folder read, with its modification time: adding, removing or renaming an entry changes it. */
+  readonly folders: ReadonlyMap<string, number>;
+  readonly files: readonly string[];
+  /** The markup files (see `MARKUP_SOURCE`). */
+  readonly markup: readonly string[];
+  readonly problems: readonly string[];
+  /** No folder failed to read or changed too recently for its modification time to tell a later change. */
+  readonly reusable: boolean;
+}
+
+/** Modification times this close to the listing may not change again for an entry added right after (coarse file system clocks). */
+const RECENT_CHANGE_MS = 2000;
+
+const listingByRoot = new Map<string, CachedListing>();
+
+/** The `.cs` and markup files the SDK compiles by default; listed again only when one of the folders read changed. */
+function listProjectSources(root: string, problems: string[]): CachedListing {
+  let listing = listingByRoot.get(root);
+  if (!listing?.reusable || [...listing.folders].some(([folder, mtimeMs]) => fs.statSync(folder, { throwIfNoEntry: false })?.mtimeMs !== mtimeMs)) {
+    listing = walkProjectSources(root);
+    listingByRoot.set(root, listing);
+  }
+
+  problems.push(...listing.problems);
+
+  return listing;
+}
+
+function walkProjectSources(root: string): CachedListing {
+  const folders = new Map<string, number>();
   const files: string[] = [];
+  const problems: string[] = [];
+  const now = Date.now();
+  let reusable = true;
+  const markup: string[] = [];
   const pending = [root];
   while (pending.length > 0) {
     const directory = pending.pop() as string;
     let entries: fs.Dirent[];
     try {
+      const mtimeMs = fs.statSync(directory).mtimeMs;
+      folders.set(directory, mtimeMs);
+      reusable &&= now - mtimeMs > RECENT_CHANGE_MS;
       entries = fs.readdirSync(directory, { withFileTypes: true });
     } catch (error) {
       problems.push(`folder ${directory} could not be read (${(error as Error).message})`);
+      reusable = false;
       continue;
     }
 
@@ -253,6 +466,8 @@ function listProjectSources(root: string, problems: string[]): string[] {
         }
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.cs')) {
         files.push(path.resolve(full));
+      } else if (entry.isFile() && MARKUP_SOURCE.test(entry.name)) {
+        markup.push(path.resolve(full));
       }
     }
 
@@ -262,7 +477,7 @@ function listProjectSources(root: string, problems: string[]): string[] {
     }
   }
 
-  return files;
+  return { folders, files, markup, problems, reusable };
 }
 
 interface ProjectSettings {
@@ -271,53 +486,41 @@ interface ProjectSettings {
   /** Full paths of the `<Compile Include>` items. */
   readonly compileIncludes: readonly string[];
   readonly internalsVisibleTo: boolean;
+  /** A markup file the project lists as an item (see `ProjectFacts.markup`). */
+  readonly markupItem?: string;
   readonly importsSystem: boolean;
   readonly webProject: boolean;
 }
 
-/** Reads the project file and the `Directory.Build.props`/`.targets` files above it. */
+/** Reads the project file, what it imports and the `Directory.Build.props`/`.targets` files MSBuild imports for it. */
 function readProjectSettings(directory: string, problems: string[]): ProjectSettings {
   let projectText = '';
+  let projectParts: string[] = [];
   try {
     const projectFiles = fs.readdirSync(directory).filter((name) => name.toLowerCase().endsWith('.csproj'));
     if (projectFiles.length !== 1) {
       problems.push(`${directory} does not contain exactly one project file`);
     } else {
-      projectText = fs.readFileSync(path.join(directory, projectFiles[0]), 'utf8');
+      const projectFile = path.join(directory, projectFiles[0]);
+      projectText = fs.readFileSync(projectFile, 'utf8').replace(XML_COMMENT, '');
+      projectParts = expandImports(projectFile, projectText, problems, new Set([projectFile]));
     }
   } catch (error) {
     problems.push(`the project file in ${directory} could not be read (${(error as Error).message})`);
   }
 
-  const buildFiles: string[] = [];
-  for (let current = directory; ; ) {
-    for (const name of ['Directory.Build.props', 'Directory.Build.targets']) {
-      const file = path.join(current, name);
-      try {
-        buildFiles.push(fs.readFileSync(file, 'utf8'));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          problems.push(`${file} could not be read (${(error as Error).message})`);
-        }
-      }
-    }
-
-    const parent = path.dirname(current);
-    if (parent === current) {
-      break;
-    }
-
-    current = parent;
-  }
-
-  const msbuild = [projectText, ...buildFiles];
-  if (buildFiles.some((text) => /<Compile\s[^>]*\bInclude\s*=/i.test(text))) {
-    problems.push('a Directory.Build file adds C# files with <Compile Include>');
+  const props = importedBuildFile(directory, 'Directory.Build.props', problems, new Set());
+  const targets = importedBuildFile(directory, 'Directory.Build.targets', problems, new Set());
+  // In evaluation order: a later property or item wins.
+  const evaluated = [...props, ...projectParts, ...targets].join('\n');
+  const compileInclude = /<Compile\s[^>]*?\bInclude\s*=\s*"([^"]*)"/gi;
+  if ([...evaluated.matchAll(compileInclude)].length > [...projectText.matchAll(compileInclude)].length) {
+    problems.push('a Directory.Build file or a file the project imports adds C# files with <Compile Include>');
   }
 
   // `<Compile Include="..\Shared\File.cs" />`: explicit files (old-style projects list all of them).
   const compileIncludes: string[] = [];
-  for (const match of projectText.matchAll(/<Compile\s[^>]*?\bInclude\s*=\s*"([^"]*)"/gi)) {
+  for (const match of projectText.matchAll(compileInclude)) {
     const include = match[1].replace(/&amp;/g, '&');
     if (/[*?$%;]/.test(include)) {
       problems.push(`the project adds C# files with the pattern "${include}"`);
@@ -326,21 +529,130 @@ function readProjectSettings(directory: string, problems: string[]): ProjectSett
     }
   }
 
-  if (msbuild.some((text) => /\.projitems\b/i.test(text))) {
-    problems.push('the project imports a shared project');
-  }
+  // Old-style projects list their markup (`<Page Include="MainWindow.xaml" />`) instead of finding it.
+  const markupItem = /\bInclude\s*=\s*"([^"]*\.(?:razor|cshtml|xaml))"/i.exec(evaluated)?.[1];
 
   const sdkStyle = /<Project\s[^>]*\bSdk\s*=|<Sdk\s+Name\s*=|<Import\s[^>]*\bSdk\s*=/i.test(projectText);
-  const defaultItemsOff = msbuild.some((text) => /<EnableDefault(?:Compile)?Items>\s*false\s*</i.test(text));
-
-  const implicitUsings = /<ImplicitUsings>\s*(?:enable|true)\s*</i.test(projectText) ||
-    (!/<ImplicitUsings>/i.test(projectText) && buildFiles.some((text) => /<ImplicitUsings>\s*(?:enable|true)\s*</i.test(text)));
+  const defaultItemsOff = ['EnableDefaultItems', 'EnableDefaultCompileItems'].some((property) => /^false$/i.test(lastValue(evaluated, property) ?? ''));
+  const implicitUsings = /^(?:enable|true)$/i.test(lastValue(evaluated, 'ImplicitUsings') ?? '');
+  const systemUsing = [...evaluated.matchAll(/<Using\s+(Include|Remove)\s*=\s*"System"/gi)].pop()?.[1];
 
   return {
     defaultCompileItems: sdkStyle && !defaultItemsOff,
     compileIncludes,
-    internalsVisibleTo: msbuild.some((text) => /<InternalsVisibleTo\b/i.test(text)),
-    importsSystem: implicitUsings || msbuild.some((text) => /<Using\s+Include\s*=\s*"System"/i.test(text)),
+    internalsVisibleTo: /<InternalsVisibleTo\b/i.test(evaluated),
+    markupItem,
+    importsSystem: systemUsing === undefined ? implicitUsings : /^include$/i.test(systemUsing),
     webProject: /Sdk\s*=\s*"Microsoft\.NET\.Sdk\.Web"/i.test(projectText) || /<Sdk\s+Name\s*=\s*"Microsoft\.NET\.Sdk\.Web"/i.test(projectText),
   };
+}
+
+/** The last value `msbuild` assigns to `property`. */
+function lastValue(msbuild: string, property: string): string | undefined {
+  return [...msbuild.matchAll(new RegExp(`<${property}>\\s*([^<]*?)\\s*</${property}>`, 'gi'))].pop()?.[1];
+}
+
+/**
+ * The texts MSBuild evaluates for the `name` file (`Directory.Build.props` or `.targets`) of a
+ * project in `directory`: the nearest one at or above it, with what it imports spliced in (see
+ * `expandImports`), or nothing when it is one of the files `seen` already imports (MSBuild skips a
+ * repeated import).
+ */
+function importedBuildFile(directory: string, name: string, problems: string[], seen: ReadonlySet<string>): string[] {
+  for (let current = directory; ; ) {
+    const file = path.join(current, name);
+    let text: string | undefined;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        problems.push(`${file} could not be read (${(error as Error).message})`);
+        return [];
+      }
+    }
+
+    if (text !== undefined) {
+      return seen.has(file) ? [] : expandImports(file, text, problems, new Set([...seen, file]));
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return [];
+    }
+
+    current = parent;
+  }
+}
+
+/** Imports of the .NET SDK or the MSBuild toolset, which set nothing the facts read. */
+const TOOLSET_IMPORT = /^\$\((?:MSBuildToolsPath|MSBuildBinPath|MSBuildExtensionsPath(?:32|64)?|MSBuildSDKsPath|VSToolsPath)\)/i;
+
+/**
+ * `text` of the MSBuild file `file` without its XML comments, with the texts of its `<Import>`s
+ * spliced in where they are: the next file of the same name above for `GetPathOfFileAbove('<its
+ * name>', ...)` (also written `$(MSBuildThisFile)`) or a computed path ending in its name, and the
+ * file a plain path names, relative to `file`. SDK and toolset imports are left out; a shared
+ * project, any other import, or a missing file imported without a condition, is a problem.
+ */
+function expandImports(file: string, text: string, problems: string[], seen: ReadonlySet<string>): string[] {
+  const folder = path.dirname(file);
+  const name = path.basename(file);
+  const extension = path.extname(name);
+  const evaluated = text.replace(XML_COMMENT, '');
+  const parts: string[] = [];
+  let last = 0;
+  for (const match of evaluated.matchAll(/<Import\s[^>]*>/gi)) {
+    const element = match[0];
+    const project = /\bProject\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(element);
+    const value = (project?.[1] ?? project?.[2] ?? '').replace(/&amp;/g, '&').trim();
+    if (/\bSdk\s*=/i.test(element) || TOOLSET_IMPORT.test(value)) {
+      continue;
+    }
+
+    parts.push(evaluated.slice(last, match.index));
+    last = match.index + element.length;
+    if (/\.projitems$/i.test(value)) {
+      problems.push('the project imports a shared project');
+      continue;
+    }
+
+    const resolved = value
+      .replace(/\$\(MSBuildThisFileName\)\$\(MSBuildThisFileExtension\)|\$\(MSBuildThisFile\)/gi, name)
+      .replace(/\$\(MSBuildThisFileName\)/gi, path.basename(name, extension))
+      .replace(/\$\(MSBuildThisFileExtension\)/gi, extension)
+      .replace(/\$\(MSBuildThisFileDirectory\)/gi, `${folder}${path.sep}`)
+      .replace(/\$\(MSBuildThisFileFullPath\)/gi, file);
+    // The file a computed path finds above: the first argument of `GetPathOfFileAbove`, else the file name it ends in.
+    const computed = /^\$\(\[MSBuild\]::GetPathOfFileAbove\(\s*'?([^',)]*?)'?\s*[,)]/i.exec(resolved)?.[1] ?? (resolved.includes('$(') ? /[^\\/]*$/.exec(resolved)?.[0] : undefined);
+    if (computed?.toLowerCase() === name.toLowerCase()) {
+      const parent = path.dirname(folder);
+      parts.push(...(parent === folder ? [] : importedBuildFile(parent, name, problems, seen)));
+    } else if (computed !== undefined || /[$@%*?;]/.test(resolved)) {
+      problems.push(`${file} imports "${value}", which the cleanup cannot resolve`);
+    } else {
+      parts.push(...importedFile(path.resolve(folder, resolved.replace(/\\/g, path.sep)), /\bCondition\s*=/i.test(element), problems, seen));
+    }
+  }
+
+  parts.push(evaluated.slice(last));
+
+  return parts;
+}
+
+/** The texts of the file an `<Import>` names by its path (see `expandImports`). */
+function importedFile(file: string, conditional: boolean, problems: string[], seen: ReadonlySet<string>): string[] {
+  if (seen.has(file)) {
+    return [];
+  }
+
+  try {
+    return expandImports(file, fs.readFileSync(file, 'utf8'), problems, new Set([...seen, file]));
+  } catch (error) {
+    // A conditional import is usually `Condition="Exists(...)"`: a missing file is skipped.
+    if (!conditional || (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      problems.push(`${file} could not be read (${(error as Error).message})`);
+    }
+
+    return [];
+  }
 }

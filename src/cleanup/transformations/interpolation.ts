@@ -11,7 +11,7 @@ interface LiteralEnd {
 
 /** The expressions of every interpolation hole of an interpolated string literal, nested ones included. */
 export function interpolationHoles(literal: string): string[] {
-  const start = literal.search(/\$/);
+  const start = literal.search(/[$@]/);
   if (start < 0) {
     return [];
   }
@@ -36,6 +36,21 @@ export function interpolationWritesName(literal: string, name: string): boolean 
 
     return writes.some((pattern) => pattern.test(code));
   });
+}
+
+/** True when a hole of the interpolated string `literal` accesses a member or element of `name` (`name.M()`, `this.name[0]`, `name?.M`, `(name).M()`). */
+export function interpolationAccessesMember(literal: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Opening parentheses that are not a call's, the receiver, then closing parentheses and the access.
+  const access = new RegExp(
+    `(?<![\\w@.]\\s*)((?:\\(\\s*)*)(?:this\\s*\\.\\s*)?@?${escaped}(?!\\w)((?:\\s*\\))*)\\s*!?\\s*\\??\\s*[.[]`,
+    'g',
+  );
+
+  // Each group holds only its parentheses and whitespace: more closing than opening ones close a call's.
+  return interpolationHoles(literal).some((hole) =>
+    [...withoutStringContents(hole).matchAll(access)].some((match) => match[2].replace(/\s/g, '').length <= match[1].replace(/\s/g, '').length),
+  );
 }
 
 /** Replaces the content of the string and character literals of `code` so that text in them is never read as code. */
@@ -206,14 +221,17 @@ function formatFree(hole: string): string {
   let depth = 0;
   for (let i = 0; i < hole.length; i++) {
     const c = hole[i];
-    if ('([{'.includes(c)) {
+    const literal = c === '$' || c === '@' || c === '"' ? readLiteral(hole, i) : undefined;
+    if (literal) {
+      i = literal.end - 1;
+    } else if (c === "'") {
+      const close = hole.indexOf("'", hole[i + 1] === '\\' ? i + 3 : i + 2);
+      i = close < 0 ? hole.length : close;
+    } else if ('([{'.includes(c)) {
       depth++;
     } else if (')]}'.includes(c)) {
       depth--;
-    } else if (c === '"' || c === "'") {
-      const close = hole.indexOf(c, i + 1);
-      i = close < 0 ? hole.length : close;
-    } else if (c === ':' && depth === 0 && hole[i + 1] !== ':') {
+    } else if (c === ':' && depth === 0 && hole[i + 1] !== ':' && hole[i - 1] !== ':') {
       return hole.slice(0, i);
     }
   }
@@ -237,6 +255,8 @@ export interface HoleIdentifier {
   readonly member: boolean;
   /** Followed by `.`: it qualifies something (a type, a namespace or a value). */
   readonly qualifier: boolean;
+  /** Followed by `(`: the name is invoked. */
+  readonly invoked: boolean;
 }
 
 /** The identifiers used in the holes of an interpolated string literal, without keywords and literals. */
@@ -252,7 +272,7 @@ export function interpolationIdentifiers(literal: string): HoleIdentifier[] {
 
       const before = code.slice(0, match.index).trimEnd();
       const after = code.slice(match.index + match[0].length).trimStart();
-      found.push({ name, member: /(?:\.|\?\.|->)$/.test(before), qualifier: after.startsWith('.') });
+      found.push({ name, member: /(?:\.|\?\.|->)$/.test(before), qualifier: after.startsWith('.'), invoked: after.startsWith('(') });
     }
   }
 

@@ -17,15 +17,19 @@ import { CleanupSettings } from './types';
 const NAMING_DIAGNOSTIC_ID = 'IDE1006';
 const SETTING = 'codeJanitor.cleanup.onlyChangedLines';
 
-/** The lines (0-based) of `current` added or modified since `base`; every line when there is no base. */
+/**
+ * The lines (0-based) of `current` added or modified since `base`; every line when there is no base.
+ * A byte order mark is not line content: `git show` keeps it, the editor's text does not.
+ */
 export function changedLinesSince(base: string | undefined, current: string): ReadonlySet<number> {
-  const normalized = current.replace(/\r\n/g, '\n');
+  const normalize = (text: string) => text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+  const normalized = normalize(current);
   if (base === undefined) {
     return new Set(normalized.split('\n').keys());
   }
 
   const changed = new Set<number>();
-  for (const hunk of diffLineHunks(base.replace(/\r\n/g, '\n'), normalized)) {
+  for (const hunk of diffLineHunks(normalize(base), normalized)) {
     for (let line = hunk.afterStart; line < hunk.afterEnd; line++) {
       changed.add(line);
     }

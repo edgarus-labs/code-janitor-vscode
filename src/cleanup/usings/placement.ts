@@ -220,6 +220,30 @@ interface RewriteContext {
 
 const TYPE_END_TOKENS = new Set(['identifier', 'predefined_type', '>', ']', '?', '*']);
 
+interface LookedUpName {
+  /** Index of the token in the directive's tokens. */
+  readonly at: number;
+  readonly token: Token;
+  readonly name: string;
+  /** The name stands in front of `::`: `global`, an extern alias or a using alias of a namespace. */
+  readonly qualifier: boolean;
+}
+
+/** The simple names the target of `item` is looked up by: the identifiers that start a name (not after `.`, `::` or the end of a type). */
+function lookedUpNames(source: string, item: UsingItem): LookedUpName[] {
+  const names: LookedUpName[] = [];
+  const tokens = item.tokens;
+  for (let i = item.targetFrom; i < item.targetTo; i++) {
+    const token = tokens[i];
+    const previous = i > item.targetFrom ? tokens[i - 1] : undefined;
+    if (token.type === 'identifier' && !(previous && (previous.type === '.' || previous.type === '::' || TYPE_END_TOKENS.has(previous.type)))) {
+      names.push({ at: i, token, name: source.slice(token.start, token.end).replace(/^@/, ''), qualifier: tokens[i + 1]?.type === '::' });
+    }
+  }
+
+  return names;
+}
+
 /**
  * Writes `item` so that it means at its new place what it means now. Outwards, a name found in an
  * enclosing namespace is written with that namespace in front; inwards, a name that an inner
@@ -229,29 +253,20 @@ function rewriteDirective(ctx: RewriteContext, item: UsingItem): Rewritten | str
   const { source, index } = ctx;
   const describe = source.slice(item.start, item.end).replace(/\s+/g, ' ');
   const insertions: { at: number; text: string }[] = [];
-  const tokens = item.tokens;
-  let target: string | undefined = dottedName(source, tokens, item.targetFrom, item.targetTo);
+  let target: string | undefined = dottedName(source, item.tokens, item.targetFrom, item.targetTo);
 
-  for (let i = item.targetFrom; i < item.targetTo; i++) {
-    const token = tokens[i];
-    const previous = i > item.targetFrom ? tokens[i - 1] : undefined;
-    if (token.type !== 'identifier' || (previous && (previous.type === '.' || previous.type === '::' || TYPE_END_TOKENS.has(previous.type)))) {
-      continue;
-    }
-
-    const name = source.slice(token.start, token.end).replace(/^@/, '');
-    if (tokens[i + 1]?.type === '::') {
+  for (const { at, token, name, qualifier } of lookedUpNames(source, item)) {
+    if (qualifier) {
       if (name !== 'global' && ctx.innerExterns.has(name)) {
         return `'${describe}' refers to the extern alias '${name}', which is declared inside the namespace and cannot be named outside it`;
       }
 
-      i++;
       continue;
     }
 
     const scope = ctx.currentScopes.find((candidate) => index.memberKind(candidate, name) !== undefined);
     if (scope === undefined) {
-      const wholeName = i === item.targetFrom && item.alias === undefined;
+      const wholeName = at === item.targetFrom && item.alias === undefined;
       if (!(wholeName && ctx.externalReferences)) {
         return `'${describe}' cannot be resolved: '${name}' is not declared in the project or the framework`;
       }
@@ -266,7 +281,7 @@ function rewriteDirective(ctx: RewriteContext, item: UsingItem): Rewritten | str
         }
 
         insertions.push({ at: token.start, text: `${scope}.` });
-        if (i === item.targetFrom && target !== undefined) {
+        if (at === item.targetFrom && target !== undefined) {
           target = `${scope}.${target}`;
         }
       }
@@ -331,6 +346,45 @@ function describeTarget(name: string, index: DeclarationIndex): ImportedNames {
 }
 
 /**
+ * Directives of one scope do not see each other. A name of `item` that none of `scopes` declares is found through a
+ * directive of an enclosing scope; once one of `providers` that may provide it shares the scope of `item`, it is not.
+ */
+function findHiddenBinding(source: string, item: UsingItem, scopes: readonly string[], providers: readonly Entry[], index: DeclarationIndex): string | undefined {
+  // A using-namespace directive names a namespace, which only an alias stands for; the others name types too, which a
+  // namespace a package declares, or a `using static` of a type whose nested types are not known, may hold.
+  const namesTypes = item.isStatic || item.alias !== undefined;
+  const provides = ({ imported }: Entry, name: string): boolean => {
+    if (imported.kind === 'alias') {
+      return imported.alias === name;
+    }
+
+    if (!namesTypes) {
+      return false;
+    }
+
+    if (imported.kind === 'static') {
+      return imported.target === undefined || !index.declaresType(imported.target) || index.hasType(`${imported.target}.${name}`);
+    }
+
+    return imported.types?.has(name) ?? true;
+  };
+
+  for (const { name, qualifier } of lookedUpNames(source, item)) {
+    // In front of `::` stands `global`, an extern alias or a using alias of a namespace: only the last is a directive.
+    if (qualifier ? name === 'global' : scopes.some((scope) => index.memberKind(scope, name) !== undefined)) {
+      continue;
+    }
+
+    const provider = providers.find((entry) => (qualifier ? entry.imported.kind === 'alias' && entry.imported.alias === name : provides(entry, name)));
+    if (provider) {
+      return `'${source.slice(item.start, item.end).replace(/\s+/g, ' ')}' finds '${name}' through '${provider.label}', which it would no longer see once they share a scope`;
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * A directive moved across the members of the namespaces between its old and its new place is found
  * before (inwards) or after (outwards) names it did not meet before: a used name that such a scope
  * declares and the directive provides binds differently afterwards.
@@ -382,15 +436,37 @@ function findCapturedName(entry: Entry, scopes: readonly string[], used: UsedNam
   return undefined;
 }
 
+/** Whether an alias declared in `aliasScope` wins over a type imported in `importScope`; `undefined` when neither scope encloses the other. */
+function aliasWins(aliasScope: string, importScope: string): boolean | undefined {
+  // In one scope the alias wins; otherwise the directive of the inner scope does.
+  if (aliasScope === importScope || importScope === '' || aliasScope.startsWith(`${importScope}.`)) {
+    return true;
+  }
+
+  return aliasScope === '' || importScope.startsWith(`${aliasScope}.`) ? false : undefined;
+}
+
 /** Directives that are one scope before the move and share it after it (or the reverse) bind names differently. */
 function findRebinding(entries: readonly Entry[], used: UsedNames): string | undefined {
   for (let i = 0; i < entries.length; i++) {
     for (let j = i + 1; j < entries.length; j++) {
       const a = entries[i];
       const b = entries[j];
+      if (a.imported.kind === 'alias' || b.imported.kind === 'alias') {
+        // A type imported in an inner scope wins over an alias of an outer one, the alias wins in the same scope.
+        const [alias, other] = a.imported.kind === 'alias' ? [a, b] : [b, a];
+        const name = alias.imported.alias;
+        const provided = other.imported.kind === 'static' || other.imported.types === null || other.imported.types.has(name ?? '');
+        if (other.imported.kind !== 'alias' && name !== undefined && used.names.has(name) && provided && aliasWins(alias.before, other.before) !== aliasWins(alias.after, other.after)) {
+          return `moving '${alias.label}' and '${other.label}' would change what '${name}' refers to: the alias and the type imported with that name would win over each other differently`;
+        }
+
+        continue;
+      }
+
       const sharedBefore = a.before === b.before;
       const sharedAfter = a.after === b.after;
-      if (sharedBefore === sharedAfter || a.imported.kind === 'alias' || b.imported.kind === 'alias') {
+      if (sharedBefore === sharedAfter) {
         continue;
       }
 
@@ -565,9 +641,13 @@ function moveOutside(source: string, layout: Layout, env: PlacementEnvironment):
     }
   }
 
-  const entries = [...cuEntries, ...moved.map((entry) => entry.entry), ...globalUsingEntries(env.index, '')];
+  const globals = globalUsingEntries(env.index, '');
+  const fileLevel = [...cuEntries, ...globals];
+  const entries = [...cuEntries, ...moved.map((entry) => entry.entry), ...globals];
   for (const entry of moved) {
-    const reason = findCapturedName(entry.entry, scopesOf(entry.namespace.fullName).slice(1), used, env.index, 'outside');
+    const reason =
+      findHiddenBinding(source, entry.block.item, scopesOf(entry.namespace.fullName), fileLevel, env.index) ??
+      findCapturedName(entry.entry, scopesOf(entry.namespace.fullName).slice(1), used, env.index, 'outside');
     if (reason) {
       return skip(reason);
     }
@@ -854,15 +934,34 @@ function moveInside(source: string, layout: Layout, env: PlacementEnvironment): 
     ...globalUsingEntries(env.index, ''),
   ];
 
-  for (const { entry } of movedEntries) {
-    const reason = findCapturedName(entry, scopes.slice(1), used, env.index, 'inside');
+  const movedImports = movedEntries.map((moved) => moved.entry);
+  for (const item of namespace.usings) {
+    const reason = findHiddenBinding(source, item, scopes, movedImports, env.index);
     if (reason) {
       return skip(reason);
     }
   }
 
-  const all = [...movedEntries.map((moved) => moved.entry), ...keptEntries, ...globalEntries];
-  const rebinding = findRebinding(all, used) ?? findAliasClash(all, new Map(movedEntries.map((moved) => [moved.entry, moved.rewritten.text] as const)));
+  // The directives of a nested namespace look names up in N and its directives before the global namespace: names they
+  // find there now may be captured by the moved directives too.
+  const nestedNames = layout.namespaces
+    .filter((nested) => nested !== namespace)
+    .flatMap((nested) => nested.usings.flatMap((item) => lookedUpNames(source, item).filter((name) => !name.qualifier).map((name) => name.name)));
+  const reachable: UsedNames = { names: new Set([...used.names, ...nestedNames]), extensionNames: used.extensionNames };
+  for (const { entry } of movedEntries) {
+    // An alias may not share its name with a member of the namespace it is declared in, wherever that is declared (CS0576).
+    const alias = entry.imported.alias;
+    const reason =
+      alias !== undefined && used.names.has(alias) && env.index.memberKind(namespace.fullName, alias) !== undefined
+        ? `the alias '${alias}' of '${entry.label}' would conflict with ${namespace.fullName}.${alias}, which the namespace declares`
+        : findCapturedName(entry, scopes.slice(1), reachable, env.index, 'inside');
+    if (reason) {
+      return skip(reason);
+    }
+  }
+
+  const all = [...movedImports, ...keptEntries, ...globalEntries];
+  const rebinding = findRebinding(all, reachable) ?? findAliasClash(all, new Map(movedEntries.map((moved) => [moved.entry, moved.rewritten.text] as const)));
   if (rebinding) {
     return skip(rebinding);
   }
@@ -929,9 +1028,12 @@ function buildInward(
   const precededByBlank = first.removeStart === 0 || isBlankText(source.slice(lineStart(source, first.removeStart - 1), first.removeStart));
   // What stood between the directives and the code keeps one blank line, unless the directives were at the top of the file.
   const separator = !first.startsFile && !precededByBlank && trailingEnd < source.length ? newline : '';
-  for (const removal of removals) {
-    edits.push({ start: removal.removeStart, end: removal === last ? trailingEnd : removal.removeEnd, text: removal === last ? separator : '' });
-  }
+  removals.forEach((removal, i) => {
+    const next = removals[i + 1];
+    // A blank line that only separates two moved groups goes with them.
+    const end = next === undefined ? trailingEnd : blankRunEnd(removal.removeEnd) === next.removeStart ? next.removeStart : removal.removeEnd;
+    edits.push({ start: removal.removeStart, end, text: next === undefined ? separator : '' });
+  });
 
   // Write them into the namespace in front of the directives it has.
   const lines = landings.map((landing) => renderBlock(landing, indent, newline)).join('');

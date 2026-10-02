@@ -66,6 +66,20 @@ describe('IDE0047 / IDE0048 dotnet_style_parentheses_in_*', () => {
       method('var a = i + i * 2;', 'var d = i - 1 - 2;', 'var e = i - (i - 1);', 'var f = (i + 1) * 2;', 'var g = i + 1;')
     );
   });
+
+  it('keeps a keyword separated from the operand when it removes parentheses', () => {
+    const source = lines('class Sample', '{', '    int F(int x) { return(x); }', '    int G(int x) { return(x + 1); }', '    void H(System.Exception e) { throw(e); }', '}');
+    const after = lines('class Sample', '{', '    int F(int x) { return x; }', '    int G(int x) { return x + 1; }', '    void H(System.Exception e) { throw e; }', '}');
+
+    expect(codeStyle(source, ['dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning', 'dotnet_style_parentheses_in_arithmetic_binary_operators = never_if_unnecessary:warning'].join('\n'))).toBe(after);
+  });
+
+  it('keeps a keyword separated from a non-ASCII identifier', () => {
+    const source = lines('class Sample', '{', '    int F(int ä) { return(ä); }', '    int G(int x) { return(Ωmega(x)); }', '    int Ωmega(int x) => x;', '}');
+    const after = lines('class Sample', '{', '    int F(int ä) { return ä; }', '    int G(int x) { return Ωmega(x); }', '    int Ωmega(int x) => x;', '}');
+
+    expect(codeStyle(source, 'dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning')).toBe(after);
+  });
 });
 
 describe('IDE0054 dotnet_style_prefer_compound_assignment', () => {
@@ -118,6 +132,39 @@ describe('IDE0031 dotnet_style_null_propagation', () => {
 
     expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
   });
+
+  it('leaves pattern null checks on nullable value types alone', () => {
+    const source = method('int? r = n is not null ? n.Value : null;', 'bool? h = n is not null ? n.HasValue : null;', 'int? d = n is not null ? n.GetValueOrDefault() : null;');
+
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
+  });
+
+  it('leaves Nullable<T> members alone when the declared type is unknown or fully qualified', () => {
+    const source = method('var v = Get();', 'int? r = v is not null ? v.Value : null;', 'global::System.Nullable<int> g = n;', 'bool? h = g is not null ? g.HasValue : null;');
+
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
+  });
+
+  it('uses ?. on a nullable reference type declared elsewhere', () => {
+    expect(codeStyle(method('Uri? u = uri;', 'var h = u is not null ? u.Host : null;'), 'dotnet_style_null_propagation = true:warning')).toBe(
+      method('Uri? u = uri;', 'var h = u?.Host;')
+    );
+  });
+
+  it('uses ?. for a Value member of a named reference type that cannot be Nullable<T>', () => {
+    expect(
+      codeStyle(
+        method('XElement e = Get();', 'var a = e is not null ? e.Value : null;', 'Lazy<string> l = Get();', 'var b = l is not null ? l.Value : null;'),
+        'dotnet_style_null_propagation = true:warning'
+      )
+    ).toBe(method('XElement e = Get();', 'var a = e?.Value;', 'Lazy<string> l = Get();', 'var b = l?.Value;'));
+  });
+
+  it('leaves Nullable<T> members alone on a type named through a using alias', () => {
+    const source = lines('using N = System.Nullable<int>;', '', 'class Sample', '{', '    int? M(N g) => g is not null ? g.Value : null;', '}');
+
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
+  });
 });
 
 describe('IDE1005 csharp_style_conditional_delegate_call', () => {
@@ -147,6 +194,12 @@ describe('IDE0083 csharp_style_prefer_not_pattern', () => {
       method('if (!(o is string)) { }', 'if (!(o is null) && b) { }', 'if (!(o is string t)) { }'),
       method('if (o is not string) { }', 'if (o is not null && b) { }', 'if (!(o is string t)) { }')
     );
+  });
+
+  it('keeps a keyword separated from the rewritten operand', () => {
+    const source = lines('class Sample', '{', '    bool F(object o) { return!(o is string); }', '}');
+
+    expect(codeStyle(source, 'csharp_style_prefer_not_pattern = true:warning')).toBe(lines('class Sample', '{', '    bool F(object o) { return o is not string; }', '}'));
   });
 });
 

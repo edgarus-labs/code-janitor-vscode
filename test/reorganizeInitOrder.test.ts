@@ -81,6 +81,84 @@ describe('reorganize: initializers that depend on declaration order', () => {
     expect(members(reorganize(source))).toEqual(['A', 'Z', 'Twice']);
   });
 
+  it('does not move a static field across an initializer reading a name declared outside this type body', () => {
+    // Y2 may be a computed property of another partial part, a base class or a `using static` type
+    // that reads A: moving A above X would change what X sees.
+    const partial = 'partial class C\n{\n    static int X = Y2;\n    static int A = 5;\n}\n';
+    const inherited = 'class C : B\n{\n    static int X = C.Y2 + 1;\n    static int A = 5;\n}\n';
+
+    expect(members(reorganize(partial))).toEqual(['X', 'A']);
+    expect(members(reorganize(inherited))).toEqual(['X', 'A']);
+  });
+
+  it('sorts static fields reading library enum values', () => {
+    const regex = 'class C\n{\n    static Regex Z = new Regex("a", RegexOptions.CultureInvariant | RegexOptions.Compiled);\n    static int A = 5;\n}\n';
+    const flags = 'class C\n{\n    static BindingFlags Z = BindingFlags.Public | BindingFlags.Static;\n    static int A = 5;\n}\n';
+
+    expect(members(reorganize(regex))).toEqual(['A', 'Z']);
+    expect(members(reorganize(flags))).toEqual(['A', 'Z']);
+  });
+
+  it('sorts static fields reading values of an enum declared in this type or an enclosing scope', () => {
+    const nested = 'class C\n{\n    enum Mode { Fast }\n    static Mode Z = Mode.Fast;\n    static int A = 5;\n}\n';
+    const enclosing = 'enum Level { High }\nclass C\n{\n    private Level _z = Level.High;\n    private int _a = Next();\n    static int Next() => 1;\n}\n';
+
+    expect(members(reorganize(nested))).toEqual(['A', 'Z', 'Mode']);
+    expect(members(reorganize(enclosing))).toEqual(['_a', '_z', 'Next']);
+  });
+
+  it('does not treat a nested class, or a type that may shadow an enum, as pure', () => {
+    // A static property of a nested class runs its accessor (and static constructor), which may read A.
+    const nestedClass = 'class C\n{\n    class Mode { public static int Fast => A; }\n    static int Z = Mode.Fast;\n    static int A = 5;\n}\n';
+    const shadowed = 'enum Mode { Fast }\nclass C\n{\n    class Mode { public static int Fast => A; }\n    static int Z = Mode.Fast;\n    static int A = 5;\n}\n';
+    // A nested type of the base class or of another partial part shadows the outer enum.
+    const inherited = 'enum Mode { Fast }\nclass C : B\n{\n    static int Z = Mode.Fast;\n    static int A = 5;\n}\n';
+    const partial = 'enum Mode { Fast }\npartial class C\n{\n    static int Z = Mode.Fast;\n    static int A = 5;\n}\n';
+
+    expect(members(reorganize(nestedClass))).toEqual(['Z', 'A', 'Mode']);
+    expect(members(reorganize(shadowed))).toEqual(['Z', 'A', 'Mode']);
+    expect(members(reorganize(inherited))).toEqual(['Z', 'A']);
+    expect(members(reorganize(partial))).toEqual(['Z', 'A']);
+  });
+
+  it('does not treat a name as an enum when an enclosing type declares a member of that name', () => {
+    // Simple-name lookup binds `Mode` to Outer's property before the enum, so `Mode.Fast` runs Holder.Fast,
+    // which reads Z: A must stay after Z.
+    const source =
+      'enum Mode { Fast }\nclass Holder { public int Fast => Outer.C.Z; }\nstatic class Outer\n{\n    static Holder Mode => new Holder();\n    public static class C\n    {\n        public static int Z = 5;\n        public static int A = Mode.Fast;\n    }\n}\n';
+    const result = reorganize(source);
+
+    expect(result.indexOf('int Z = 5')).toBeLessThan(result.indexOf('int A = Mode.Fast'));
+  });
+
+  it('does not read the alignment and format of an interpolation hole as names', () => {
+    const format = 'class C\n{\n    const double V = 1;\n    static string Z = $"{V:N2}";\n    static int A = 5;\n}\n';
+    const date = 'class C\n{\n    static readonly DateTime D;\n    static string Z = $"{D,10:yyyy-MM-dd}";\n    static int A = 5;\n}\n';
+
+    expect(members(reorganize(format))).toEqual(['V', 'A', 'Z']);
+    expect(members(reorganize(date))).toEqual(['D', 'A', 'Z']);
+  });
+
+  it('reads the names of an interpolation hole that contains braces', () => {
+    // The switch subject Z is read: moving A above Z makes the hole see Z == 0.
+    const switched = 'class C\n{\n    static int Z = 1;\n    static string A = $"{Z switch { 1 => 10, _ => 20 }}";\n}\n';
+
+    expect(members(reorganize(switched))).toEqual(['Z', 'A']);
+  });
+
+  it('does not treat a property pattern, which runs getters, as free of side effects', () => {
+    const source = 'struct S { public int P => C.A; }\nclass C\n{\n    static S s;\n    public static bool B = s is { P: 1 };\n    public static int A = 1;\n}\n';
+    const result = reorganize(source);
+
+    expect(result.indexOf('bool B')).toBeLessThan(result.indexOf('int A = 1'));
+  });
+
+  it('sorts static fields testing a type or constant pattern', () => {
+    const source = 'class C\n{\n    static object o;\n    static bool Z = o is null;\n    static bool Y = o is string;\n    static int A = 5;\n}\n';
+
+    expect(members(reorganize(source))).toEqual(['A', 'o', 'Y', 'Z']);
+  });
+
   it('applies the constraints to the members of a #if block', () => {
     const source = 'class C\n{\n    static int Z = 1;\n#if X\n    static int A = Z;\n#endif\n}\n';
 

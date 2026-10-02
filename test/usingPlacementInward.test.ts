@@ -184,6 +184,14 @@ describe('inward move: other layouts', () => {
       'namespace N;\r\n\r\nusing System;\r\nusing System.Text;\r\n\r\nclass C { Action a; StringBuilder b; }'
     );
   });
+
+  it.each([
+    ['a block-scoped', 'using System;\n\nusing System.IO;\n\nnamespace N\n{\n    class C { }\n}\n', 'namespace N\n{\n    using System;\n    using System.IO;\n\n    class C { }\n}\n'],
+    ['a file-scoped', 'using System;\n\nusing System.IO;\n\nnamespace N;\n\nclass C { }\n', 'namespace N;\n\nusing System;\nusing System.IO;\n\nclass C { }\n'],
+    ['a commented', '// Header\n\nusing System;\n\nusing System.IO;\n\nnamespace N\n{\n    class C { }\n}\n', '// Header\n\nnamespace N\n{\n    using System;\n    using System.IO;\n\n    class C { }\n}\n'],
+  ])('takes the blank lines between groups of usings out of the file level of %s namespace', (_name, input, expected) => {
+    expect(moved(input)).toBe(expected);
+  });
 });
 
 describe('inward move: files left unchanged without a report', () => {
@@ -260,6 +268,71 @@ describe('inward move: skipped with a reason', () => {
     const result = placeUsings(input, 'inside', { index: createIndex([input]), externalReferences: true, indent: '    ' });
 
     expect(result).toEqual({ status: 'moved', text: 'namespace Company.App\r\n{\r\n    using Mediator;\r\n\r\n    class C { ICommand<int> command; }\r\n}\r\n' });
+  });
+
+  it.each([
+    ['namespace import', 'using System;\n\nnamespace N\n{\n    using static Math;\n\n    class C { double d = Sqrt(4); }\n}\n', 'Math'],
+    ['alias', 'using M = System.Math;\n\nnamespace N\n{\n    using static M;\n\n    class C { double d = Sqrt(4); }\n}\n', 'M'],
+    ['alias in a type argument', 'using M = System.Math;\n\nnamespace N\n{\n    using L = System.Collections.Generic.List<M>;\n\n    class C { L l; }\n}\n', 'M'],
+  ])('skips when a directive of the namespace only resolves through the moved %s', (_name, input, name) => {
+    // Directives of one scope do not see each other: next to the moved directive, the one of the namespace no longer resolves.
+    expect(skipped(input)).toMatch(new RegExp(`'${name}'`));
+  });
+
+  it('moves a using static next to a package namespace directive of the namespace', () => {
+    const input = 'using System;\nusing static System.Math;\n\nnamespace N\n{\n    using Newtonsoft.Json;\n\n    class C { }\n}\n';
+    const result = placeUsings(input, 'inside', { index: createIndex([input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toEqual({ status: 'moved', text: 'namespace N\n{\n    using System;\n    using static System.Math;\n    using Newtonsoft.Json;\n\n    class C { }\n}\n' });
+  });
+
+  it.each([
+    ['a using static', 'using static Helpers;'],
+    ['an alias', 'using H = Helpers;'],
+  ])('skips when %s of the namespace may only resolve through a moved package namespace', (_name, directive) => {
+    const input = `using Pkg;\n\nnamespace N\n{\n    ${directive}\n\n    class C { }\n}\n`;
+    const result = placeUsings(input, 'inside', { index: createIndex([input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: expect.stringContaining("'Helpers' through 'using Pkg;'") });
+  });
+
+  it.each([
+    ['a nested type of a project type', 'namespace Lib { public static class Outer { public class Inner { } } }\n', true],
+    ['a project type without that nested type', 'namespace Lib { public static class Outer { } }\n', false],
+  ])('for a moved using static of %s, decides by the nested types the project declares', (_name, library, hidden) => {
+    const input = 'using static Lib.Outer;\n\nnamespace N\n{\n    using I = Inner;\n\n    class C { }\n}\n';
+    const result = placeUsings(input, 'inside', { index: createIndex([library, input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toMatchObject(hidden ? { status: 'skipped', reason: expect.stringContaining("'Inner' through 'using static Lib.Outer;'") } : { status: 'moved' });
+  });
+
+  it('skips an alias that would join a namespace import providing a type of the same name', () => {
+    // In N, Lib.X (imported in N) wins over the file-level alias X; side by side in N, the alias would win.
+    const input = 'using X = System.Text.StringBuilder;\n\nnamespace N\n{\n    using Lib;\n\n    class C { int i = new X().Only; }\n}\n';
+
+    expect(skipped(input, 'namespace Lib { public class X { public int Only; } }\n')).toMatch(/'X'/);
+  });
+
+  it.each([
+    ['in the namespace itself', 'using Foo = System.Text.StringBuilder;\n\nnamespace N\n{\n    class Foo { }\n\n    class C { Foo f; }\n}\n', []],
+    ['in another file', 'using Foo = System.Text.StringBuilder;\n\nnamespace N\n{\n    class C { Foo f; }\n}\n', ['namespace N { class Foo { } }\n']],
+  ])('skips an alias named like a member of the namespace it would move into, declared %s (CS0576)', (_name, input, more) => {
+    expect(skipped(input, ...more)).toMatch(/alias 'Foo'/);
+  });
+
+  it.each([
+    ['a using static', 'using static Foo;', 'class C { int x = Bar(); }'],
+    ['an alias', 'using F = Foo;', 'class C { int x = F.Bar(); }'],
+  ])('skips when %s of a nested namespace would find a moved import before a global type', (_name, directive, member) => {
+    // In M, Foo is looked up in M, then N and its directives, then the global namespace: once `using Lib;` is in N, Lib.Foo wins.
+    const library = 'namespace Lib { public static class Foo { public static string Bar() => ""; } } public static class Foo { public static int Bar() => 1; }\n';
+    const input = `using Lib;\n\nnamespace N\n{\n    namespace M\n    {\n        ${directive}\n\n        ${member}\n    }\n}\n`;
+
+    expect(skipped(input, library)).toMatch(/'Foo'/);
+  });
+
+  it("skips a directive that names a moved alias before '::': directives of one scope do not see each other", () => {
+    expect(skipped('using T = System.Text;\n\nnamespace N\n{\n    using B = T::StringBuilder;\n\n    class C { B b; }\n}\n')).toMatch(/'T'/);
   });
 
   it.each([

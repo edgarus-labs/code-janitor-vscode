@@ -61,4 +61,44 @@ describe('checkPaths (code-janitor check)', () => {
     expect(kept.lines.join('\n')).not.toContain('Remove region directives');
     expect(removed.lines.join('\n')).toContain('removed/Holder.cs:7: Remove region directives');
   });
+
+  it('reports a change that only inserts blank lines as an insertion, named once', async () => {
+    fs.writeFileSync(path.join(root, 'src', 'Padded.cs'), 'namespace Demo\n{\n#if DEBUG\n    internal class Padded\n    {\n    }\n#endif\n}\n');
+
+    const report = await checkPaths([path.join(root, 'src', 'Padded.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Padded.cs:3: Insert blank line padding: Code Janitor would insert 1 blank line(s)',
+      'src/Padded.cs:6: Insert blank line padding: Code Janitor would insert 1 blank line(s)',
+      'Code Janitor check: 1 file(s) checked, 1 would change, 0 violation(s) cleanup cannot fix.',
+    ]);
+  });
+
+  it('lists the notes of Code Janitor settings without failing on them', async () => {
+    fs.writeFileSync(path.join(root, 'src', '.codejanitor'), JSON.stringify({ cleanup: { convertToFileScopedNamespace: true, moveUsingsOutsideNamespace: true } }));
+    fs.writeFileSync(path.join(root, 'src', 'Scoped.cs'), 'namespace Demo\n{\n    using System;\n\n    internal class Scoped\n    {\n    }\n}\n');
+
+    const report = await checkPaths([path.join(root, 'src', 'Scoped.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Scoped.cs: note: Using directives were not moved outside the namespace because the file is not part of a C# project. They were left in place.',
+      'src/Scoped.cs: note: Line 1: namespace not converted to a file-scoped one: its project could not be determined, so its C# language version is unknown.',
+      'Code Janitor check: 1 file(s) checked, all clean.',
+    ]);
+    expect(report.exitCode).toBe(0);
+  });
+
+  it('fails on an enforced .editorconfig rule cleanup cannot apply, naming the option once', async () => {
+    fs.appendFileSync(path.join(root, '.editorconfig'), 'csharp_style_namespace_declarations = file_scoped:warning\n');
+    fs.writeFileSync(path.join(root, 'src', 'Legacy.csproj'), '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <LangVersion>7.3</LangVersion>\n  </PropertyGroup>\n</Project>\n');
+    fs.writeFileSync(path.join(root, 'src', 'Legacy.cs'), 'namespace Demo\n{\n    internal class Legacy\n    {\n    }\n}\n');
+
+    const report = await checkPaths([path.join(root, 'src', 'Legacy.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Legacy.cs:1: csharp_style_namespace_declarations: not applied, its project uses C# 7.3 and file-scoped namespaces need C# 10.',
+      'Code Janitor check: 1 file(s) checked, 0 would change, 1 violation(s) cleanup cannot fix.',
+    ]);
+    expect(report.exitCode).toBe(1);
+  });
 });

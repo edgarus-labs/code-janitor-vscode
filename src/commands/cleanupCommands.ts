@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
 import {
+  cleanupFileGlob,
   createEditorConfigIssueLog,
   discoverDisqualifiedTypeNamesForFile,
   expandToCSharpFiles,
   expandToCleanableFiles,
   isCSharp,
+  isCleanupTarget,
   isSupportedFile,
   runCleanupOnUris,
   runFixNamespaceOnUris,
@@ -27,8 +29,9 @@ function selectedTargets(clicked?: vscode.Uri, selected?: vscode.Uri[]): vscode.
   return selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
 }
 
+/** The open files cleanup acts on (Razor files included while they are formatted). */
 function openFileUris(): vscode.Uri[] {
-  return vscode.workspace.textDocuments.filter((doc) => !doc.isClosed && doc.uri.scheme === 'file' && isSupportedFile(doc.uri)).map((doc) => doc.uri);
+  return vscode.workspace.textDocuments.filter((doc) => !doc.isClosed && doc.uri.scheme === 'file' && isCleanupTarget(doc.uri)).map((doc) => doc.uri);
 }
 
 /** Folders expand to their C# files; a file the user selected stays in the preview, which says why it is skipped. */
@@ -257,14 +260,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
     }),
 
     vscode.commands.registerCommand('codeJanitor.cleanupWorkspace', async () => {
-      const includeOthers = vscode.workspace
-        .getConfiguration('codeJanitor')
-        .get<boolean>('cleanup.includeOtherFileTypes', false);
-
-      const files = await vscode.workspace.findFiles(
-        includeOthers ? '**/*' : '**/*.cs',
-        '**/{bin,obj,node_modules,.git}/**'
-      );
+      const files = await vscode.workspace.findFiles(cleanupFileGlob(), WORKSPACE_EXCLUDE);
 
       if (files.length === 0) {
         void vscode.window.showInformationMessage('Code Janitor: no files found in the workspace.');
@@ -359,7 +355,7 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
 
     for (const change of changes) {
       const uri: vscode.Uri = change.uri;
-      if (isSupportedFile(uri)) {
+      if (isCleanupTarget(uri)) {
         seen.set(uri.toString(), uri);
       }
     }

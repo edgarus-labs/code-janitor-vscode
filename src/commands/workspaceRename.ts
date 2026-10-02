@@ -28,19 +28,24 @@ export async function renameSymbolsAcrossWorkspace(
     return;
   }
 
-  // Every C# file of the workspace's projects, as the editor has it (open documents) or on disk.
+  // Every C# file of the workspace's projects and every target, as the editor has it: the open
+  // document, else the file on disk without its byte order mark (VS Code keeps the BOM as the encoding,
+  // never in the text, so an edit must not contain it).
   const open = new Map(vscode.workspace.textDocuments.map((document) => [document.uri.fsPath, document]));
   const projects = discoverProjects(roots);
   const texts = new Map<string, string>();
-  for (const filePath of new Set(projects.flatMap((project) => project.csharpFiles))) {
+  for (const filePath of new Set([...projects.flatMap((project) => project.csharpFiles), ...files])) {
     const document = open.get(filePath);
-    texts.set(filePath, document ? document.getText() : Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(filePath))).toString('utf8'));
+    texts.set(
+      filePath,
+      document ? document.getText() : Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(filePath))).toString('utf8').replace(/^\uFEFF/, '')
+    );
   }
 
   const read = (filePath: string): string => {
     const text = texts.get(filePath);
     if (text === undefined) {
-      throw new Error(`${filePath} is not a file of a project of the workspace.`);
+      throw new Error(`${filePath} is neither a cleaned file nor a file of a project of the workspace.`);
     }
 
     return text;

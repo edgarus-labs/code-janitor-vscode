@@ -104,6 +104,14 @@
     },
     "Outward/OutStaticPair.cs": {
       "skipped": "cannot be compared"
+    },
+    "Outward/OutAliasImport.cs": {
+      "skipped": "what 'X' refers to",
+      "control": true
+    },
+    "Inward/InAliasQualifier.cs": {
+      "skipped": "finds 'Txt' through",
+      "control": true
     }
   },
   "inward": {
@@ -164,10 +172,30 @@
     "Inward/InNullable.cs": {
       "skipped": "preprocessor directives"
     },
+    "Inward/InHiddenBinding.cs": {
+      "skipped": "finds 'Math' through 'using System;'",
+      "control": true
+    },
+    "Inward/InHiddenNestedType.cs": {
+      "skipped": "finds 'Inner' through 'using static Company.App.Models.Holder;'",
+      "control": true
+    },
+    "Inward/InAliasConflict.cs": {
+      "skipped": "alias 'Widget'",
+      "control": true
+    },
     "Inward/InAssemblyAttribute.cs": {},
     "Inward/InNoNamespace.cs": {},
     "Inward/InTwoNamespaces.cs": {},
     "Inward/InTypeOutside.cs": {},
+    "Inward/InNestedCapture.cs": {
+      "skipped": "what 'Gauge' refers to",
+      "control": true
+    },
+    "Inward/InAliasQualifier.cs": {
+      "skipped": "finds 'Txt' through",
+      "control": true
+    },
     "Outward/OutBclCollision.cs": {
       "skipped": "'Timer' ambiguous",
       "control": true
@@ -190,6 +218,10 @@
     "Outward/OutAliasVisible.cs": {},
     "Outward/OutStaticPair.cs": {
       "skipped": "cannot be compared"
+    },
+    "Outward/OutAliasImport.cs": {
+      "skipped": "what 'X' refers to",
+      "control": true
     }
   }
 }

@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { Position, Selection, TextDocument, TextEditor, Uri, createContext, resetMock, state, window } from './helpers/vscodeMock';
 import { registerEditorCommands } from '../src/commands/editorCommands';
 import { registerReorganizeCommands } from '../src/commands/reorganizeCommands';
@@ -19,13 +22,33 @@ async function run(command: string, ...args: unknown[]): Promise<void> {
   await state.commands.get(command)!(...args);
 }
 
-function open(source: string, selection?: Selection, languageId = 'csharp'): TextEditor {
-  const document = new TextDocument(Uri.file('/w/C.cs'), source, languageId);
+function open(source: string, selection?: Selection, languageId = 'csharp', file = '/w/C.cs'): TextEditor {
+  const document = new TextDocument(Uri.file(file), source, languageId);
   state.documents.push(document);
   const editor = new TextEditor(document, selection);
   window.activeTextEditor = editor;
 
   return editor;
+}
+
+const tempRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of tempRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** A workspace folder whose `Legacy` subfolder has its own `.codejanitor` turning the blank-line padding off. */
+function workspaceWithNestedPolicy(): { root: string; nested: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-reorganize-'));
+  tempRoots.push(root);
+  const nested = path.join(root, 'Legacy');
+  fs.mkdirSync(nested);
+  fs.writeFileSync(path.join(nested, '.codejanitor'), JSON.stringify({ cleanup: { insertBlankLinePadding: false } }));
+  state.workspaceFolders = [{ uri: Uri.file(root), name: 'w' }];
+
+  return { root, nested };
 }
 
 describe('codeJanitor.reorganizeActiveFile', () => {
@@ -54,6 +77,15 @@ describe('codeJanitor.reorganizeActiveFile', () => {
     await run('codeJanitor.reorganizeActiveFile');
 
     expect(state.informationMessages).toContain('Code Janitor: nothing to reorganize.');
+  });
+
+  it("uses the .codejanitor nearest to the file, not the workspace folder's", async () => {
+    const { nested } = workspaceWithNestedPolicy();
+    const editor = open(UNSORTED, undefined, 'csharp', path.join(nested, 'C.cs'));
+
+    await run('codeJanitor.reorganizeActiveFile');
+
+    expect(editor.document.getText()).toBe(SORTED);
   });
 
   it('asks about a file with preprocessor conditionals and reorganizes it on yes, leaving the setting alone', async () => {
@@ -181,6 +213,18 @@ describe('codeJanitor.reorganizeSelectedFiles', () => {
     expect(state.files.get('/w/B.cs')).toContain('    int _a;\n\n    void B() { }\n#if DEBUG');
   });
 
+  it('reorganizes every file with the .codejanitor nearest to it', async () => {
+    const { root, nested } = workspaceWithNestedPolicy();
+    const outer = path.join(root, 'A.cs');
+    const inner = path.join(nested, 'B.cs');
+    state.files.set(outer, UNSORTED);
+    state.files.set(inner, UNSORTED);
+
+    await run('codeJanitor.reorganizeSelectedFiles', undefined, [Uri.file(outer), Uri.file(inner)]);
+
+    expect([state.files.get(outer), state.files.get(inner)]).toEqual([REORGANIZED, SORTED]);
+  });
+
   it('warns when nothing is selected', async () => {
     await run('codeJanitor.reorganizeSelectedFiles');
 
@@ -206,6 +250,15 @@ describe('region commands', () => {
 
     expect(editor.document.getText()).toContain('  #region New Region\n');
     expect(editor.document.getText()).toContain('  a;\n\n  #endregion New Region\n\n  b;');
+  });
+
+  it('insertRegion uses the .codejanitor nearest to the file', async () => {
+    const { nested } = workspaceWithNestedPolicy();
+    const editor = open('class C\n{\n    int _a;\n    int _b;\n}\n', new Selection(new Position(2, 6), new Position(3, 4)), 'csharp', path.join(nested, 'C.cs'));
+
+    await run('codeJanitor.insertRegion');
+
+    expect(editor.document.getText()).toBe('class C\n{\n    #region New Region\n    int _a;\n    int _b;\n    #endregion New Region\n}\n');
   });
 
   it('removeRegion removes the region the cursor is on', async () => {

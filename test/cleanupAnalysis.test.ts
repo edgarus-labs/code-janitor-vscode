@@ -115,4 +115,37 @@ describe('analyzeCleanup', () => {
     // An occurrence covering only the line of the `if` would add `{` without its `}`.
     expect(fixFindingOccurrence(SOURCE, filePath, settings, { ...finding, startLine: 10, endLine: 10 })).toBeUndefined();
   });
+
+  it('locates an unfixed violation reported without an option qualifier at its line, with its severity', () => {
+    fs.writeFileSync(path.join(root, '.editorconfig'), ['root = true', '', '[*.cs]', 'dotnet_diagnostic.IDE0052.severity = warning', ''].join('\n'));
+    const source = [
+      'namespace Demo;',
+      '',
+      'internal class A',
+      '{',
+      '    private int _count;',
+      '',
+      '    public void Set(int value)',
+      '    {',
+      '        _count = value;',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+
+    const unused = analyzeCleanup(source, filePath, createDefaultSettings()).findings.filter((finding) => finding.rule.startsWith('IDE0052'));
+
+    expect(unused).toEqual([
+      expect.objectContaining({
+        ruleId: 'IDE0052',
+        rule: 'IDE0052',
+        severity: 'warning',
+        startLine: 4,
+        endLine: 4,
+        message: "'_count' is private and assigned but never read.",
+        fixable: false,
+      }),
+    ]);
+    expect(unused[0].fileLevel).toBeUndefined();
+  });
 });

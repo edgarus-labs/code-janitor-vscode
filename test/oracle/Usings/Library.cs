@@ -74,6 +74,13 @@ namespace Company.App.Models
     {
         public static int Twice(int x) => x * 2;
     }
+
+    public static class Holder
+    {
+        public class Inner
+        {
+        }
+    }
 }
 
 namespace Company.App.Text
@@ -120,5 +127,13 @@ namespace Beta
 {
     public class T
     {
+    }
+}
+
+namespace AliasRival
+{
+    public class X
+    {
+        public int Only;
     }
 }

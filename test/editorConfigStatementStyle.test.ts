@@ -74,6 +74,12 @@ describe('IDE0017 dotnet_style_object_initializer', () => {
       method('void', 'var s = new Sample()', '{', '    _name = "x",', '    Count = i', '};', 's.Other = s.Count;', 'Use(s);')
     );
   });
+
+  it('leaves the creation alone when an assigned value reads the local inside an interpolated string', () => {
+    const source = method('void', 'var s = new Sample();', 's._name = "x";', 's.Other = $"{s._name}!";', 'Use(s);');
+
+    expect(codeStyle(source, 'dotnet_style_object_initializer = true:warning')).toBe(method('void', 'var s = new Sample()', '{', '    _name = "x"', '};', 's.Other = $"{s._name}!";', 'Use(s);'));
+  });
 });
 
 describe('IDE0028 dotnet_style_collection_initializer', () => {
@@ -91,6 +97,62 @@ describe('IDE0028 dotnet_style_collection_initializer', () => {
     expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning\ndotnet_style_prefer_collection_expression = true:warning')).toBe(
       method('void', 'List<int> list = [];', 'list.Add(1);')
     );
+  });
+
+  it('stops before an Add call that reads the local inside an interpolated string', () => {
+    const source = method('void', 'var list = new List<string>();', 'list.Add($"{list.Count}");', 'Use(list);');
+
+    expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning')).toBe(source);
+  });
+});
+
+describe('interpolated strings as uses of a local', () => {
+  it('keeps a tuple local read by name inside an interpolated string (IDE0042)', () => {
+    const source = method('void', 'var point = (a: 1, b: 2);', 'Use(point.a, $"{point.b}");');
+
+    expect(codeStyle(source, 'csharp_style_deconstructed_variable_declaration = true:warning')).toBe(source);
+  });
+
+  it('keeps a tuple local read inside an @$ verbatim interpolated string (IDE0042)', () => {
+    const source = method('void', 'var point = (x: 1, y: 2);', 'Use(point.x);', 'Use(@$"C:\\{point}");');
+
+    expect(codeStyle(source, 'csharp_style_deconstructed_variable_declaration = true:warning')).toBe(source);
+  });
+
+  it('keeps a swap temporary read inside an interpolated string (IDE0180)', () => {
+    const source = method('void', 'int j = 0;', 'var t = i;', 'i = j;', 'j = t;', 'Use($"{t}");');
+
+    expect(codeStyle(source, 'csharp_style_prefer_tuple_swap = true:warning')).toBe(source);
+  });
+
+  it('keeps a swap temporary read inside a global::-qualified call in an interpolated string (IDE0180)', () => {
+    const source = method('void', 'int j = 0;', 'var t = i;', 'i = j;', 'j = t;', 'Use($"{global::X.F(t)}");');
+
+    expect(codeStyle(source, 'csharp_style_prefer_tuple_swap = true:warning')).toBe(source);
+  });
+
+  it('keeps a delegate local passed as a value inside an interpolated string (IDE0039)', () => {
+    const source = method('void', 'Func<int, int> f = x => x + 1;', 'Use(f(1), $"{f}");');
+
+    expect(codeStyle(source, 'csharp_style_prefer_local_over_anonymous_function = true:warning')).toBe(source);
+  });
+
+  it('still turns a delegate local into a local function when a hole only calls it (IDE0039)', () => {
+    const source = method('void', 'Func<int, int> f = x => x + 1;', 'Use(f(1));', 'Use($"{f(2)} {f(3):D2}");');
+
+    expect(codeStyle(source, 'csharp_style_prefer_local_over_anonymous_function = true:warning')).toContain('int f(int x)');
+  });
+
+  it('keeps an as-cast local read after the null check inside an interpolated string (IDE0019)', () => {
+    const source = method('void', 'var s = o as string;', 'if (s != null) Use(s);', 'Use($"{s}");');
+
+    expect(codeStyle(source, 'csharp_style_pattern_matching_over_as_with_null_check = true:warning')).toBe(source);
+  });
+
+  it('keeps a cast local assigned inside an interpolated string (IDE0020)', () => {
+    const source = method('void', 'if (o is string)', '{', '    var t = (string)o;', '    Use($"{t = "x"}");', '}');
+
+    expect(codeStyle(source, 'csharp_style_pattern_matching_over_is_with_cast_check = true:warning')).toBe(source);
   });
 });
 
@@ -113,6 +175,12 @@ describe('IDE0066 csharp_style_prefer_switch_expression', () => {
 
   it('leaves switches with other statements, or of types the arms could change, alone', () => {
     const source = method('object', 'switch (i)', '{', '    case 1: return 1;', '    default: return 2L;', '}');
+
+    expect(codeStyle(source, 'csharp_style_prefer_switch_expression = true:warning')).toBe(source);
+  });
+
+  it('keeps an unconditional throw after an assigning switch without a default', () => {
+    const source = method('int', 'int n;', 'switch (i)', '{', '    case 1:', '        n = 10;', '        break;', '    case 2:', '        n = 20;', '        break;', '}', 'throw new System.Exception();');
 
     expect(codeStyle(source, 'csharp_style_prefer_switch_expression = true:warning')).toBe(source);
   });

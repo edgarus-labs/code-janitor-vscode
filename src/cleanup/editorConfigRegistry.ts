@@ -20,6 +20,8 @@ type Gate =
       readonly diagnosticId: (value: string) => string;
       /** Every diagnostic `diagnosticId` can select. */
       readonly diagnosticIds: readonly string[];
+      /** Whether the value picks one of `diagnosticIds` (the others are not reported); otherwise they share the option. */
+      readonly selective: (value: string) => boolean;
     }
   /** While the given diagnostic is enforced; the value carries no severity. */
   | { readonly kind: 'diagnostic'; readonly diagnosticId: string };
@@ -40,18 +42,33 @@ const oneOf =
 const isBoolean = oneOf('true', 'false');
 const always: Gate = { kind: 'always' };
 const formatting: Gate = { kind: 'formatting' };
-const codeStyle = (diagnosticId: string): Gate => ({ kind: 'codeStyle', diagnosticId: () => diagnosticId, diagnosticIds: [diagnosticId] });
+const codeStyle = (diagnosticId: string): Gate => ({ kind: 'codeStyle', diagnosticId: () => diagnosticId, diagnosticIds: [diagnosticId], selective: () => false });
 /** A code-style option whose value selects one of two diagnostics. */
 const codeStyleBy = (value: string, whenValue: string, otherwise: string): Gate => ({
   kind: 'codeStyle',
   diagnosticId: (actual) => (actual === value ? whenValue : otherwise),
   diagnosticIds: [whenValue, otherwise],
+  selective: () => true,
 });
 /** A code-style option shared by several diagnostics, each gating its own part of the rule. */
-const codeStyleFamily = (main: string, ...others: string[]): Gate => ({ kind: 'codeStyle', diagnosticId: () => main, diagnosticIds: [main, ...others] });
+const codeStyleFamily = (main: string, ...others: string[]): Gate => ({
+  kind: 'codeStyle',
+  diagnosticId: () => main,
+  diagnosticIds: [main, ...others],
+  selective: () => false,
+});
 const varDiagnostic = codeStyleBy('true', 'IDE0007', 'IDE0008');
 const qualificationDiagnostic = codeStyleBy('true', 'IDE0009', 'IDE0003');
-const parenthesesDiagnostic = codeStyleBy('always_for_clarity', 'IDE0048', 'IDE0047');
+/**
+ * Roslyn reports IDE0047 under both values (always_for_clarity only spares parentheses that clarify
+ * precedence), and IDE0048 only under always_for_clarity: just never_if_unnecessary selects one.
+ */
+const parenthesesDiagnostic: Gate = {
+  kind: 'codeStyle',
+  diagnosticId: (actual) => (actual === 'always_for_clarity' ? 'IDE0048' : 'IDE0047'),
+  diagnosticIds: ['IDE0048', 'IDE0047'],
+  selective: (actual) => actual === 'never_if_unnecessary',
+};
 const parenthesesValue = oneOf('always_for_clarity', 'never_if_unnecessary');
 const expressionBodyValue = oneOf('true', 'false', 'when_on_single_line', 'when_possible', 'never');
 
@@ -426,6 +443,19 @@ export function diagnosticIdsOfOption(props: EditorConfigProperties, option: str
   const ids = [...(selected.size > 0 ? selected : possible)].sort();
 
   return ids.length > 0 ? ids.join('/') : option;
+}
+
+/**
+ * The one diagnostic Roslyn reports for a code-style option whose value selects between several
+ * (`dotnet_style_qualification_for_field = true` reports IDE0009, `false` IDE0003); undefined for
+ * an option whose diagnostics all apply, or that is not supported.
+ */
+export function diagnosticIdSelectedBy(key: string, value: string): string | undefined {
+  const gate = SUPPORTED_SETTINGS[key]?.gate;
+
+  const normalized = value.toLowerCase();
+
+  return gate?.kind === 'codeStyle' && gate.selective(normalized) ? gate.diagnosticId(normalized) : undefined;
 }
 
 /** The value of a setting as written: code-style options and plain options take a `:severity` suffix. */

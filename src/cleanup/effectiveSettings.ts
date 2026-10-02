@@ -9,7 +9,7 @@ import {
   parseSeverity,
   withEntryOverrides,
 } from './editorconfig';
-import { SUPPORTED_DIAGNOSTICS, effectiveEditorConfigValue } from './editorConfigRegistry';
+import { SUPPORTED_DIAGNOSTICS, diagnosticIdSelectedBy, effectiveEditorConfigValue } from './editorConfigRegistry';
 import { CleanupSettings } from './types';
 
 /**
@@ -73,6 +73,8 @@ interface RuleLink {
   readonly parse: ((value: string) => boolean | undefined) | undefined;
   /** The setting value when the rule is enforced with Roslyn's default option value. */
   readonly defaultValue: boolean;
+  /** Roslyn's default option value, when it selects which of `diagnosticIds` is reported (see {@link readRule}). */
+  readonly optionDefault?: string;
 }
 
 const parseBoolean = (value: string): boolean | undefined => (value.toLowerCase() === 'true' ? true : value.toLowerCase() === 'false' ? false : undefined);
@@ -114,8 +116,9 @@ const link = (
   key: string | undefined,
   diagnosticIds: readonly string[],
   parse: RuleLink['parse'],
-  defaultValue: boolean
-): RuleLink => ({ settings, key, diagnosticIds, parse, defaultValue });
+  defaultValue: boolean,
+  optionDefault?: string
+): RuleLink => ({ settings, key, diagnosticIds, parse, defaultValue, optionDefault });
 
 const EXPLICIT_ACCESS_MODIFIER_SETTINGS = [
   'insertExplicitAccessModifiersOnClasses',
@@ -131,7 +134,7 @@ const EXPLICIT_ACCESS_MODIFIER_SETTINGS = [
 
 /** The settings whose step has a Roslyn rule counterpart (the key table of `docs/features.md`, "Settings precedence"). */
 const RULE_LINKS: readonly RuleLink[] = [
-  link(['convertToVarWhenApparent'], 'csharp_style_var_when_type_is_apparent', ['IDE0007', 'IDE0008'], parseBoolean, false),
+  link(['convertToVarWhenApparent'], 'csharp_style_var_when_type_is_apparent', ['IDE0007', 'IDE0008'], parseBoolean, false, 'false'),
   link(['inlineOutVariableDeclarations'], 'csharp_style_inlined_variable_declaration', ['IDE0018'], parseBoolean, true),
   link(
     ['convertToCollectionExpressions'],
@@ -208,23 +211,49 @@ function categoryOf(diagnosticId: string): string | undefined {
   return /^IDE/i.test(diagnosticId) ? 'Style' : SUPPORTED_DIAGNOSTICS[diagnosticId.toUpperCase()]?.category;
 }
 
+/** The deciding key of a rule enforced by the SDK rule set of the project's `AnalysisLevel`/`AnalysisMode` properties. */
+export const RULE_SET_KEY = 'AnalysisLevel/AnalysisMode';
+
 /**
- * The severity `.editorconfig` configures for a diagnostic other than through an option suffix: the first
- * recognized one of `dotnet_diagnostic.<id>.severity`, the category severity and the global severity
- * (the last two do not apply to a rule that is disabled by default). `key` is the lower-cased entry.
+ * The severity configured for a diagnostic other than through an option suffix, in the precedence of the
+ * rule engine (`resolveDiagnosticSeverity`): the project's `NoWarn` turns it off; otherwise the first
+ * recognized one of `dotnet_diagnostic.<id>.severity`, the project's rule set, the category severity and
+ * the global severity (the last two do not apply to a rule that is disabled by default). A
+ * `dotnet_diagnostic.<id>.severity = default` stops there: the rule's own default severity where the
+ * .NET analyzers run (CA rules), else undefined so that the option suffix decides (code-style rules).
+ * `key` is the lower-cased entry, or the project property, that configures the severity.
  */
 function readDiagnosticSeverity(props: EditorConfigProperties, diagnosticId: string): { key: string; enforced: boolean } | undefined {
-  const category = categoryOf(diagnosticId);
-  const bulkApplies = !isDisabledByDefaultDiagnostic(diagnosticId);
-  const candidates = [
-    `dotnet_diagnostic.${diagnosticId.toLowerCase()}.severity`,
-    bulkApplies && category ? `dotnet_analyzer_diagnostic.category-${category.toLowerCase()}.severity` : undefined,
-    bulkApplies ? 'dotnet_analyzer_diagnostic.severity' : undefined,
-  ];
+  const analysis = props.analysis;
+  if (analysis?.isSuppressed(diagnosticId)) {
+    return { key: 'NoWarn', enforced: false };
+  }
 
-  for (const key of candidates) {
-    const severity = key === undefined ? undefined : parseSeverity(props.get(key));
-    if (key !== undefined && severity !== undefined) {
+  const specificKey = `dotnet_diagnostic.${diagnosticId.toLowerCase()}.severity`;
+  if (props.get(specificKey)?.trim().toLowerCase() === 'default') {
+    const ruleDefault = analysis?.defaultSeverity(diagnosticId);
+
+    return ruleDefault === undefined ? undefined : { key: specificKey, enforced: isEnforced(ruleDefault) };
+  }
+
+  const specific = parseSeverity(props.get(specificKey));
+  if (specific !== undefined) {
+    return { key: specificKey, enforced: isEnforced(specific) };
+  }
+
+  const ruleSet = analysis?.ruleSetSeverity(diagnosticId);
+  if (ruleSet !== undefined) {
+    return { key: RULE_SET_KEY, enforced: isEnforced(ruleSet) };
+  }
+
+  if (isDisabledByDefaultDiagnostic(diagnosticId)) {
+    return undefined;
+  }
+
+  const category = categoryOf(diagnosticId);
+  for (const key of [category && `dotnet_analyzer_diagnostic.category-${category.toLowerCase()}.severity`, 'dotnet_analyzer_diagnostic.severity']) {
+    const severity = key ? parseSeverity(props.get(key)) : undefined;
+    if (key && severity !== undefined) {
       return { key, enforced: isEnforced(severity) };
     }
   }
@@ -234,12 +263,14 @@ function readDiagnosticSeverity(props: EditorConfigProperties, diagnosticId: str
 
 /**
  * Reads a Roslyn rule configured by an option and the severities of its diagnostics, resolved as Roslyn
- * reports it. An option with the `:none` suffix stops the rule whatever else is configured. Otherwise the
- * effective severity of each diagnostic is the first one defined of `dotnet_diagnostic.<id>.severity`,
- * `dotnet_analyzer_diagnostic.category-<category>.severity`, `dotnet_analyzer_diagnostic.severity` and the
- * option's severity suffix; an option without a suffix enforces the diagnostics none of those configure.
- * The rule is enforced when one of its diagnostics is `suggestion` or higher, and not enforced when none is
- * (all `none` or `silent`, or nothing configured), so the next source decides.
+ * reports it. An option with the `:none` suffix stops the rule whatever else is configured. Only the
+ * diagnostics the option value reports count: when the value (the option's, else `optionDefault`, Roslyn's
+ * default) selects one of several (`dotnet_style_qualification_for_field = true` reports IDE0009, not
+ * IDE0003), the others' severities are ignored. The effective severity of each diagnostic is the one
+ * {@link readDiagnosticSeverity} reads, else the option's severity suffix; an option without a suffix
+ * enforces the diagnostics nothing else configures. The rule is enforced when one of its diagnostics is
+ * `suggestion` or higher, and not enforced when none is (all `none` or `silent`, or nothing configured),
+ * so the next source decides.
  *
  * @returns `value`: the enforced option value, or undefined when the rule is enforced with Roslyn's default value;
  *   `decidingKey`: the option name when the option is defined, otherwise the severity entry that enforces the rule.
@@ -248,7 +279,8 @@ function readRule(
   props: EditorConfigProperties,
   key: string | undefined,
   diagnosticIds: readonly string[],
-  isValidValue: (value: string) => boolean
+  isValidValue: (value: string) => boolean,
+  optionDefault?: string
 ): { value: string | undefined; decidingKey: string } | undefined {
   const option = key === undefined ? undefined : readRawOption(props, key);
   const defined = option !== undefined && isValidValue(option.value);
@@ -257,8 +289,14 @@ function readRule(
     return undefined;
   }
 
+  const value = defined ? option.value : optionDefault;
+  const selected = key === undefined || value === undefined ? undefined : diagnosticIdSelectedBy(key, value);
   let enforcingKey: string | undefined;
   for (const diagnosticId of diagnosticIds) {
+    if (selected !== undefined && diagnosticId.toUpperCase() !== selected) {
+      continue;
+    }
+
     const configured = readDiagnosticSeverity(props, diagnosticId);
     if (configured) {
       enforcingKey ??= configured.enforced ? configured.key : undefined;
@@ -293,7 +331,7 @@ export function resolveEffectiveCleanupSettings(
   }
 
   for (const entry of RULE_LINKS) {
-    const rule = readRule(base, entry.key, entry.diagnosticIds, (value) => entry.parse?.(value) !== undefined);
+    const rule = readRule(base, entry.key, entry.diagnosticIds, (value) => entry.parse?.(value) !== undefined, entry.optionDefault);
     if (rule) {
       const value = rule.value === undefined ? entry.defaultValue : entry.parse!(rule.value)!;
       for (const setting of entry.settings) {
@@ -387,13 +425,13 @@ function resolveFileHeader(props: EditorConfigProperties, filePath: string, deci
 
 /**
  * The namespace declaration style: `.editorconfig` wins when it enforces `csharp_style_namespace_declarations`
- * (IDE0160, IDE0161), with Roslyn's default `block_scoped` when enforced by severity only; otherwise the
- * file-scoped conversion setting decides.
+ * (IDE0160 for `block_scoped`, IDE0161 for `file_scoped`), with Roslyn's default `block_scoped` when IDE0160 is
+ * enforced by severity only; otherwise the file-scoped conversion setting decides.
  */
 function resolveNamespaceDeclarations(props: EditorConfigProperties, settings: CleanupSettings, decide: Decide): NamespaceDeclarationPreference {
   const parse = (value: string): NamespaceDeclarationPreference | undefined =>
     value.toLowerCase() === 'file_scoped' ? 'fileScoped' : value.toLowerCase() === 'block_scoped' ? 'blockScoped' : undefined;
-  const rule = readRule(props, 'csharp_style_namespace_declarations', ['IDE0160', 'IDE0161'], (value) => parse(value) !== undefined);
+  const rule = readRule(props, 'csharp_style_namespace_declarations', ['IDE0160', 'IDE0161'], (value) => parse(value) !== undefined, 'block_scoped');
   if (rule) {
     const preference = rule.value === undefined ? 'blockScoped' : parse(rule.value)!;
     decide('convertToFileScopedNamespace', rule.decidingKey, preference === 'fileScoped');
@@ -454,7 +492,7 @@ function resolveCodeStyleRules(props: EditorConfigProperties, rules: Readonly<Re
   const editorConfigKeys = new Map<string, string>();
 
   for (const rule of CODE_STYLE_RULES) {
-    const enforced = readRule(props, rule.key, rule.diagnosticIds, rule.isValidValue);
+    const enforced = readRule(props, rule.key, rule.diagnosticIds, rule.isValidValue, rule.defaultValue);
     if (enforced) {
       editorConfigKeys.set(rule.key, enforced.decidingKey);
     } else if (rule.key in rules && rule.isValidValue(rules[rule.key])) {

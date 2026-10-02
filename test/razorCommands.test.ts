@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { TextDocument, TextEditor, Uri, createContext, resetMock, state, window } from './helpers/vscodeMock';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as path from 'node:path';
+import { TextDocument, TextEditor, Uri, createContext, resetMock, state, window, workspace } from './helpers/vscodeMock';
 import { cleanupFileGlob, isCleanupTarget, runCleanupOnUris, runFormatRazorOnUris } from '../src/commands/cleanupCore';
+import { registerCleanupCommands } from '../src/commands/cleanupCommands';
 import { registerRazorCommands } from '../src/commands/razorCommands';
 
 const MESSY = '@if(a){var x=1;}\n';
@@ -8,6 +10,10 @@ const FORMATTED = '@if (a)\n{\n    var x = 1;\n}\n';
 
 beforeEach(() => {
   resetMock();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 function run(command: string, ...args: unknown[]): Promise<unknown> {
@@ -139,5 +145,51 @@ describe('Razor files in the cleanup', () => {
     await runCleanupOnUris(createContext(), [Uri.file('/w/A.razor')]);
 
     expect(state.files.get('/w/A.razor')).toBe('@if (a)\n{\n  var x = 1;\n}\n');
+  });
+
+  describe('in the open, changed and workspace scopes, while other file types are not cleaned', () => {
+    beforeEach(() => {
+      state.configuration.set('codeJanitor.cleanup.formatRazorComponents', true);
+      state.files.set('/w/A.razor', MESSY);
+      state.files.set('/w/B.cshtml', MESSY);
+      registerCleanupCommands(createContext());
+    });
+
+    it('Cleanup Open Files formats the open Razor files', async () => {
+      const razor = openDocument('/w/A.razor', MESSY);
+      const cshtml = openDocument('/w/B.cshtml', MESSY, 'aspnetcorerazor');
+
+      await run('codeJanitor.cleanupOpenFiles');
+
+      expect([razor.getText(), cshtml.getText()]).toEqual([FORMATTED, FORMATTED]);
+    });
+
+    it('Cleanup Changed Files formats the changed Razor files', async () => {
+      state.extensions.set('vscode.git', {
+        activate: () =>
+          Promise.resolve({
+            getAPI: () => ({
+              repositories: [
+                { state: { workingTreeChanges: [{ uri: Uri.file('/w/A.razor') }], indexChanges: [{ uri: Uri.file('/w/B.cshtml') }], mergeChanges: [] } },
+              ],
+            }),
+          }),
+      });
+
+      await run('codeJanitor.cleanupChangedFiles');
+
+      expect([state.files.get('/w/A.razor'), state.files.get('/w/B.cshtml')]).toEqual([FORMATTED, FORMATTED]);
+    });
+
+    it('Cleanup Workspace searches for and formats the Razor files', async () => {
+      const all = [Uri.file('/w/A.razor'), Uri.file('/w/B.cshtml'), Uri.file('/w/C.txt')];
+      vi.spyOn(workspace, 'findFiles').mockImplementation((include) =>
+        Promise.resolve(all.filter((uri) => path.matchesGlob(uri.fsPath, include as string)))
+      );
+
+      await run('codeJanitor.cleanupWorkspace');
+
+      expect([state.files.get('/w/A.razor'), state.files.get('/w/B.cshtml')]).toEqual([FORMATTED, FORMATTED]);
+    });
   });
 });

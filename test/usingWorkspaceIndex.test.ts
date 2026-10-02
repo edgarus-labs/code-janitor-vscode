@@ -148,6 +148,94 @@ describe('implicit usings', () => {
 
     expect(globals(write('App/Sample.cs', 'class Sample { }'))).toEqual([]);
   });
+
+  it.each([
+    ['a Condition on the property', '<PropertyGroup><ImplicitUsings Condition="\'$(TargetFramework)\' != \'net48\'">enable</ImplicitUsings></PropertyGroup>'],
+    ['a Condition on its group', '<PropertyGroup Condition="\'$(TargetFramework)\' != \'net48\'"><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>'],
+    [
+      'a conditioned disable after an enable',
+      '<PropertyGroup><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><PropertyGroup><ImplicitUsings Condition="\'$(X)\' == \'1\'">disable</ImplicitUsings></PropertyGroup>',
+    ],
+    ['a conditioned enable after a disable', '<PropertyGroup><ImplicitUsings>disable</ImplicitUsings><ImplicitUsings Condition="\'$(X)\' == \'1\'">true</ImplicitUsings></PropertyGroup>'],
+  ])('count as there when MSBuild may enable them: %s', (_name, groups) => {
+    write('App/App.csproj', `<Project Sdk="Microsoft.NET.Sdk">${groups}</Project>`);
+
+    expect(globals(write('App/Sample.cs', 'class Sample { }'))).toContain('System');
+  });
+
+  it('are none when an unconditioned disable follows a conditioned enable', () => {
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><ImplicitUsings Condition="\'$(X)\' == \'1\'">enable</ImplicitUsings><ImplicitUsings>disable</ImplicitUsings></PropertyGroup></Project>');
+
+    expect(globals(write('App/Sample.cs', 'class Sample { }'))).toEqual([]);
+  });
+
+  it('include the <Using> items of the project and of Directory.Build.props, even with implicit usings off', () => {
+    write('Directory.Build.props', '<Project><ItemGroup><Using Include="Lib" /></ItemGroup></Project>');
+    write(
+      'App/App.csproj',
+      `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>
+  <Using Include="System.Math" Static="true" />
+  <Using Include="System.Text.StringBuilder" Alias="Builder" />
+  <Using Include="Tools"><Static>True</Static></Using>
+</ItemGroup></Project>`
+    );
+
+    expect(globals(write('App/Sample.cs', 'class Sample { }'))).toEqual(['Builder = System . Text . StringBuilder', 'Lib', 'static System . Math', 'static Tools'].sort());
+  });
+
+  it('drop an item a later <Using Remove> takes out, implicit ones too', () => {
+    write(
+      'App/App.csproj',
+      '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><Using Include="Lib" /><Using Remove="Lib" /><Using Remove="System.Net.Http" /></ItemGroup></Project>'
+    );
+    const found = globals(write('App/Sample.cs', 'class Sample { }'));
+
+    expect(found).toContain('System . Linq');
+    expect(found).not.toContain('Lib');
+    expect(found).not.toContain('System . Net . Http');
+  });
+
+  it.each([
+    ['in a conditioned ItemGroup', `<ItemGroup Condition="'$(TargetFramework)' == 'net48'"><Using Remove="System.Linq" /></ItemGroup>`],
+    ['in a conditioned When', `<Choose><When Condition="'$(X)' == '1'"><ItemGroup><Using Remove="System.Linq" /></ItemGroup></When></Choose>`],
+    ['in an Otherwise', `<Choose><When Condition="'$(X)' == '1'"></When><Otherwise><ItemGroup><Using Remove="System.Linq" /></ItemGroup></Otherwise></Choose>`],
+    ['in a Target', '<Target Name="T"><ItemGroup><Using Remove="System.Linq" /></ItemGroup></Target>'],
+    ['in an XML comment', '<ItemGroup><!-- <Using Remove="System.Linq" /> --></ItemGroup>'],
+  ])('keep an item a <Using Remove> %s may not take out', (_name, group) => {
+    write('App/App.csproj', `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>${group}</Project>`);
+
+    expect(globals(write('App/Sample.cs', 'class Sample { }'))).toContain('System . Linq');
+  });
+
+  it('apply a <Using Remove> after a conditioned ItemGroup has closed', () => {
+    write(
+      'App/App.csproj',
+      `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup Condition="'$(X)' == '1'"><Using Include="Lib" /></ItemGroup><ItemGroup><Using Remove="System.Linq" /></ItemGroup></Project>`
+    );
+
+    expect(globals(write('App/Sample.cs', 'class Sample { }'))).not.toContain('System . Linq');
+  });
+
+  it('read <Using> items and the SDK written with single quotes', () => {
+    write('App/App.csproj', `<Project Sdk='Microsoft.NET.Sdk.Web'><ItemGroup><Using Include='Lib' /><Using Include='System.Math' Static='true' /></ItemGroup><PropertyGroup><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>`);
+    const found = globals(write('App/Sample.cs', 'class Sample { }'));
+
+    expect(found).toContain('Lib');
+    expect(found).toContain('static System . Math');
+    expect(found).toContain('Microsoft . AspNetCore . Builder');
+  });
+
+  it('do not take implicit usings or items from an XML comment', () => {
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><!-- <PropertyGroup><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><Using Include="Lib" /></ItemGroup> --></Project>');
+
+    expect(globals(write('App/Sample.cs', 'class Sample { }'))).toEqual([]);
+  });
+
+  it('mark the index incomplete for a <Using> item MSBuild has to evaluate', () => {
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Using Include="$(RootNamespace).Models" /></ItemGroup></Project>');
+
+    expect(context(write('App/Sample.cs', 'class Sample { }')).incomplete).toMatch(/<Using> item/);
+  });
 });
 
 describe('references outside the framework', () => {

@@ -50,6 +50,8 @@ export interface CleanupAnalysis {
   readonly findings: readonly CleanupFinding[];
   /** The `.editorconfig` settings cleanup does not apply. */
   readonly unsupported: readonly string[];
+  /** What the steps of Code Janitor settings left undone and why: notes, not `.editorconfig` violations. */
+  readonly notes: readonly string[];
 }
 
 export interface AnalysisOptions {
@@ -63,6 +65,7 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
   // With the enabled Code Style rules layered on top, so their findings carry the `suggestion` severity they apply with.
   const props = resolveEffectiveCleanupSettings(filePath, settings).properties;
   const unsupported: string[] = [];
+  const notes: string[] = [];
   const issues: string[] = [];
   let collecting = false;
   const pipeline = getCleanupPipeline(source, filePath, settings, options.disqualifiedTypeNames, (issue) => {
@@ -105,11 +108,17 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
       }
     }
 
-    findings.push(...stepIssues.map((detail) => issueFinding(detail, props, at)));
+    // Only the `.editorconfig` steps (one diagnostic, or rules) enforce rules; other steps are Code Janitor settings.
+    if (step.diagnosticId || step.applyRules) {
+      findings.push(...stepIssues.map((detail) => issueFinding(detail, props, at)));
+    } else {
+      notes.push(...stepIssues);
+    }
+
     current = output;
   }
 
-  return { findings, unsupported };
+  return { findings, unsupported, notes };
 }
 
 /**
@@ -225,16 +234,23 @@ function changeFindings(
   }
 
   return places.map(({ start, end, hunks }) => {
-    const written = hunks.flatMap((hunk) => afterLines.slice(hunk.afterStart, hunk.afterEnd)).find((line) => line.trim() !== '');
+    const writtenLines = hunks.flatMap((hunk) => afterLines.slice(hunk.afterStart, hunk.afterEnd));
+    const written = writtenLines.find((line) => line.trim() !== '');
     const removed = hunks.reduce((count, hunk) => count + hunk.beforeEnd - hunk.beforeStart, 0);
-    const change = written !== undefined ? `would change this to: ${abbreviate(written.trim())}` : `would remove ${removed} line(s)`;
+    const change =
+      written !== undefined
+        ? `would change this to: ${abbreviate(written.trim())}`
+        : removed === 0
+          ? `would insert ${writtenLines.length} blank line(s)`
+          : `would remove ${removed} line(s)`;
 
     return {
       ruleId,
       rule: ruleId ?? stepName ?? 'Cleanup',
       severity,
       ...at(start, end),
-      message: ruleId ? `Code Janitor ${change}` : `${stepName}: Code Janitor ${change}`,
+      // `rule` names the step already.
+      message: `Code Janitor ${change}`,
       wouldChange: true,
       fixable: ruleId !== undefined,
     };
@@ -275,17 +291,20 @@ function namingFindings(before: string, props: EditorConfigProperties, stepIssue
   });
 }
 
-/** A violation cleanup reports instead of fixing: `ID (option or severity) line N: message`, or a note without a line. */
+/**
+ * A violation cleanup reports instead of fixing: `ID (option or severity) line N: message`,
+ * `ID line N: message`, or `rule: message` without a line.
+ */
 function issueFinding(detail: string, props: EditorConfigProperties, at: Locate): CleanupFinding {
-  const match = /^([A-Z]+\d+(?:\/[A-Z]+\d+)*) \(([^)]*)\) line (\d+): (.*)$/s.exec(detail);
+  const match = /^([A-Z]+\d+(?:\/[A-Z]+\d+)*)(?: \(([^)]*)\))? line (\d+): (.*)$/s.exec(detail);
   if (!match) {
-    const rule = /^([^:]+):/.exec(detail)?.[1] ?? 'Cleanup';
+    const [, rule, message] = /^([^:]+): (.*)$/s.exec(detail) ?? [undefined, 'Cleanup', detail];
 
-    return { rule, startLine: 0, endLine: 0, fileLevel: true, message: detail, wouldChange: false, fixable: false };
+    return { rule, startLine: 0, endLine: 0, fileLevel: true, message, wouldChange: false, fixable: false };
   }
 
   const [, ruleId, qualifier, line, message] = match;
-  const stated = parseSeverity(/(?:^|, )(\w+)$/.exec(qualifier)?.[1]);
+  const stated = parseSeverity(/(?:^|, )(\w+)$/.exec(qualifier ?? '')?.[1]);
   const severity = stated ?? diagnosticSeverity(props, ruleId);
 
   return { ruleId, rule: ruleId, severity, ...at(Number(line) - 1, Number(line) - 1), message, wouldChange: false, fixable: false };

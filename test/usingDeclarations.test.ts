@@ -70,6 +70,22 @@ describe('declarations of a file', () => {
     ]);
   });
 
+  it.each([
+    ['delegate { }', 'static System.Action a = delegate { Run(); };'],
+    ['delegate (int x) { }', 'static System.Action<int> a = delegate (int x) { Run(); };'],
+    ['a function pointer', 'static unsafe delegate*<void> p;'],
+    ['a method returning a function pointer', 'static unsafe delegate*<void> Get() => null;'],
+    ['a method returning an unmanaged function pointer', 'static unsafe delegate* unmanaged<int, void> Make() => null;'],
+  ])('does not take an anonymous method or function pointer at member level (%s) for a delegate type', (_name, member) => {
+    const source = `namespace Ns { public static class C { ${member} static void Run() { } public static string Shout(this string s) => s; } public class D { } }`;
+
+    expect(keys(source)).toEqual(['E:Ns:Shout', 'N:Ns', 'T:Ns.C', 'T:Ns.D']);
+  });
+
+  it('reads a delegate type returning a tuple', () => {
+    expect(keys('namespace N { delegate (int A, int B) Pair(); class After { } }')).toEqual(['N:N', 'T:N.After', 'T:N.Pair']);
+  });
+
   it('counts a declaration in a disabled #if branch too', () => {
     expect(keys('#if X\nnamespace A { class C { } }\n#else\nnamespace B { class D { } }\n#endif\n')).toEqual(['N:A', 'N:B', 'T:A.C', 'T:B.D']);
   });

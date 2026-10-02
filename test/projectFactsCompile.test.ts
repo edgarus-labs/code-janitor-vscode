@@ -26,6 +26,32 @@ const files: Record<string, string> = {
   'Alone.cs': 'internal class Alone { public int Value => 3; }\n',
   'Util.cs': 'internal class Util { internal int Twice(int x) => x * 2; internal int Unused(int x) => x + 1; }\n',
   'User.cs': 'internal static class User { public static int Use() { var u = new Util(); return u.Twice(3) + new Alone().Value + new Derived().Twice() + new Holder<Constraint>().GetHashCode(); } }\n',
+  'Helper.cs': 'internal class Helper { public string Format() => "x"; }\n',
+  'UseHelper.cs': 'internal static class UseHelper { public static string M(Helper h) => $"{h.Format()}"; }\n',
+  'Shape.cs': 'internal class Shape { public string Kind => "square"; }\n',
+  'UseShape.cs': 'internal static class UseShape { public static bool M(object o) => o is Shape { Kind: "square" }; }\n',
+  'Named.cs': 'internal class NamedBase { public string Name() => "x"; }\ninternal interface INamed { string Name(); }\ninternal sealed class NamedImpl : NamedBase, INamed { }\n',
+  'Bag.cs': [
+    'using System.Collections.Generic;',
+    'internal static class UseBag',
+    '{',
+    '    private sealed class Bag',
+    '    {',
+    '        public IEnumerator<int> GetEnumerator() { yield return 1; }',
+    '        internal void Deconstruct(out int a, out int b) { a = 1; b = 2; }',
+    '    }',
+    '    public static int M() { var s = 0; foreach (var x in new Bag()) { s += x; } var (a, b) = new Bag(); return s + a + b; }',
+    '}',
+    '',
+  ].join('\n'),
+  'Query.cs': 'using System;\ninternal sealed class Query { private Query Select(Func<int, int> f) => null!; public object M() => from x in this select x * 2; }\n',
+  'IndexBase.cs': 'internal class IndexBase { public int this[int i] => i; }\n',
+  'Indexed.cs': 'internal sealed class Indexed : IndexBase { private int Length => 3; public int Last() => this[^1]; }\n',
+  'LengthBase.cs': 'internal class LengthBase { protected int Length => 3; }\n',
+  'LengthDerived.cs': 'internal sealed class LengthDerived : LengthBase { public int this[int i] => i; public int Last() => this[^1]; }\n',
+  'Sliced.cs': 'internal sealed class Sliced { public int[] Slice(int a, int b) => new int[b]; private int Length => 3; public int[] Middle() => this[1..^1]; }\n',
+  'AddBase.cs': 'internal class AddBase { internal void Add(int x) { } }\n',
+  'AddDerived.cs': 'using System.Collections;\ninternal sealed class AddDerived : AddBase, IEnumerable { public IEnumerator GetEnumerator() => null!; public static AddDerived Make() => new AddDerived { 1 }; }\n',
 };
 
 const folders: string[] = [];
@@ -59,6 +85,16 @@ describe.skipIf(!dotnetAvailable)('cross-file facts of seal / make static agains
 
     expect(text('Alone.cs'), 'a type nothing derives from is sealed').toMatch(/sealed class Alone/);
     expect(text('Util.cs'), 'a member nothing calls is made static').toMatch(/static int Unused/);
+
+    expect(text('Helper.cs'), 'a member another file uses in an interpolated string is never made static').not.toMatch(/static string Format/);
+    expect(text('Shape.cs'), 'a property another file reads through a property pattern is never made static').not.toMatch(/static string Kind/);
+    expect(text('Named.cs'), 'a base member a derived type implements an interface with is never made static').not.toMatch(/static string Name/);
+    expect(text('Bag.cs'), 'members foreach and deconstruction bind to are never made static').not.toMatch(/static (?:IEnumerator<int> GetEnumerator|void Deconstruct)/);
+    expect(text('Query.cs'), 'a member a query expression binds to is never made static').not.toMatch(/static Query Select/);
+    expect(text('Indexed.cs'), 'Length of a type inheriting an indexer is never made static').not.toMatch(/static int Length/);
+    expect(text('LengthBase.cs'), 'Length a derived type of another file indexes through is never made static').not.toMatch(/static int Length/);
+    expect(text('Sliced.cs'), 'Length of a type with Slice is never made static').not.toMatch(/static int Length/);
+    expect(text('AddBase.cs'), 'Add a derived collection type of another file initializes through is never made static').not.toMatch(/static void Add/);
 
     const after = buildProject(folder);
     expect(newCompilerErrors(before.errors, after.errors), formatErrors(after)).toEqual([]);

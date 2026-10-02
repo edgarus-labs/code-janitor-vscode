@@ -65,6 +65,14 @@ interface Edit {
 
 const PARENTHESIZED_KEYWORDS: readonly string[] = ['if', 'for', 'foreach', 'while', 'switch'];
 
+/** HTML elements laid out as blocks (or not rendered): whitespace next to them renders nothing. */
+const BLOCK_ELEMENTS = new Set([
+  'address', 'article', 'aside', 'blockquote', 'body', 'br', 'caption', 'col', 'colgroup', 'dd', 'details', 'dialog', 'div',
+  'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'header',
+  'hgroup', 'hr', 'html', 'li', 'link', 'main', 'menu', 'meta', 'nav', 'ol', 'p', 'section', 'summary', 'table', 'tbody',
+  'td', 'tfoot', 'th', 'thead', 'title', 'tr', 'ul',
+]);
+
 class Formatter {
   private readonly unit: string;
 
@@ -83,14 +91,22 @@ class Formatter {
       bases.push(continues[index] ? bases[index - 1] : this.lineIndentAt(block.start));
     });
 
+    // A chain (`if` / `else`, `try` / `catch` / `finally`) is formatted as a whole or not at all: a link
+    // left as authored next to formatted ones would mix the two layouts on one line.
     const edits: Edit[] = [];
+    let chain: Edit[] | undefined = [];
     blocks.forEach((block, index) => {
+      if (!continues[index]) {
+        chain = this.isInline(blocks, index) ? undefined : [];
+      }
+
       const edit =
         block.keyword === 'code'
           ? this.formatCodeBlock(block, bases[index])
-          : this.formatControlBlock(block, bases[index], continues[index] ? blocks[index - 1] : undefined, continues[index + 1] === true);
-      if (edit && this.onlyWhitespaceChanges(edit)) {
-        edits.push(edit);
+          : this.formatControlBlock(block, bases[index], continues[index] ? blocks[index - 1] : undefined);
+      chain = chain && edit && this.onlyWhitespaceChanges(edit) ? [...chain, edit] : undefined;
+      if (chain && continues[index + 1] !== true) {
+        edits.push(...chain);
       }
     });
 
@@ -120,6 +136,82 @@ class Formatter {
 
   private onlyWhitespaceChanges(edit: Edit): boolean {
     return stripWhitespace(this.text.slice(edit.start, edit.end)) === stripWhitespace(edit.text);
+  }
+
+  /**
+   * True when formatting the control-block chain starting at `blocks[first]` would change the rendered
+   * text. Razor renders the line breaks and indents the layout adds around markup, so the chain is left
+   * as authored when it shares a line with markup text (`<span>@if (a) {<b>x</b>}</span>`), or when it
+   * holds markup that touches a brace or code on its line and the whitespace the layout adds there would
+   * land next to rendered text that had none.
+   */
+  private isInline(blocks: readonly Block[], first: number): boolean {
+    if (blocks[first].keyword === 'code') {
+      return false;
+    }
+
+    let last = first;
+    while (last + 1 < blocks.length && this.continuesPrevious(blocks[last], blocks[last + 1])) {
+      last++;
+    }
+
+    const lineStart = this.text.lastIndexOf('\n', blocks[first].start - 1) + 1;
+    const lineEnd = this.text.indexOf('\n', blocks[last].close + 1);
+    const after = this.text.slice(blocks[last].close + 1, lineEnd < 0 ? this.text.length : lineEnd);
+    if (this.text.slice(lineStart, blocks[first].start).trim().length > 0 || after.trim().length > 0) {
+      return true;
+    }
+
+    // Razor drops the line of the chain's `@if` up to its first markup and the line break after its last
+    // `}`: what renders before the chain is the line break of the line before (unless Razor drops that
+    // one too), and what renders after it is the next line, from its first character.
+    const previousLine = this.text.slice(this.text.lastIndexOf('\n', lineStart - 2) + 1, Math.max(lineStart - 1, 0)).trim();
+    const whitespaceBefore = lineStart === 0 || !(previousLine.startsWith('@') || previousLine.endsWith('}') || previousLine.endsWith('@'));
+    const next = lineEnd < 0 ? undefined : this.text[lineEnd + 1];
+    const whitespaceAfter = next === undefined || /\s/.test(next);
+
+    return blocks.slice(first, last + 1).some((block) => this.movesMarkupNextToText(block, whitespaceBefore, whitespaceAfter));
+  }
+
+  /**
+   * True when laying out `block` adds an indent before, or a line break after, a markup element where
+   * the rendered text had no whitespace: the element touches the `{` or `}` of the block (and the chain
+   * is not rendered between whitespace), or touches code on its line. Whitespace next to a block-level
+   * element does not render, and a loop renders the start of its body right after its end.
+   */
+  private movesMarkupNextToText(block: Block, whitespaceBefore: boolean, whitespaceAfter: boolean): boolean {
+    const inner = this.text.slice(block.open + 1, block.close);
+    const segments = splitSegments(inner) ?? [];
+    const markup = segments.filter((segment) => segment.kind === 'markup');
+    if (markup.length === 0) {
+      return false;
+    }
+
+    const isLoop = block.keyword === 'for' || block.keyword === 'foreach' || block.keyword === 'while';
+    const rendersBefore = whitespaceBefore && (!isLoop || /^\s/.test(inner.slice(markup[markup.length - 1].end)));
+    const rendersAfter = whitespaceAfter && (!isLoop || /\s$/.test(inner.slice(0, markup[0].start)));
+    const sideBySide = (other: Segment | undefined, from: number, to: number): boolean => other?.kind === 'markup' && !inner.slice(from, to).includes('\n');
+
+    return segments.some((segment, index) => {
+      if (segment.kind !== 'markup' || BLOCK_ELEMENTS.has(/^<([A-Za-z][\w-]*)/.exec(inner.slice(segment.start, segment.end))?.[1].toLowerCase() ?? '')) {
+        return false;
+      }
+
+      const previous = segments[index - 1];
+      const following = segments[index + 1];
+      const before = inner.slice(inner.lastIndexOf('\n', segment.start - 1) + 1, segment.start);
+      const startTouches =
+        !sideBySide(previous, previous?.end ?? 0, segment.start) &&
+        !/\s$/.test(before) &&
+        (before.length > 0 || (!rendersBefore && segment === markup[0]));
+
+      const endTouches =
+        !sideBySide(following, segment.end, following?.start ?? 0) &&
+        !/^\s/.test(inner.slice(segment.end)) &&
+        (segment.end < inner.length || !rendersAfter);
+
+      return startTouches || endTouches;
+    });
   }
 
   // -------------------------------------------------------------------------------------------
@@ -259,10 +351,9 @@ class Formatter {
 
   /**
    * `previous` is the block this one continues (`else` after `if`, ...): the two lines up, the
-   * continuation starting a line of its own at the indent of the first. `continued` is true when
-   * the next block continues this one and sets the line break itself.
+   * continuation starting a line of its own at the indent of the first.
    */
-  private formatControlBlock(block: Block, base: string, previous: Block | undefined, continued: boolean): Edit | undefined {
+  private formatControlBlock(block: Block, base: string, previous: Block | undefined): Edit | undefined {
     const header = this.buildHeader(block);
     if (header === undefined) {
       return undefined;
@@ -275,18 +366,15 @@ class Formatter {
     }
 
     const formatted = `${header}\n${base}{\n${body.length > 0 ? `${body}\n` : ''}${base}}`;
-    const afterClose = block.close + 1;
-    const next = this.text[afterClose];
-    const followedByKeyword = /^\s*(?:else|catch|finally)\b/.test(this.text.slice(afterClose, afterClose + 16));
-    const separator = !continued && next !== undefined && !/\s/.test(next) && !followedByKeyword ? '\n' : '';
+    const end = block.close + 1;
     if (!previous) {
-      return { start: block.start, end: afterClose, text: formatted + separator };
+      return { start: block.start, end, text: formatted };
     }
 
     const gap = this.text.slice(previous.close + 1, block.start);
     const lead = block.bare || !gap.includes('\n') ? `\n${base}` : gap;
 
-    return { start: previous.close + 1, end: afterClose, text: lead + formatted + separator };
+    return { start: previous.close + 1, end, text: lead + formatted };
   }
 
   /** The header line (`@if (a && b)`, `@else`, `catch (Exception ex)`) or undefined when it cannot be read. */

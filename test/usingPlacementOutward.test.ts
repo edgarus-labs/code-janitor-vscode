@@ -308,6 +308,46 @@ describe('outward move: skipped with a reason', () => {
     // Tools resolves to the global namespace Tools unless Company.App.Tools exists: the index counts both branches.
     expect(moved(input, 'namespace Tools { public class Tool { } }\r\n', other)).toContain('using Company.App.Tools;');
   });
+
+  it('skips an alias that would join a namespace import providing a type of the same name', () => {
+    // In N, Lib.X (imported in N) wins over the file-level alias X; side by side at file level, the alias would win.
+    const input = 'using X = System.Text.StringBuilder;\n\nnamespace N\n{\n    using Lib;\n\n    class C { int i = new X().Only; }\n}\n';
+
+    expect(skipped(input, 'namespace Lib { public class X { public int Only; } }\n')).toMatch(/'X'/);
+  });
+
+  it('moves an alias that wins over a same-named imported type before and after the move', () => {
+    const input = 'using Lib;\n\nnamespace N\n{\n    using X = System.Text.StringBuilder;\n\n    class C { X x; }\n}\n';
+
+    expect(moved(input, 'namespace Lib { public class X { } }\n')).toBe('using Lib;\nusing X = System.Text.StringBuilder;\n\nnamespace N\n{\n    class C { X x; }\n}\n');
+  });
+
+  it.each([
+    ['a file-level using', 'using System;\n\nnamespace N\n{\n    using static Math;\n\n    class C { double d = Sqrt(4); }\n}\n', []],
+    ['a global using', 'namespace N\n{\n    using static Math;\n\n    class C { double d = Sqrt(4); }\n}\n', ['global using System;\n']],
+  ])('skips a directive that only resolves through %s, also where packages are referenced', (_name, input, more) => {
+    const result = placeUsings(input, 'outside', { index: createIndex([...more, input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: expect.stringContaining("'Math'") });
+  });
+
+  it('skips a using static whose name a file-level import of a package namespace may provide, also where packages are referenced', () => {
+    const input = 'using Pkg;\n\nnamespace N\n{\n    using static Helpers;\n\n    class C { }\n}\n';
+    const result = placeUsings(input, 'outside', { index: createIndex([input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: expect.stringContaining("'Helpers' through 'using Pkg;'") });
+  });
+
+  it('moves a package namespace directive next to a file-level using static', () => {
+    const input = 'using static System.Console;\n\nnamespace N\n{\n    using Newtonsoft.Json;\n\n    class C { }\n}\n';
+    const result = placeUsings(input, 'outside', { index: createIndex([input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toEqual({ status: 'moved', text: 'using static System.Console;\nusing Newtonsoft.Json;\n\nnamespace N\n{\n    class C { }\n}\n' });
+  });
+
+  it("skips a directive that names a file-level alias before '::': directives of one scope do not see each other", () => {
+    expect(skipped('using T = System.Text;\n\nnamespace N\n{\n    using B = T::StringBuilder;\n\n    class C { B b; }\n}\n')).toMatch(/'T'/);
+  });
 });
 
 describe('outward move: what reaches other parts of the file', () => {

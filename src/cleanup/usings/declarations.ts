@@ -164,6 +164,9 @@ interface DeclaredType {
   readonly endAt: number;
 }
 
+/** Where the name of a delegate type ends: its parameter list; anything else ends a member that is not one. */
+const DELEGATE_STOPS = new Set(['(', ';', '{', '=', 'end']);
+
 /** A type declaration starting at `tokens[i]` (`class`, `struct`, `interface`, `enum`, `record`, `delegate`), if there is one. */
 function declarationAt(tokens: readonly Token[], i: number, text: (token: Token) => string): DeclaredType | undefined {
   const token = tokens[i];
@@ -183,9 +186,36 @@ function declarationAt(tokens: readonly Token[], i: number, text: (token: Token)
       nameAt = i + 1;
     }
   } else if (token.type === 'delegate') {
+    // `delegate R Name(...)`; an anonymous method (`delegate { }`, `delegate (int x) { }`) or a function pointer
+    // (`delegate*<void>`) declares nothing. A tuple return type is skipped over to reach the name.
+    if (tokens[i + 1]?.type === '*') {
+      return undefined;
+    }
+
     let j = i + 1;
-    while (j < tokens.length && tokens[j].type !== '(' && tokens[j].type !== ';' && tokens[j].type !== 'end') {
+    if (tokens[j]?.type === '(') {
+      let parens = 0;
+      for (; j < tokens.length; j++) {
+        if (tokens[j].type === '(') {
+          parens++;
+        } else if (tokens[j].type === ')' && --parens === 0) {
+          break;
+        }
+      }
+
+      if (tokens[j + 1]?.type !== 'identifier') {
+        return undefined;
+      }
+
       j++;
+    }
+
+    while (j < tokens.length && !DELEGATE_STOPS.has(tokens[j].type)) {
+      j++;
+    }
+
+    if (tokens[j]?.type !== '(') {
+      return undefined;
     }
 
     let nameToken = tokens[j - 1];
@@ -366,6 +396,11 @@ export class DeclarationIndex {
     const dot = full.lastIndexOf('.');
 
     return bcl().types.get(dot < 0 ? '' : full.slice(0, dot))?.has(full.slice(dot + 1)) === true;
+  }
+
+  /** True when a file of the project declares the type `full`: its nested types are then known too, unlike those of the framework. */
+  declaresType(full: string): boolean {
+    return this.has(`T:${full}`);
   }
 
   /** True when the framework or a file of the project declares the namespace or type `full`. */

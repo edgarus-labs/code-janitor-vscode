@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readMSBuildProject } from '../msbuildProperties';
 
 /**
  * The C# projects of a workspace, as the workspace-wide rename needs them: which files each project
@@ -17,6 +18,8 @@ export interface WorkspaceProject {
   readonly textFiles: readonly string[];
   /** Full paths of the projects this one references (`<ProjectReference>`). */
   readonly references: readonly string[];
+  /** `<ProjectReference>` paths that cannot be resolved without MSBuild (other properties, wildcards). */
+  readonly unresolvedReferences: readonly string[];
   /** A NuGet package is built from the project: code outside the workspace may use its public API. */
   readonly packable: boolean;
   /** The assembly exposes its internals to other assemblies (`InternalsVisibleTo`). */
@@ -27,6 +30,8 @@ export interface WorkspaceProject {
 
 const SKIPPED_FOLDERS: Record<string, true> = { bin: true, obj: true, node_modules: true };
 const TEXT_EXTENSIONS: Record<string, true> = { '.xaml': true, '.axaml': true, '.razor': true, '.cshtml': true, '.json': true };
+/** Files MSBuild imports into every project below their folder. */
+const DIRECTORY_BUILD_FILES = ['Directory.Build.props', 'Directory.Build.targets'];
 
 /** Every `.csproj` under `roots` (skipping `bin`, `obj`, `node_modules` and hidden folders). */
 export function discoverProjects(roots: readonly string[]): WorkspaceProject[] {
@@ -70,8 +75,33 @@ function readProject(projectFile: string): WorkspaceProject {
     problems.push(`${directory} holds several project files`);
   }
 
-  if (/<Compile\s[^>]*\bInclude\s*=/i.test(text) || /\.projitems\b/i.test(text)) {
+  if (addsOutsideFiles(text)) {
     problems.push(`${path.basename(projectFile)} adds C# files from outside its folder`);
+  }
+
+  // Settings and project references of Directory.Build.props/.targets apply to the project too (every ancestor is read: one may import its parent's).
+  const buildFiles: { readonly text: string; readonly folder: string }[] = [];
+  for (let current = directory; ; current = path.dirname(current)) {
+    for (const name of DIRECTORY_BUILD_FILES) {
+      const buildFile = path.join(current, name);
+      if (!fs.existsSync(buildFile)) {
+        continue;
+      }
+
+      try {
+        const buildText = fs.readFileSync(buildFile, 'utf8');
+        buildFiles.push({ text: buildText, folder: current });
+        if (addsOutsideFiles(buildText)) {
+          problems.push(`${buildFile} adds C# files from outside the project folder`);
+        }
+      } catch (error) {
+        problems.push(`${buildFile} could not be read (${(error as Error).message})`);
+      }
+    }
+
+    if (path.dirname(current) === current) {
+      break;
+    }
   }
 
   const csharpFiles: string[] = [];
@@ -109,10 +139,32 @@ function readProject(projectFile: string): WorkspaceProject {
     }
   }
 
-  const references = [...text.matchAll(/<ProjectReference\s[^>]*\bInclude\s*=\s*"([^"]+)"/gi)].map((match) =>
-    path.resolve(directory, match[1].replace(/\\/g, path.sep))
-  );
-  const element = (name: string) => new RegExp(`<${name}>\\s*true\\s*</${name}>`, 'i').test(text);
+  const references: string[] = [];
+  const unresolvedReferences: string[] = [];
+  // Relative includes resolve from the project's folder even in an imported file; `$(MSBuildThisFileDirectory)` is the file's own.
+  for (const source of [{ text, folder: directory }, ...buildFiles]) {
+    for (const match of source.text.matchAll(/<ProjectReference\s[^>]*?\bInclude\s*=\s*(["'])(.*?)\1/gi)) {
+      for (const include of match[2].split(';').map((part) => part.trim()).filter((part) => part !== '')) {
+        const expanded = include
+          .replace(/\$\(MSBuildThisFileDirectory\)/gi, `${source.folder}${path.sep}`)
+          .replace(/\$\(MSBuildProjectDirectory\)/gi, `${directory}${path.sep}`)
+          .replace(/\\/g, path.sep);
+        if (/\$\(|[*?]/.test(expanded)) {
+          unresolvedReferences.push(include);
+        } else {
+          references.push(path.resolve(directory, expanded));
+        }
+      }
+    }
+  }
+
+  const settings = [text, ...buildFiles.map((buildFile) => buildFile.text)].join('\n');
+  // Packability in MSBuild evaluation order (the project overrides its Directory.Build.props); what MSBuild alone can decide counts as packable.
+  const msbuild = readMSBuildProject(projectFile);
+  const property = (name: string) => (msbuild?.isCertain(name) ? msbuild.property(name)?.toLowerCase() : 'uncertain');
+  const isPackable = property('IsPackable');
+  const packable =
+    isPackable === undefined ? (property('GeneratePackageOnBuild') ?? 'false') !== 'false' || property('PackageId') !== undefined : isPackable !== 'false';
 
   return {
     projectFile,
@@ -120,10 +172,16 @@ function readProject(projectFile: string): WorkspaceProject {
     csharpFiles: csharpFiles.sort(),
     textFiles: textFiles.sort(),
     references,
-    packable: element('IsPackable') || element('GeneratePackageOnBuild') || /<PackageId>/i.test(text),
-    internalsVisibleTo: /<InternalsVisibleTo\b/i.test(text),
+    unresolvedReferences,
+    packable,
+    internalsVisibleTo: /<InternalsVisibleTo\b/i.test(settings),
     problem: problems.length > 0 ? problems.join('; ') : undefined,
   };
+}
+
+/** `<Compile Include>` items or a shared project (`.projitems`) bring C# files from elsewhere. */
+function addsOutsideFiles(text: string): boolean {
+  return /<Compile\s[^>]*\bInclude\s*=/i.test(text) || /\.projitems\b/i.test(text);
 }
 
 /** The project whose folder holds `filePath` (the nearest one), if any. */
@@ -141,7 +199,7 @@ export function referencingClosure(projects: readonly WorkspaceProject[], projec
   for (let grew = true; grew; ) {
     grew = false;
     for (const candidate of projects) {
-      if (!closure.has(candidate) && candidate.references.some((reference) => [...closure].some((member) => member.projectFile === reference))) {
+      if (!closure.has(candidate) && candidate.references.some((reference) => [...closure].some((member) => samePath(member.projectFile, reference)))) {
         closure.add(candidate);
         grew = true;
       }
@@ -149,4 +207,9 @@ export function referencingClosure(projects: readonly WorkspaceProject[], projec
   }
 
   return [...closure];
+}
+
+/** Windows paths are case-insensitive: `..\lib\Lib.csproj` names `Lib/Lib.csproj`. */
+function samePath(a: string, b: string): boolean {
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
