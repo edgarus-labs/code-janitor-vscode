@@ -88,13 +88,15 @@ describe('the keys of other steps', () => {
     );
   });
 
-  it('does not let a category or global severity enable CA1852, which is disabled by default', () => {
+  it('lets a category or global severity enable CA1852, which is bulk-configurable, so the rule decides over the setting', () => {
     const source = lines('internal class Sample', '{', '}');
+    fs.writeFileSync(path.join(root, 'Sample.csproj'), '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n');
+    fs.writeFileSync(path.join(root, 'Sample.cs'), source);
 
-    // The bulk severities do not enforce CA1852, so the setting decides.
-    expect(clean(source, 'dotnet_analyzer_diagnostic.severity = warning', { sealClassesWhenSafe: true })).toContain('internal sealed class Sample');
-    expect(clean(source, 'dotnet_analyzer_diagnostic.category-Performance.severity = warning', { sealClassesWhenSafe: true })).toContain('internal sealed class Sample');
-    expect(clean(source, 'dotnet_analyzer_diagnostic.severity = warning', { sealClassesWhenSafe: false })).not.toContain('sealed');
+    expect(clean(source, 'dotnet_analyzer_diagnostic.severity = warning', { sealClassesWhenSafe: false })).toContain('internal sealed class Sample');
+    expect(clean(source, 'dotnet_analyzer_diagnostic.category-Performance.severity = warning', { sealClassesWhenSafe: false })).toContain('internal sealed class Sample');
+    // Its own severity beats the bulk one: not enforced, so the setting decides.
+    expect(clean(source, 'dotnet_analyzer_diagnostic.severity = warning\ndotnet_diagnostic.CA1852.severity = none', { sealClassesWhenSafe: false })).not.toContain('sealed');
   });
 
   it('does not organize usings when the groups are separated', () => {

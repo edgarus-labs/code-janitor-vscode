@@ -174,6 +174,55 @@ describe('csharp_new_line_before_open_brace', () => {
     expect(output).toBe(source);
     expect(issues).toEqual([expect.stringMatching(/^IDE0055 \(csharp_new_line_before_open_brace\) line 2/)]);
   });
+
+  it('moves only the brace of an object initializer (creation or with) and leaves collection, nested and element initializers as Roslyn does', () => {
+    type Brace = (text: string, indent?: string) => string[];
+    const ownLine: Brace = (text, indent = '') => [indent + text, `${indent}{`];
+    const sameLine: Brace = (text, indent = '') => [`${indent}${text} {`];
+    const method = (brace: Brace, ...body: string[]): string =>
+      lines(...brace('class Sample'), ...brace('object M(R r)', '    '), ...body.map((line) => `        ${line}`), '    }', '}');
+    const kept = [
+      'var list = new List<int>',
+      '{',
+      '    1',
+      '};',
+      'List<int> implicitList = new()',
+      '{',
+      '    1',
+      '};',
+      'var map = new Dictionary<int, int>',
+      '{',
+      '    { 1, 2 },',
+      '    {',
+      '        3, 4',
+      '    },',
+      '};',
+    ];
+    const nested = (brace: Brace): string[] => [
+      ...brace('var outer = new Sample'),
+      '    Inner =',
+      '    {',
+      '        X = 1',
+      '    },',
+      '};',
+    ];
+    const objects = (brace: Brace): string[] => [
+      ...brace('var empty = new Sample'),
+      '};',
+      ...brace('Sample implicitObject = new()'),
+      '    X = 1',
+      '};',
+      ...brace('var copy = r with'),
+      '    X = 2',
+      '};',
+    ];
+
+    const onOwnLine = method(ownLine, ...kept, ...nested(ownLine), ...objects(ownLine));
+    const onSameLine = method(sameLine, ...kept, ...nested(sameLine), ...objects(sameLine));
+
+    expect(format(onOwnLine, `csharp_new_line_before_open_brace = none\n${IDE0055}`).output).toBe(onSameLine);
+    expect(format(onSameLine, `csharp_new_line_before_open_brace = all\n${IDE0055}`).output).toBe(onOwnLine);
+  });
 });
 
 describe('csharp_new_line_before_else/catch/finally', () => {

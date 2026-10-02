@@ -53,7 +53,7 @@ function plan(root: string, targets: string[] = ['Lib/Order.cs']): WorkspaceRena
   return planWorkspaceRenames({
     projects: discoverProjects([root]),
     targets: targets.map((target) => path.join(root, target)),
-    read: (file) => fs.readFileSync(file, 'utf8'),
+    read: (file) => ({ text: fs.readFileSync(file, 'utf8'), utf8: true }),
   });
 }
 
@@ -237,22 +237,58 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
     expect(output(aliased, result, 'App/P.cs')).toContain('L.OrderLine.Create() + global::Lib.OrderLine.Create()');
   });
 
-  it('renames an extension method called with extension syntax, but refuses a call on a dynamic receiver', () => {
+  it('renames an extension method of a workspace type called with extension syntax, but refuses a call on a dynamic receiver', () => {
     const extension = (use: string) =>
       workspace({
         'Lib/Lib.csproj': LIBRARY,
-        'Lib/Order.cs': 'namespace Lib;\n\npublic static class StringExt\n{\n    public static bool isBlank(this string s) => s.Length == 0;\n}\n',
+        'Lib/Order.cs': [
+          'namespace Lib;',
+          '',
+          'public sealed class Text\n{\n    public int Length;\n}',
+          '',
+          'public static class TextExt\n{\n    public static bool isBlank(this Text s) => s.Length == 0;\n}',
+          '',
+        ].join('\n'),
         'App/App.csproj': APP,
-        'App/Program.cs': `using Lib;\n\ninternal static class Program\n{\n    public static string Get() => "";\n    ${use}\n}\n`,
+        'App/Program.cs': `using Lib;\n\ninternal static class Program\n{\n    public static Text Get() => new Text();\n    ${use}\n}\n`,
       });
-    const root = extension('public static bool M(string name) => name.isBlank() && Get().isBlank() && StringExt.isBlank(name);');
+    const root = extension('public static bool M(Text name) => name.isBlank() && Get().isBlank() && TextExt.isBlank(name);');
     const result = plan(root);
     expect(issues(result)).toEqual([]);
-    expect(output(root, result, 'App/Program.cs')).toContain('name.IsBlank() && Get().IsBlank() && StringExt.IsBlank(name);');
+    expect(output(root, result, 'App/Program.cs')).toContain('name.IsBlank() && Get().IsBlank() && TextExt.IsBlank(name);');
 
     for (const use of ['public static bool M(dynamic d) => d.isBlank();', 'public static bool M(object o) => ((dynamic)o).isBlank();']) {
       expect(issues(plan(extension(use))), use).toEqual([expect.stringMatching(/'isBlank' is accessed in .* through a dynamic receiver/)]);
     }
+  });
+
+  it.each([
+    // `list.Contains(1)` would bind to List<int>.Contains, an instance method, and still compile.
+    ['a type declared outside the workspace', 'public static bool contains(this System.Collections.Generic.List<int> list, int value) => false;', '', /extends List, which is declared outside the workspace/],
+    ['a type parameter', 'public static bool contains<T>(this T item, int value) => false;', '', /extends T, which is declared outside the workspace/],
+    [
+      'a workspace type that a workspace type extends together with an outside type',
+      'public static bool contains(this IBag bag, int value) => false;',
+      'public interface IBag { }\n\npublic class Bag : System.Collections.Generic.List<int>, IBag { }',
+      /Bag derives from or implements List, which is declared outside the workspace/,
+    ],
+    [
+      'a workspace type constraining a type parameter',
+      'public static bool contains(this IBag bag, int value) => false;',
+      'public interface IBag { }\n\npublic static class Use\n{\n    public static bool Has<T>(T bag) where T : IBag, System.Collections.Generic.ICollection<int> { return bag.contains(1); }\n}',
+      /a type parameter constrained to IBag in .*Order\.cs line \d+ may have other members/,
+    ],
+    ['an enum, with a name System.Enum declares', 'public static bool hasFlag(this Color color, Color flag) => false;', 'public enum Color { Red }', /'HasFlag' is a member every enum inherits from System\.Enum/],
+  ])('refuses an extension method of %s, whose calls may bind to an instance member with the new name', (_label, method, types, reason) => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': `namespace Lib;\n\n${types}\n\npublic static class Ext\n{\n    ${method}\n}\n`,
+    });
+
+    const result = plan(root);
+
+    expect(result.renames).toEqual([]);
+    expect(issues(result)).toEqual([expect.stringMatching(reason)]);
   });
 
   it('renames a member accessed through this.field, and through this in a type deriving from its declaring type', () => {
@@ -313,10 +349,10 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
       'Lib/Lib.csproj': LIBRARY,
       'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public static int count;\n}\n',
       'App/App.csproj': APP,
-      'App/Program.cs': 'internal static class Program\n{\n    public static int R() => global::Lib.Order.count + Lib.Order.count;\n}\n',
+      'App/Program.cs': 'internal static class Program\n{\n    public static int R() => Lib.Order..count;\n}\n',
     });
 
-    expect(issues(plan(root))).toEqual([expect.stringMatching(/Program\.cs line 3 could not be fully parsed/)]);
+    expect(issues(plan(root))).toEqual([expect.stringMatching(/field 'count' .* because .*Program\.cs line 3 could not be fully parsed/)]);
   });
 
   it('renames a member of a generic type accessed through a typed parameter or field', () => {
@@ -468,6 +504,54 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
     expect(issues(plan(root))).toEqual([expect.stringMatching(/field 'total' .* because 'Total' is already declared in .*Other\.cs/)]);
   });
 
+  it('refuses old and new names declared in the projects the searched projects depend on', () => {
+    const root = workspace({
+      'Core/Core.csproj': LIBRARY,
+      'Core/Order.cs': 'namespace Core;\n\npublic class Order\n{\n    public int count;\n}\n\npublic class Base\n{\n    protected int size;\n}\n\npublic class OrderLine\n{\n}\n',
+      'Lib/Lib.csproj': '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../Core/Core.csproj" /></ItemGroup></Project>',
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public int count;\n    public int size;\n}\n\npublic class orderLine\n{\n}\n',
+      'Lib/Widget.cs': 'namespace Lib;\n\ninternal class Widget : Core.Base\n{\n    public int Get() => size;\n}\n',
+      'App/App.csproj': '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../Core/Core.csproj" /><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup></Project>',
+      'App/Program.cs': 'using Core;\nusing Lib;\n\ninternal static class Program\n{\n    private static int Main() => new Core.Order().count + new Lib.Order().count;\n}\n',
+    });
+
+    const result = plan(root);
+
+    expect(result.renames).toEqual([]);
+    expect(issues(result)).toEqual([
+      expect.stringMatching(/field 'count' .* because 'count' is also declared in .*Core.Order\.cs line 5, in a project the searched projects reference/),
+      expect.stringMatching(/field 'size' .* because 'size' is also declared in .*Core.Order\.cs line 10, in a project the searched projects reference/),
+      expect.stringMatching(/class 'orderLine' .* because 'OrderLine' is already declared in .*Core.Order\.cs line 13, in a project the searched projects reference/),
+    ]);
+  });
+
+  it('refuses a new name that members of object or accesses on the declaring type already use, but not accesses on other types', () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public string toString() => "custom";\n    public int total;\n    public int count;\n}\n',
+      'Lib/Use.cs': [
+        'namespace Lib;',
+        '',
+        'internal static class Use',
+        '{',
+        '    public static string Show(Order o) => o.ToString() + o.toString();',
+        '    public static int Sum(Order o) => o.total + o.Total();',
+        '    public static int Size(System.Collections.Generic.List<int> list, Order o) => list.Count + o.count;',
+        '}',
+        '',
+      ].join('\n'),
+    });
+
+    const result = plan(root);
+
+    expect(result.renames.map((rename) => rename.newName)).toEqual(['Count']);
+    expect(output(root, result, 'Lib/Use.cs')).toContain('list.Count + o.Count;');
+    expect(issues(result)).toEqual([
+      expect.stringMatching(/method 'toString' .* because 'ToString' is a member every type inherits from System\.Object/),
+      expect.stringMatching(/field 'total' .* because 'Total' is already used in .*Use\.cs line 6/),
+    ]);
+  });
+
   it('only renames what the target files declare', () => {
     const root = workspace({
       'Lib/Lib.csproj': LIBRARY,
@@ -491,6 +575,8 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
         '',
         '    public object Project(Lib.Order o) => new { count = o.count, other = _order.count };',
         '',
+        '    public Lib.Order Copy(Lib.Order o) => o with { count = 2 };',
+        '',
         '    public int Local() { var made = new Lib.Order(); return made.count; }',
         '}',
         '',
@@ -502,6 +588,7 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
     expect(issues(result)).toEqual([]);
     expect(output(root, result, 'App/Program.cs')).toContain('new { count = o.Count, other = _order.Count }');
     expect(output(root, result, 'App/Program.cs')).toContain('return made.Count;');
+    expect(output(root, result, 'App/Program.cs')).toContain('o with { Count = 2 }');
   });
 
   it.each([
@@ -509,6 +596,16 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
     ['a method call receiver', 'public static int Read() => Make().count;\n    private static Lib.Order Make() => new Lib.Order();', /'count' is accessed in .*Program\.cs line 3 through an expression whose type cannot be resolved syntactically/],
     ['a conditional access', 'public static int? Read(Lib.Order o) => o?.count;', /'count' is accessed in .*Program\.cs line 3 through a conditional access whose target cannot be resolved/],
     ['a target-typed initializer', 'public static Lib.Order Make() => new() { count = 1 };', /'count' is set in .*Program\.cs line 3 in a target-typed object initializer/],
+    [
+      'a with expression on a method call',
+      'public static Lib.Order Copy() => Make() with { count = 1 };\n    private static Lib.Order Make() => new Lib.Order();',
+      /'count' is set in .*Program\.cs line 3 by a 'with' expression through an expression whose type cannot be resolved syntactically/,
+    ],
+    [
+      'a with expression on an anonymous value',
+      'public static object Copy(Lib.Order o) { var a = new { count = o.count }; return a with { count = 2 }; }',
+      /'count' is set in .*Program\.cs line 3 by a 'with' expression through an expression whose type cannot be resolved syntactically/,
+    ],
   ])('refuses a member renamed through %s', (_label, member, reason) => {
     const root = workspace({
       'Lib/Lib.csproj': LIBRARY,
@@ -605,6 +702,39 @@ describe('workspace-wide rename of non-private symbols (IDE1006)', () => {
     expect(issues(plan(root))).toEqual([expect.stringMatching(/field 'count' .* because .*Directory\.Build\.props adds C# files from outside the project folder/)]);
   });
 
+  it('refuses a rename when an F# or Visual Basic project references the declaring project', () => {
+    for (const [project, file] of [['Fs/Fs.fsproj', 'Fs/Program.fs'], ['Vb/Vb.vbproj', 'Vb/Program.vb']]) {
+      const root = workspace({
+        'Lib/Lib.csproj': LIBRARY,
+        'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public int count;\n}\n',
+        [project]: APP,
+        [file]: 'let read (o: Lib.Order) = o.count\n',
+      });
+
+      const result = plan(root);
+
+      expect(result.renames).toEqual([]);
+      expect(issues(result)).toEqual([expect.stringMatching(new RegExp(`field 'count' .* because .*${path.basename(project).replace('.', '\\.')} is not a C# project, whose uses of C# symbols cleanup cannot follow`))]);
+    }
+  });
+
+  it('refuses a rename in a project holding symbolic links to C# files or folders', () => {
+    for (const link of ['folder', 'file']) {
+      const root = workspace({
+        'Lib/Lib.csproj': LIBRARY,
+        'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public int count;\n}\n',
+        'Shared/Use.cs': 'namespace Lib;\n\ninternal static class Use\n{\n    public static int M(Order o) => o.count;\n}\n',
+      });
+      const target = link === 'folder' ? path.join(root, 'Shared') : path.join(root, 'Shared', 'Use.cs');
+      fs.symlinkSync(target, path.join(root, 'Lib', link === 'folder' ? 'Shared' : 'Use.cs'), link === 'folder' ? 'dir' : 'file');
+
+      const result = plan(root);
+
+      expect(result.renames).toEqual([]);
+      expect(issues(result)).toEqual([expect.stringMatching(/field 'count' .* because .* is a symbolic link, which cleanup does not follow/)]);
+    }
+  });
+
   it('only rewrites crefs that may name a renamed declaration, in either quote style', () => {
     const root = workspace({
       'Lib/Lib.csproj': LIBRARY,
@@ -635,13 +765,13 @@ describe('renameSymbolsAcrossWorkspace (command)', () => {
   });
 
   /** Mirrors the workspace's files into the mocked `workspace.fs` and runs the command on `targets`. */
-  async function run(root: string, targets: string[]) {
+  async function run(root: string, targets: string[], cancel = false) {
     for (const [name, text] of Object.entries(walk(root))) {
       state.files.set(name, text);
     }
 
     state.workspaceFolders = [{ uri: Uri.file(root), name: 'w' }];
-    state.modalChoice = 'Rename';
+    state.modalChoice = cancel ? undefined : 'Rename';
     const applied: WorkspaceEdit[] = [];
     const applyEdit = vscodeWorkspace.applyEdit.bind(vscodeWorkspace);
     vi.spyOn(vscodeWorkspace, 'applyEdit').mockImplementation((edit: WorkspaceEdit) => {
@@ -697,5 +827,39 @@ describe('renameSymbolsAcrossWorkspace (command)', () => {
     const texts = applied.flatMap((edit) => [...edit.edits.values()].flat().map((recorded) => recorded.text));
 
     expect(texts).toEqual(['namespace Lib;\n\npublic class Order\n{\n    public int Count;\n}\n']);
+  });
+
+  it('refuses a rename that would rewrite a file that is not UTF-8 text', async () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public int count;\n}\n',
+    });
+    const legacy = path.join(root, 'Lib', 'Legacy.cs');
+    // Windows-1252: `ö` is the single byte 0xF6, which is not valid UTF-8.
+    const bytes = Buffer.concat([Buffer.from('namespace Lib;\n\n// Gr'), Buffer.from([0xf6]), Buffer.from('\u00dfe\ninternal static class Legacy\n{\n    public static int M(Order o) => o.count;\n}\n', 'latin1')]);
+    fs.writeFileSync(legacy, bytes);
+    // VS Code reads the bytes as they are on disk.
+    vi.spyOn(vscodeWorkspace.fs, 'readFile').mockImplementation((uri: Uri) => Promise.resolve(new Uint8Array(fs.readFileSync(uri.fsPath))));
+
+    const { applied, reported } = await run(root, ['Lib/Order.cs']);
+
+    expect(applied).toEqual([]);
+    expect(reported).toEqual([expect.stringMatching(/field 'count' should be named 'Count'; not renamed across the workspace because .*Legacy\.cs is not UTF-8 text, which the rename cannot rewrite safely/)]);
+    expect(fs.readFileSync(legacy)).toEqual(bytes);
+  });
+
+  it('reports every declaration of a rename group when the rename is cancelled', async () => {
+    const root = workspace({
+      'Lib/Lib.csproj': LIBRARY,
+      'Lib/Order.cs': 'namespace Lib;\n\npublic class Order\n{\n    public int calc() => 1;\n    public int calc(int x) => x;\n}\n',
+    });
+
+    const { applied, reported } = await run(root, ['Lib/Order.cs'], true);
+
+    expect(applied).toEqual([]);
+    expect(reported).toEqual([
+      expect.stringMatching(/line 5: method 'calc' should be named 'Calc'; the workspace-wide rename was cancelled/),
+      expect.stringMatching(/line 6: method 'calc' should be named 'Calc'; the workspace-wide rename was cancelled/),
+    ]);
   });
 });

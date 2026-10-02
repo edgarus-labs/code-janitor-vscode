@@ -26,10 +26,11 @@ export function removeBlankLinesAtBottom(source: string, keepFinalNewline = fals
   return source.slice(0, trailing.index) + finalNewline;
 }
 
+/** Removes the blank line between an attribute and what it applies to; `assembly:`/`module:` attributes apply to no declaration and keep theirs. */
 export function removeBlankLinesAfterAttributes(source: string): string {
   return replaceUsingFileLineEnding(
     source,
-    /(^[ \t]*\[[^\]]+\][ \t]*(?:\/\/[^\r\n]*)*)(?:\r?\n){2}(?![ \t]*\/\/)/gm,
+    /(^[ \t]*\[(?![ \t]*(?:assembly|module)[ \t]*:)[^\]]+\][ \t]*(?:\/\/[^\r\n]*)*)(?:\r?\n){2}(?![ \t]*\/\/)/gm,
     '$1{NL}'
   );
 }

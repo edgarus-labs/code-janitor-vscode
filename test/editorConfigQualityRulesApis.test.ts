@@ -292,6 +292,20 @@ describe('CA2016 forward the CancellationToken', () => {
     const old = body('await stream.CopyToAsync(target);');
     expect(cleanup(old, 'dotnet_diagnostic.CA2016.severity = warning', targeting('net472'))).toEqual({ output: old, issues: [] });
   });
+
+  it('reports ReadLineAsync whose Task result is not awaited directly, because the token overload returns a ValueTask', () => {
+    const body = (...statements: string[]): string =>
+      lines(...USINGS, 'class C', '{', '    async Task<string> M(StreamReader reader, CancellationToken ct)', '    {', ...statements.map((statement) => `        ${statement}`), '    }', '}');
+    expectRewrite(
+      'CA2016',
+      body('var a = await reader.ReadLineAsync();', 'return await reader.ReadLineAsync().ConfigureAwait(false);'),
+      body('var a = await reader.ReadLineAsync(ct);', 'return await reader.ReadLineAsync(ct).ConfigureAwait(false);')
+    );
+    const stored = body('var readTask = reader.ReadLineAsync();', 'var done = await Task.WhenAny(readTask, Task.Delay(1000));', 'return done == readTask ? await readTask : null;');
+    const result = cleanup(stored, 'dotnet_diagnostic.CA2016.severity = warning');
+    expect(result.output).toBe(body('var readTask = reader.ReadLineAsync();', 'var done = await Task.WhenAny(readTask, Task.Delay(1000, ct));', 'return done == readTask ? await readTask : null;'));
+    expect(result.issues).toEqual([expect.stringMatching(/^CA2016 line 14: reader\.ReadLineAsync\(\)/)]);
+  });
 });
 
 describe('CA2263 prefer the generic overload', () => {
@@ -395,6 +409,65 @@ describe('CA1869 cache JsonSerializerOptions', () => {
         '    object M(object value)',
         '    {',
         '        return JsonSerializer.Serialize(value, JsonOptions);',
+        '    }',
+        '}'
+      )
+    );
+  });
+
+  it('caches options passed to the generic serializer methods', () => {
+    expectRewrite(
+      'CA1869',
+      method('string json, object o', 'var a = JsonSerializer.Deserialize<int[]>(json, new JsonSerializerOptions { WriteIndented = true });', 'return JsonSerializer.Serialize<object>(o, new JsonSerializerOptions { WriteIndented = true });'),
+      lines(
+        ...USINGS,
+        'class C',
+        '{',
+        '    private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions { WriteIndented = true };',
+        '    private static readonly JsonSerializerOptions JsonOptions1 = new JsonSerializerOptions { WriteIndented = true };',
+        '',
+        '    object M(string json, object o)',
+        '    {',
+        '        var a = JsonSerializer.Deserialize<int[]>(json, JsonOptions);',
+        '        return JsonSerializer.Serialize<object>(o, JsonOptions1);',
+        '    }',
+        '}'
+      )
+    );
+  });
+
+  it('separates the fields it adds with the blank line padding gives a multi-line field', () => {
+    expectRewrite(
+      'CA1869',
+      lines(
+        ...USINGS,
+        'class C',
+        '{',
+        '    private readonly int _count;',
+        '',
+        '    object M(string json)',
+        '    {',
+        '        return JsonSerializer.Deserialize<int[]>(json, new JsonSerializerOptions',
+        '        {',
+        '            WriteIndented = true',
+        '        });',
+        '    }',
+        '}'
+      ),
+      lines(
+        ...USINGS,
+        'class C',
+        '{',
+        '    private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions',
+        '        {',
+        '            WriteIndented = true',
+        '        };',
+        '',
+        '    private readonly int _count;',
+        '',
+        '    object M(string json)',
+        '    {',
+        '        return JsonSerializer.Deserialize<int[]>(json, JsonOptions);',
         '    }',
         '}'
       )

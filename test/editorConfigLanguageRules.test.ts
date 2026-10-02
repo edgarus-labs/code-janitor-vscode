@@ -171,11 +171,30 @@ describe('newer rules', () => {
     expect(codeStyle(before, 'csharp_style_prefer_simple_property_accessors = true:warning', { ...LATEST, languageVersion: 13 }).output).toBe(before);
   });
 
-  it('IDE0380 removes unsafe when the declaration uses no pointer syntax', () => {
-    const before = lines('unsafe class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    unsafe void O(int v) { System.Console.WriteLine(v); }', '}');
-    const after = lines('class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    void O(int v) { System.Console.WriteLine(v); }', '}');
+  it('IDE0380 removes unsafe when the declaration uses no pointer syntax and only file members without pointer types', () => {
+    const before = lines('unsafe class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    unsafe void O(int v) { P(v); }', '    void P(int v) { }', '}');
+    const after = lines('class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    void O(int v) { P(v); }', '    void P(int v) { }', '}');
 
     expect(codeStyle(before, enforced('IDE0380')).output).toBe(after);
+  });
+
+  it('IDE0380 keeps unsafe on code that handles pointers without pointer syntax', () => {
+    const source = lines(
+      'class B',
+      '{',
+      '    private unsafe int* _p;',
+      '    static unsafe void* Alloc(int n) => null;',
+      '    static unsafe void Free(void* p) { }',
+      '    public static unsafe void Copy() { Free(Alloc(16)); }',
+      '    public unsafe bool Read() { var q = _p; return q == null; }',
+      '    unsafe void Log(int v) { System.Console.WriteLine(v); }',
+      '}'
+    );
+    const { output, issues } = codeStyle(source, enforced('IDE0380'));
+
+    // A member of another file (here Console.WriteLine) may take or return a pointer: reported, not changed.
+    expect(output).toBe(source);
+    expect(issues).toEqual([expect.stringMatching(/^IDE0380 .*line 8: .*'WriteLine'/)]);
   });
 
   it('IDE0064 makes the readonly fields of a struct that assigns `this` writable', () => {
@@ -248,6 +267,32 @@ describe('newer rules', () => {
       fs.writeFileSync(path.join(folder, 'FileInfo.cs'), 'class FileInfo { }\n');
       expect(codeStyle(before, enforced('IDE0001'), { ...project }).output).toBe(before);
       expect(codeStyle(before, enforced('IDE0001'), { directory: '/missing' }).output).toBe(before);
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('IDE0001 keeps a namespace that tells apart types of the same name in imported namespaces', () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-ide0001-'));
+    try {
+      fs.writeFileSync(path.join(folder, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+      const project: ProjectInfo = { ...LATEST, directory: folder };
+      const known = lines('using System.IO.Pipelines;', 'using System.IO.Pipes;', '', 'class C', '{', '    System.IO.Pipes.PipeOptions Options;', '}');
+      const outsideIndex = lines(
+        'using System.Data.SqlClient;',
+        'using Microsoft.Data.SqlClient;',
+        'using System.Windows;',
+        'using System.Windows.Forms;',
+        '',
+        'class C',
+        '{',
+        '    System.Windows.Forms.MessageBox Box;',
+        '    Microsoft.Data.SqlClient.SqlConnection Open() => null;',
+        '}'
+      );
+
+      expect(codeStyle(known, enforced('IDE0001'), project).output).toBe(known);
+      expect(codeStyle(outsideIndex, enforced('IDE0001'), project).output).toBe(outsideIndex);
     } finally {
       fs.rmSync(folder, { recursive: true, force: true });
     }

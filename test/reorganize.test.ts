@@ -280,6 +280,15 @@ describe('reorganize: types and places left alone', () => {
     expect(reorganize(com)).toBe(com);
   });
 
+  it('does not reorder the members of a type whose layout attribute is global::-qualified', () => {
+    const layout =
+      '[global::System.Runtime.InteropServices.StructLayout(global::System.Runtime.InteropServices.LayoutKind.Sequential)]\nstruct POINT\n{\n    public int y;\n    public int x;\n}\n';
+    const com = '[global::System.Runtime.InteropServices.ComImport]\ninterface I\n{\n    void B();\n    void A();\n}\n';
+
+    expect(reorganize(layout)).toBe(layout);
+    expect(reorganize(com)).toBe(com);
+  });
+
   it('does not reorder the members of a COM interface, whose order is its vtable', () => {
     const generated = '[GeneratedComInterface]\n[Guid("00000000-0000-0000-0000-000000000001")]\ninterface I\n{\n    void B();\n    void A();\n}\n';
     const typed = '[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\ninterface J\n{\n    void B();\n    void A();\n}\n';
@@ -341,6 +350,16 @@ describe('reorganize: types and places left alone', () => {
     expect(reorganize(source)).toBe('using System;\nConsole.WriteLine(1);\nclass B { }\nclass A\n{\n    int F;\n    void Z() { }\n}\n');
     // Top-level statements are nothing to report: the types of such a file are not ordered, and that is all.
     expect(reorganizeSourceDetailed(source, createDefaultReorganizeSettings(), createDefaultSettings()).skipped).toEqual([]);
+  });
+
+  it('reorganizes a file that starts with a byte order mark and keeps the mark', () => {
+    const inNamespace = '\uFEFFnamespace N\n{\n    class Zed\n    {\n        void B() { }\n        void A() { }\n    }\n}\n';
+    const atTop = '\uFEFFclass Zed\n{\n    void B() { }\n    void A() { }\n}\n';
+    const documented = '\uFEFF/// <summary>Doc.</summary>\nclass Zed\n{\n    void B() { }\n    void A() { }\n}\n';
+
+    expect(reorganize(inNamespace)).toBe('\uFEFFnamespace N\n{\n    class Zed\n    {\n        void A() { }\n        void B() { }\n    }\n}\n');
+    expect(reorganize(atTop)).toBe('\uFEFFclass Zed\n{\n    void A() { }\n    void B() { }\n}\n');
+    expect(reorganize(documented)).toBe('\uFEFF/// <summary>Doc.</summary>\nclass Zed\n{\n    void A() { }\n    void B() { }\n}\n');
   });
 
   it('orders members that are explicit implementations of interface events and indexers', () => {

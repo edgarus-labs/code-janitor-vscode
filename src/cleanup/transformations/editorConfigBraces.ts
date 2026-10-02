@@ -111,7 +111,9 @@ function bracePass(source: string, multilineOnly: boolean, indentUnit: string, i
 
 function embeddedStatements(owner: Node): EmbeddedStatement[] {
   const result: EmbeddedStatement[] = [];
-  const children = owner.children;
+  // Comments and directives are children too (`if (x) // why`, `A(); // note` before `else`): the
+  // anchor and its statement are the tokens around them. `braceEdits` reports what they block.
+  const children = owner.children.filter((child) => child.type !== 'comment' && !child.type.startsWith('preproc'));
 
   /** Adds the statement at `index` when the token before it is `anchorType` and it is not a block. */
   const add = (index: number, anchorType: string): void => {
@@ -165,7 +167,7 @@ function braceEdits(source: string, kinds: Uint8Array, candidate: EmbeddedStatem
   if (gap.includes('\n')) {
     // The statement already sits on its own line: open the block at the end of the header line.
     const headerLineEnd = lineEndAt(source, anchor.endIndex);
-    if (!isTrivia(source, kinds, anchor.endIndex, headerLineEnd) || kinds[headerLineEnd] === COMMENT) {
+    if (!isTrivia(source, kinds, anchor.endIndex, headerLineEnd) || continuesInComment(source, kinds, headerLineEnd)) {
       return 'braces were not added: the header line continues after the statement header.';
     }
 
@@ -215,7 +217,7 @@ function closingEdit(
 ): TextEdit | undefined {
   const lineEnd = lineEndAt(source, statement.endIndex);
   if (isTrivia(source, kinds, statement.endIndex, lineEnd)) {
-    if (kinds[lineEnd] === COMMENT) {
+    if (continuesInComment(source, kinds, lineEnd)) {
       return undefined;
     }
 
@@ -238,6 +240,14 @@ function closingEdit(
     end: statement.endIndex + leading,
     text: `${newline}${braceIndent}}${continuesClause ? ' ' : newline + braceIndent}`,
   };
+}
+
+/**
+ * True when a block comment runs past the line break at `lineEnd`. The break counts by its `\n`:
+ * a `//` comment ends before the `\n`, so the `\r` of a CRLF break is part of it.
+ */
+function continuesInComment(source: string, kinds: Uint8Array, lineEnd: number): boolean {
+  return kinds[source[lineEnd] === '\r' ? lineEnd + 1 : lineEnd] === COMMENT;
 }
 
 /** True when `[start, end)` holds only whitespace and comments. */

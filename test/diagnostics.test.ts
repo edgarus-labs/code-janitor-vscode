@@ -153,4 +153,25 @@ describe('.editorconfig diagnostics', () => {
     document.setText(`${SOURCE}// edited\n`);
     expect(provider.provideCodeActions(document, braces.range, { diagnostics: [braces] })).toEqual([]);
   });
+
+  it('reads and parses the other files of the folder once, and again only after one of them changes on disk', async () => {
+    const sibling = path.join(root, 'Other.cs');
+    state.files.set(sibling, 'namespace Demo;\n\ninternal sealed class Other\n{\n}\n');
+    const reads = vi.spyOn(workspace.fs, 'readFile');
+    const siblingReads = () => reads.mock.calls.filter(([uri]) => uri.fsPath === sibling).length;
+    registerCleanupDiagnostics(createContext());
+    await vi.advanceTimersByTimeAsync(ANALYSIS_DELAY_MS);
+
+    edit(SOURCE.replace('public int total;', 'public int total; // edited'));
+    await vi.advanceTimersByTimeAsync(ANALYSIS_DELAY_MS);
+    expect(summary(published()).map((diagnostic) => diagnostic.code)).toEqual(['IDE0011', 'IDE0011', 'IDE1006']);
+    expect([siblingReads(), state.readDirectoryCalls]).toEqual([1, 1]);
+
+    state.files.set(sibling, 'namespace Demo;\n\ninternal class Other : Counter\n{\n}\n');
+    state.diskListeners.forEach((listener) => listener(Uri.file(sibling)));
+    edit(SOURCE);
+    await vi.advanceTimersByTimeAsync(ANALYSIS_DELAY_MS);
+
+    expect([siblingReads(), state.readDirectoryCalls]).toEqual([2, 2]);
+  });
 });

@@ -59,5 +59,12 @@ export function failure(check: Check, output: string, issues: readonly string[])
 
       return check.t === 'blankBetween' ? (blank ? undefined : `expected a blank line between ${JSON.stringify(check.a)} and ${JSON.stringify(check.b)}`) : blank ? `expected no blank line between ${JSON.stringify(check.a)} and ${JSON.stringify(check.b)}` : undefined;
     }
+
+    default: {
+      // `scenarios.json` comes from another repository: a type this one does not know must fail, not pass.
+      const unknown: { t: unknown } = check;
+
+      return `unknown check type ${JSON.stringify(unknown.t)}`;
+    }
   }
 }

@@ -1823,7 +1823,8 @@ class CSharpParser {
     const typeStart = this.pos;
     const type = this.parseType();
 
-    if (!type || !this.is('identifier')) {
+    // `(T)x` is a cast, not a declaration: C# has no one-element tuple type.
+    if (!type || !this.is('identifier') || isOneElementTupleType(type)) {
       this.pos = save;
 
       return undefined;
@@ -3323,4 +3324,15 @@ function deepestContaining(root: Node, start: number, end: number): Node {
 
     host = child;
   }
+}
+
+/** `(T)` parsed as a tuple type (also under `?`/`[]`): a tuple type needs at least two elements. */
+function isOneElementTupleType(type: Node): boolean {
+  let base = type;
+
+  while ((base.type === 'nullable_type' || base.type === 'array_type') && base.children.length > 0) {
+    base = base.children[0];
+  }
+
+  return base.type === 'tuple_type' && !base.children.some((child) => child.type === ',');
 }

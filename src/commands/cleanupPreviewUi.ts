@@ -107,11 +107,10 @@ function summarize(plan: CleanupPreviewPlan): string {
 }
 
 function report(outcome: ApplyOutcome): void {
-  const { applied, stale, failed } = outcome;
+  const { applied, stale, failed, appliedSeparately } = outcome;
   if (stale.length === 0 && failed.length === 0) {
-    void vscode.window.showInformationMessage(
-      `Code Janitor: cleanup preview applied to ${applied.length} file(s). No files were saved; undo reverts the whole operation.`
-    );
+    const undo = appliedSeparately ? 'each file is undone on its own' : 'undo reverts the whole operation';
+    void vscode.window.showInformationMessage(`Code Janitor: cleanup preview applied to ${applied.length} file(s). No files were saved; ${undo}.`);
 
     return;
   }
@@ -166,11 +165,15 @@ function fileItem(file: PreviewFile): FileItem {
     ...file.notes,
   ].filter((part) => part.length > 0);
 
+  // Choose Rules stays while a rule changes the file or is left out: a file whose changes were all
+  // left out, or whose result is blocked, can get a usable result back.
+  const choosable = file.rules.some((rule) => !rule.include || rule.changes > 0);
+
   return {
     label: `$(${STATUS_ICON[file.status]}) ${file.label}`,
     description: file.message,
     detail: detail.length > 0 ? detail.join(' - ') : undefined,
-    buttons: file.canApply ? [DIFF_BUTTON, RULES_BUTTON] : [],
+    buttons: [...(file.canApply ? [DIFF_BUTTON] : []), ...(choosable ? [RULES_BUTTON] : [])],
     file,
   };
 }

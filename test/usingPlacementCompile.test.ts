@@ -53,8 +53,10 @@ interface Outcome {
 function clean(file: string, direction: Direction): Outcome {
   const before = fs.readFileSync(file, 'utf8');
   const reasons: string[] = [];
+  // The setting moves outward and leaves a note; `.editorconfig` moves inward and reports the violation it left.
+  const kind = direction === 'outward' ? 'note' : 'unresolved';
   const after = runCleanup(before, file, settings(direction), undefined, (issue) => {
-    if (issue.kind === 'unresolved') {
+    if (issue.kind === kind) {
       reasons.push(issue.detail);
     }
   });

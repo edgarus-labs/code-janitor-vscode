@@ -152,6 +152,14 @@ describe('Count/Any rules', () => {
     expect(result.issues).toEqual([expect.stringMatching(/^CA1827 line 9: .*Items\(\)/)]);
   });
 
+  it('CA1827 reports a single argument that is not a lambda, which may be the item of a span Count', () => {
+    const source = method("var b = s.Count(',') > 0 || a.Count(5) == 0;", 'var n = l.Count(5);');
+
+    const result = cleanup(source, 'dotnet_diagnostic.CA1827.severity = warning\ndotnet_diagnostic.CA1829.severity = warning');
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1827 line 9: s\.Count\(','\)/), expect.stringMatching(/^CA1827 line 9: a\.Count\(5\)/)]);
+  });
+
   it('CA1828 uses AnyAsync() for awaited CountAsync() comparisons with Entity Framework', () => {
     const before = lines(
       'using Microsoft.EntityFrameworkCore;',
@@ -294,6 +302,14 @@ describe('string and StringBuilder rules', () => {
 
     expect(cleanup(source, 'dotnet_diagnostic.CA1865.severity = warning').issues).toEqual([]);
     expect(cleanup(source, '')).toEqual({ output: source, issues: [] });
+  });
+
+  it('CA1865 reports LastIndexOf with a start index, which the char overload rejects at the string length', () => {
+    const source = method('int end = s.Length;', 'var a = s.LastIndexOf(",", end, StringComparison.Ordinal);', 'var b = s.LastIndexOf(",", StringComparison.Ordinal);');
+
+    const result = cleanup(source, 'dotnet_diagnostic.CA1865.severity = warning');
+    expect(result.output).toBe(method('int end = s.Length;', 'var a = s.LastIndexOf(",", end, StringComparison.Ordinal);', "var b = s.LastIndexOf(',');"));
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1865 line 10: s\.LastIndexOf\(",", end, StringComparison\.Ordinal\)/)]);
   });
 
   it('CA2249 uses Contains instead of IndexOf comparisons', () => {

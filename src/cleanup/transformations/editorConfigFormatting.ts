@@ -247,13 +247,19 @@ function braceKind(container: Node): string | undefined {
     case 'switch_body':
       return owner.type === 'switch_statement' ? 'control_blocks' : undefined;
 
-    case 'initializer_expression':
-      // As in Roslyn, array initializers (`new[] {`, `new int[] {`, `int[] a = {`) keep their brace.
-      if (owner.type === 'array_creation_expression' || owner.type === 'implicit_array_creation_expression' || owner.type === 'equals_value_clause') {
-        return undefined;
+    case 'initializer_expression': {
+      if (owner.type === 'anonymous_object_creation_expression') {
+        return 'anonymous_types';
       }
 
-      return owner.type === 'anonymous_object_creation_expression' ? 'anonymous_types' : 'object_collection_array_initializers';
+      // As dotnet format does, only the object initializer of a creation (`new T {`, `new() {`) or of
+      // `with {` moves. Array, collection (`new List<int> { 1 }`), nested (`Inner = {`) and element
+      // (`{ 1, 2 }` of a dictionary) initializers keep their brace where it is.
+      const isObjectInitializer = container.namedChildren.every((item) => item.type === 'assignment_expression' || item.type === 'comment');
+      const isCreation = owner.type === 'object_creation_expression' || owner.type === 'implicit_object_creation_expression' || owner.type === 'with_expression';
+
+      return isCreation && isObjectInitializer ? 'object_collection_array_initializers' : undefined;
+    }
 
     case 'block':
       if (METHOD_OWNERS[owner.type] === true) {

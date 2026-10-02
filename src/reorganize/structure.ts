@@ -274,8 +274,11 @@ class EntryBuilder {
         regionDepth++;
       } else if (atom.type === 'preproc_endregion') {
         regionDepth--;
-      } else if (atom.type === 'comment' || isSemicolon(atom) || atom.type.startsWith('preproc_')) {
+      } else if (atom.type === 'comment' || isSemicolon(atom) || CONDITIONAL_DIRECTIVES[atom.type] === true) {
         continue;
+      } else if (atom.type.startsWith('preproc_')) {
+        // `#nullable`, `#pragma` and the like change the context of the members after them, as at the top level.
+        hasBarrier = true;
       } else {
         const description = this.env.describe(atom);
         if (!description) {
@@ -301,8 +304,12 @@ class EntryBuilder {
       return this.fixed(start, end, true, level);
     }
 
-    // The block sorts as its first member and takes the initialization constraints of all of them.
-    const info: MemberInfo = { ...members[0], init: mergeInitInfo(members.map((member) => member.init)) };
+    // The block sorts as its first member and takes the order constraints of all of them.
+    const info: MemberInfo = {
+      ...members[0],
+      init: mergeInitInfo(members.map((member) => member.init)),
+      partialTypes: new Set(members.flatMap((member) => [...member.partialTypes])),
+    };
 
     return this.member(start, end, info, level);
   }
@@ -378,7 +385,7 @@ class EntryBuilder {
   }
 
   private startsLine(index: number): boolean {
-    return /^[ \t\f\v\uFEFF]*$/.test(this.env.source.slice(this.lineStart(index), index));
+    return /^[ \t\f\v]*$/.test(this.env.source.slice(this.lineStart(index), index));
   }
 
   private newlinesBetween(start: number, end: number): number {
@@ -390,6 +397,9 @@ class EntryBuilder {
 export function isSemicolon(node: Node): boolean {
   return node.type === ';' || (node.type === 'incomplete_declaration' && node.text === ';');
 }
+
+/** The directives of a `#if` block's own structure: nested blocks move with the block. */
+const CONDITIONAL_DIRECTIVES: Readonly<Record<string, true>> = { preproc_if: true, preproc_elif: true, preproc_else: true, preproc_endif: true };
 
 function countNewlines(text: string): number {
   let count = 0;

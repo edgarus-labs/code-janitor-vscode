@@ -1,4 +1,4 @@
-import { STRING, classifyCSharp } from '../csharpScanner';
+import { classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp, walk } from '../parser';
 import { diagnosticIdsOfOption, effectiveEditorConfigValue, isDiagnosticEnforced } from '../editorConfigRegistry';
@@ -12,12 +12,12 @@ import { applyQualificationPreferences } from './editorConfigQualification';
 import {
   EditorConfigIssueReporter,
   containsMultiLineString,
+  dedentBlock,
   describeIssue,
   hasParseErrors,
   indentUnit,
   isBlank,
   isRecoveredNode,
-  lineEndAt,
   lineIndentAt,
   lineStartAt,
   newlineOf,
@@ -35,7 +35,7 @@ import { STATEMENT_PREFERENCES, applyStatementPreference } from './editorConfigS
 import { applySystemThreadingLock, reportPrimaryConstructors } from './editorConfigTypePreferences';
 import { applyVarPreferences } from './editorConfigVarPreference';
 import { createExplicitAccessModifierConverter } from './explicitAccessModifier';
-import { convertToBlockScoped, convertToFileScoped, fileScopedNamespacesUnsupported } from './namespaceScope';
+import { convertToBlockScoped, convertToFileScoped, fileScopedNamespacesUnsupported, hasBlockScopedNamespace } from './namespaceScope';
 import { inlineOutVariableDeclarations } from './outVarInlining';
 import { readonlyFieldConverter } from './readonlyFieldAndSingleLineMethods';
 
@@ -200,17 +200,18 @@ function requirementOf(rule: Rule, props: EditorConfigProperties): LanguageRequi
   return LANGUAGE_REQUIREMENTS[rule.option];
 }
 
-/** Why the project cannot take the rule's syntax, or `undefined` when it can (or is unknown). */
-function unsupportedByProject(rule: Rule, context: RuleContext): string | undefined {
+/** Why the project cannot take the rule's syntax in `source`, or `undefined` when it can (or is unknown). */
+function unsupportedByProject(rule: Rule, source: string, context: RuleContext): string | undefined {
   const requirement = requirementOf(rule, context.props);
   const project = context.project;
   // A rule keyed by its diagnostic (no option) applies while the diagnostic is enforced.
   const applies = /^(?:IDE|CA)\d{4}$/.test(rule.option)
     ? isDiagnosticEnforced(context.props, rule.option)
     : effectiveEditorConfigValue(context.props, rule.option) !== undefined;
-  // File-scoped namespaces are only written when the language version is known to be C# 10 or newer.
+  // File-scoped namespaces are only written when the language version is known to be C# 10 or newer;
+  // only a file with a block-scoped namespace to convert is worth a report.
   if (rule.option === NAMESPACE_OPTION && applies && requirement) {
-    return fileScopedNamespacesUnsupported(project);
+    return hasBlockScopedNamespace(source) ? fileScopedNamespacesUnsupported(project) : undefined;
   }
 
   if (!requirement || !project || !applies) {
@@ -229,7 +230,7 @@ function applyRules(source: string, context: RuleContext, tracking?: RuleTrackin
   let errors: number | undefined;
 
   for (const rule of RULES) {
-    const unsupported = unsupportedByProject(rule, context);
+    const unsupported = unsupportedByProject(rule, current, context);
     if (unsupported) {
       context.report(`${rule.option}: not applied, ${unsupported}.`);
       continue;
@@ -288,7 +289,7 @@ const RULES: readonly Rule[] = [
   },
   { option: 'csharp_prefer_simple_using_statement', apply: applySimpleUsingStatementPreference },
   ...STATEMENT_PREFERENCES.map(
-    (rule): Rule => ({ option: rule.option, apply: (source, { props, indent }) => applyStatementPreference(rule, source, props, indent) })
+    (rule): Rule => ({ option: rule.option, apply: (source, { props, indent, project }) => applyStatementPreference(rule, source, props, indent, project?.languageVersion) })
   ),
   ...EXPRESSION_PREFERENCES.map(
     (rule): Rule => ({
@@ -345,43 +346,6 @@ function applyNamespaceDeclarationPreference(source: string, context: RuleContex
   const options = { indent: context.indent, report };
 
   return option.value === 'file_scoped' ? convertToFileScoped(source, options) : convertToBlockScoped(source, options);
-}
-
-// ---------------------------------------------------------------------------------------------
-// csharp_using_directive_placement (IDE0065): the step of `runCleanup.ts` (see `namespaceScope.ts`), not a rule here.
-// ---------------------------------------------------------------------------------------------
-
-/**
- * The text between `start` and `end` without its surrounding blank lines and with the indentation
- * of its first line removed from every line (lines inside string literals are never changed).
- */
-function dedentBlock(source: string, kinds: Uint8Array, start: number, end: number): string {
-  const text = source.slice(start, end);
-  const firstContent = text.search(/\S/);
-  if (firstContent < 0) {
-    return '';
-  }
-
-  const unit = lineIndentAt(text, firstContent);
-  const newline = newlineOf(source);
-  const lines: string[] = [];
-  let lineStart = lineStartAt(text, firstContent);
-
-  while (lineStart <= text.length) {
-    const lineEnd = lineEndAt(text, lineStart);
-    const line = text.slice(lineStart, lineEnd);
-    const startsInString = lineStart > 0 && kinds[start + lineStart - 1] === STRING;
-    lines.push(startsInString ? line : line.startsWith(unit) ? line.slice(unit.length) : isBlank(line) ? '' : line);
-
-    const next = text.indexOf('\n', lineEnd);
-    if (next < 0) {
-      break;
-    }
-
-    lineStart = next + 1;
-  }
-
-  return lines.join(newline).trimEnd();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -696,8 +660,9 @@ function simplifyLastUsingStatements(source: string, issues: Set<string>): strin
       const open = body.children[0];
       const close = body.children[body.children.length - 1];
       const usingIndent = lineIndentAt(source, statement.startIndex);
+      // The shared helper keeps each line break as written; the lines are joined with the file's own.
       const inner = dedentBlock(source, kinds, open.endIndex, close.startIndex)
-        .split(newline)
+        .split(/\r?\n/)
         .map((line) => (line ? usingIndent + line : line))
         .join(newline);
 
@@ -734,9 +699,15 @@ function simpleUsingBlocker(source: string, kinds: Uint8Array, block: Node, stat
     return 'the body contains a multi-line string literal, which cannot be re-indented.';
   }
 
+  // The body's locals, pattern variables and labels move to the enclosing block's scope.
   const declared = new Set<string>();
-  for (const node of statement.descendantsOfType(['variable_declarator', 'declaration_expression', 'local_function_statement'])) {
-    const name = node.childForFieldName('name')?.text;
+  for (const node of statement.descendantsOfType(['variable_declarator', 'declaration_expression', 'local_function_statement', 'labeled_statement', 'pattern'])) {
+    if (node.type === 'pattern') {
+      patternDesignations(node).forEach((name) => declared.add(name));
+      continue;
+    }
+
+    const name = (node.type === 'labeled_statement' ? node.namedChildren[0] : node.childForFieldName('name'))?.text;
     if (name) {
       declared.add(name);
     }
@@ -750,4 +721,38 @@ function simpleUsingBlocker(source: string, kinds: Uint8Array, block: Node, stat
   }
 
   return undefined;
+}
+
+/** Pattern combinators the parser keeps as identifiers; the name after them is a type or constant. */
+const PATTERN_COMBINATORS: Record<string, true> = { and: true, or: true, not: true };
+
+/**
+ * The variables a pattern declares. The parser keeps a pattern as a flat token run; a designation
+ * is a name right after its type (`string t`, `Foo<T> t`, `{ } t`, `var t`) or inside `var (a, b)`.
+ */
+function patternDesignations(pattern: Node): string[] {
+  const names: string[] = [];
+  const tokens = pattern.children;
+  let varDepth = 0;
+  tokens.forEach((token, index) => {
+    const previous = tokens[index - 1];
+    if (varDepth > 0) {
+      varDepth += token.type === '(' ? 1 : token.type === ')' ? -1 : 0;
+      if (token.type === 'identifier') {
+        names.push(token.text);
+      }
+    } else if (token.type === '(' && previous?.text === 'var') {
+      varDepth = 1;
+    } else if (
+      token.type === 'identifier' &&
+      previous &&
+      previous.type !== 'comment' &&
+      PATTERN_COMBINATORS[previous.text] !== true &&
+      (previous.isNamed || /^[)\]}>]$/.test(previous.type))
+    ) {
+      names.push(token.text);
+    }
+  });
+
+  return names;
 }

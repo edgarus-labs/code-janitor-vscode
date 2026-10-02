@@ -49,17 +49,25 @@ function project(files: Record<string, string> = {}, options: { editorconfig?: s
   }
 }
 
-function clean(source: string, overrides: Partial<CleanupSettings>, options: { editorconfig?: string; languageVersion?: string; file?: string } = {}): { output: string; issues: string[] } {
+/** Cleans `source`: `issues` are the `.editorconfig` violations left unfixed, `notes` what a Code Janitor setting left undone. */
+function clean(
+  source: string,
+  overrides: Partial<CleanupSettings>,
+  options: { editorconfig?: string; languageVersion?: string; file?: string } = {}
+): { output: string; issues: string[]; notes: string[] } {
   const filePath = path.join(folder, options.file ?? 'Sample.cs');
   fs.writeFileSync(filePath, source);
   const issues: string[] = [];
+  const notes: string[] = [];
   const output = runCleanup(source, filePath, settings(overrides), undefined, (issue: EditorConfigIssue) => {
     if (issue.kind === 'unresolved') {
       issues.push(issue.detail);
+    } else if (issue.kind === 'note') {
+      notes.push(issue.detail);
     }
   });
 
-  return { output, issues };
+  return { output, issues, notes };
 }
 
 beforeEach(() => clearUsingIndexCache());
@@ -74,22 +82,24 @@ describe('moveUsingsOutsideNamespace (no .editorconfig decision)', () => {
     expect(clean(NAMESPACE_WITH_RELATIVE_USING, { moveUsingsOutsideNamespace: true })).toEqual({
       output: 'using Company.App.Services;\n\nnamespace Company.App\n{\n    internal class C\n    {\n        private Svc s;\n    }\n}\n',
       issues: [],
+      notes: [],
     });
   });
 
   it('leaves the directives where they are when the setting is off', () => {
     project();
 
-    expect(clean(NAMESPACE_WITH_RELATIVE_USING, { moveUsingsOutsideNamespace: false })).toEqual({ output: NAMESPACE_WITH_RELATIVE_USING, issues: [] });
+    expect(clean(NAMESPACE_WITH_RELATIVE_USING, { moveUsingsOutsideNamespace: false })).toEqual({ output: NAMESPACE_WITH_RELATIVE_USING, issues: [], notes: [] });
   });
 
   it('reports why directives were left in place', () => {
     project({ 'Foo.cs': 'namespace Company { public class Foo { } }\n' });
     const source = 'namespace Company.App\n{\n    using Models;\n\n    internal class C\n    {\n        private Foo f;\n    }\n}\n';
-    const { output, issues } = clean(source, { moveUsingsOutsideNamespace: true });
+    const { output, issues, notes } = clean(source, { moveUsingsOutsideNamespace: true });
 
     expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/^Using directives were not moved outside the namespace because moving 'using Models;' would change what 'Foo' refers to.*They were left in place\.$/)]);
+    expect(issues).toEqual([]);
+    expect(notes).toEqual([expect.stringMatching(/^Using directives were not moved outside the namespace because moving 'using Models;' would change what 'Foo' refers to.*They were left in place\.$/)]);
   });
 
   it('skips and reports a file that is not part of a C# project', () => {
@@ -114,7 +124,7 @@ describe('moveUsingsOutsideNamespace (no .editorconfig decision)', () => {
     project();
     const source = 'using System;\n\nnamespace N\n{\n    internal class C\n    {\n        private Action a;\n    }\n}\n';
 
-    expect(clean(source, { moveUsingsOutsideNamespace: true })).toEqual({ output: source, issues: [] });
+    expect(clean(source, { moveUsingsOutsideNamespace: true })).toEqual({ output: source, issues: [], notes: [] });
   });
 });
 
@@ -134,8 +144,9 @@ describe('what surrounds the directives', () => {
     expect(clean(source, { moveUsingsOutsideNamespace: true, removeRegions: true })).toEqual({
       output: 'using System;\nusing Company.App.Services;\n\nnamespace Company.App\n{\n    internal class C\n    {\n        private Svc s;\n        private Action a;\n    }\n}\n',
       issues: [],
+      notes: [],
     });
-    expect(clean(source, { moveUsingsOutsideNamespace: true, removeRegions: false }).issues).toEqual([expect.stringMatching(/interleaved with preprocessor directives/)]);
+    expect(clean(source, { moveUsingsOutsideNamespace: true, removeRegions: false })).toMatchObject({ issues: [], notes: [expect.stringMatching(/interleaved with preprocessor directives/)] });
   });
 
   it('keeps the line endings of a CRLF file', () => {
@@ -163,6 +174,7 @@ describe('csharp_using_directive_placement', () => {
       output:
         'namespace Company.App\n{\n    using System;\n    using Company.App.Services;\n\n    internal class C\n    {\n        private Svc s;\n        private Action a;\n    }\n}\n',
       issues: [],
+      notes: [],
     });
   });
 
@@ -195,9 +207,10 @@ describe('csharp_using_directive_placement', () => {
   it('names the diagnostic and the line when it leaves directives in place', () => {
     project({ 'Foo.cs': 'namespace Company { public class Foo { } }\n' }, { editorconfig: 'csharp_using_directive_placement = outside_namespace:warning' });
     const source = 'namespace Company.App\n{\n    using Models;\n\n    internal class C\n    {\n        private Foo f;\n    }\n}\n';
-    const { output, issues } = clean(source, { moveUsingsOutsideNamespace: false });
+    const { output, issues, notes } = clean(source, { moveUsingsOutsideNamespace: false });
 
     expect(output).toBe(source);
+    expect(notes).toEqual([]);
     expect(issues).toEqual([expect.stringMatching(/^IDE0065 \(csharp_using_directive_placement\) line 3: using directives were not moved outside the namespace because .*'Foo'/)]);
   });
 
@@ -205,7 +218,7 @@ describe('csharp_using_directive_placement', () => {
     project({}, { editorconfig: 'csharp_using_directive_placement = inside_namespace:warning' });
     const source = 'using System;\n\ninternal class C\n{\n    private Action a;\n}\n';
 
-    expect(clean(source, { moveUsingsOutsideNamespace: true })).toEqual({ output: source, issues: [] });
+    expect(clean(source, { moveUsingsOutsideNamespace: true })).toEqual({ output: source, issues: [], notes: [] });
   });
 });
 
@@ -216,7 +229,7 @@ describe('convertToFileScopedNamespace', () => {
   it('converts when the project uses C# 10 or newer', () => {
     project();
 
-    expect(clean(block, { convertToFileScopedNamespace: true })).toEqual({ output: fileScoped, issues: [] });
+    expect(clean(block, { convertToFileScopedNamespace: true })).toEqual({ output: fileScoped, issues: [], notes: [] });
   });
 
   it.each(['10', 'latest', '12.0'])('converts with LangVersion %s', (languageVersion) => {
@@ -227,18 +240,20 @@ describe('convertToFileScopedNamespace', () => {
 
   it('stays block-scoped and reports for an older language version', () => {
     project({}, { languageVersion: '9.0' });
-    const { output, issues } = clean(block, { convertToFileScopedNamespace: true });
+    const { output, issues, notes } = clean(block, { convertToFileScopedNamespace: true });
 
     expect(output).toBe(block);
-    expect(issues).toEqual([expect.stringMatching(/C# 9 and file-scoped namespaces need C# 10/)]);
+    expect(issues).toEqual([]);
+    expect(notes).toEqual([expect.stringMatching(/C# 9 and file-scoped namespaces need C# 10/)]);
   });
 
   it('stays block-scoped and reports when the language version is unknown', () => {
     folder = writeProject(LIBRARY, csproj('$(SomeUnknownProperty)'));
-    const { output, issues } = clean(block, { convertToFileScopedNamespace: true });
+    const { output, issues, notes } = clean(block, { convertToFileScopedNamespace: true });
 
     expect(output).toBe(block);
-    expect(issues).toEqual([expect.stringMatching(/language version of its project is unknown/)]);
+    expect(issues).toEqual([]);
+    expect(notes).toEqual([expect.stringMatching(/language version of its project is unknown/)]);
   });
 
   it.each([
@@ -246,10 +261,11 @@ describe('convertToFileScopedNamespace', () => {
     ['net48;net10.0', /C# 7\.3 and file-scoped namespaces need C# 10/],
   ])('keeps the namespace block-scoped when a target framework (%s) has an older default language version', (frameworks, reason) => {
     folder = writeProject(LIBRARY, `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>${frameworks}</TargetFrameworks></PropertyGroup></Project>`);
-    const { output, issues } = clean(block, { convertToFileScopedNamespace: true });
+    const { output, issues, notes } = clean(block, { convertToFileScopedNamespace: true });
 
     expect(output).toBe(block);
-    expect(issues).toEqual([expect.stringMatching(reason)]);
+    expect(issues).toEqual([]);
+    expect(notes).toEqual([expect.stringMatching(reason)]);
   });
 
   it('converts when every target framework has a default of C# 10 or newer', () => {
@@ -280,7 +296,7 @@ describe('convertToFileScopedNamespace', () => {
       'namespace A\n{\n    namespace B\n    {\n        internal class C\n        {\n        }\n    }\n}\n',
       'internal class Top\n{\n}\n\nnamespace A\n{\n    internal class C\n    {\n    }\n}\n',
     ]) {
-      expect(clean(source, { convertToFileScopedNamespace: true })).toEqual({ output: source, issues: [] });
+      expect(clean(source, { convertToFileScopedNamespace: true })).toEqual({ output: source, issues: [], notes: [] });
     }
   });
 
@@ -288,16 +304,17 @@ describe('convertToFileScopedNamespace', () => {
     project();
     const source = '#if NET6_0_OR_GREATER\nnamespace A\n{\n    internal class C\n    {\n    }\n}\n#else\nnamespace A\n{\n    internal class D\n    {\n    }\n}\n#endif\n';
 
-    expect(clean(source, { convertToFileScopedNamespace: true })).toEqual({ output: source, issues: [] });
+    expect(clean(source, { convertToFileScopedNamespace: true })).toEqual({ output: source, issues: [], notes: [] });
   });
 
   it('reports an #if that opens inside the namespace and closes after it', () => {
     project();
     const source = 'namespace A\n{\n    internal class C\n    {\n    }\n#if X\n}\n#endif\n';
-    const { output, issues } = clean(source, { convertToFileScopedNamespace: true });
+    const { output, issues, notes } = clean(source, { convertToFileScopedNamespace: true });
 
     expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/namespace not converted/)]);
+    expect(issues).toEqual([]);
+    expect(notes).toEqual([expect.stringMatching(/namespace not converted/)]);
   });
 });
 
@@ -313,9 +330,10 @@ describe('csharp_style_namespace_declarations', () => {
 
   it('does not convert to file-scoped when the project is older than C# 10', () => {
     project({}, { editorconfig: 'csharp_style_namespace_declarations = file_scoped:warning', languageVersion: '9' });
-    const { output, issues } = clean(block, {});
+    const { output, issues, notes } = clean(block, {});
 
     expect(output).toBe(block);
+    expect(notes).toEqual([]);
     expect(issues).toEqual([expect.stringMatching(/csharp_style_namespace_declarations: not applied, its project uses C# 9/)]);
   });
 

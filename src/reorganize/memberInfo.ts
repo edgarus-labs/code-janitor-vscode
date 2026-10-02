@@ -16,6 +16,8 @@ export interface MemberInfo {
   isExplicitInterface: boolean;
   isMultiLine: boolean;
   init: InitInfo;
+  /** Names of the partial types declared: their parts run their initializers in declaration order. */
+  partialTypes: ReadonlySet<string>;
 }
 
 const KIND_BY_NODE_TYPE: Readonly<Record<string, MemberKind | undefined>> = {
@@ -130,10 +132,12 @@ export function describeMember(node: Node, kind: MemberKind, context: ContainerC
   const isConstant = kind === 'field' && modifiers.includes('const');
   const isStatic = modifiers.includes('static') || isConstant;
   const isInitializerHost = (kind === 'field' && !isConstant) || kind === 'property' || (kind === 'event' && node.type === 'event_field_declaration');
+  const isPartialType = (kind === 'class' || kind === 'struct' || kind === 'interface') && modifiers.includes('partial');
+  const name = nameOf(node, kind);
 
   return {
     kind,
-    name: nameOf(node, kind),
+    name,
     access: accessOf(modifiers, kind, isStatic, isExplicitInterface, context.kind),
     isStatic,
     isConstant,
@@ -141,8 +145,11 @@ export function describeMember(node: Node, kind: MemberKind, context: ContainerC
     isExplicitInterface,
     isMultiLine: node.endPosition.row > node.startPosition.row,
     init: isInitializerHost ? analyzeInitializers(node, isStatic, context.init) : NO_INIT,
+    partialTypes: isPartialType ? new Set([name]) : NO_PARTIAL_TYPES,
   };
 }
+
+const NO_PARTIAL_TYPES: ReadonlySet<string> = new Set();
 
 function accessOf(modifiers: readonly string[], kind: MemberKind, isStatic: boolean, isExplicitInterface: boolean, container: ContainerKind): AccessLevel {
   // The Visual Studio code model reports explicit interface implementations and static constructors as public.

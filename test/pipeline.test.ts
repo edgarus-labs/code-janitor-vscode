@@ -8,6 +8,7 @@ function editorConfig(properties: string): EditorConfigRules {
   return {
     properties: resolveEditorConfigProperties([{ directory: '/repo', text: `root = true\n[*.cs]\n${properties}\n` }], '/repo/Sample.cs'),
     report: () => undefined,
+    note: () => undefined,
   };
 }
 

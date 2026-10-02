@@ -108,10 +108,11 @@ function nearestAbove(directory: string, name: string): string | undefined {
 /**
  * Top-level elements in document order: property and item groups, imports (alone or in an
  * `<ImportGroup>`), `<Choose>` blocks, and `<Target>` bodies (which run at build time, not at
- * evaluation, so they are skipped).
+ * evaluation, so they are skipped). An opening tag never ends in `/>`, so that a self-closing
+ * element does not take the following elements as its body.
  */
 const ELEMENT =
-  /<(PropertyGroup|ItemGroup)(\s[^>]*)?>([\s\S]*?)<\/\1\s*>|<(PropertyGroup|ItemGroup)(\s[^>]*)?\/>|<Import\s([^>]*?)\/?>|<Choose\b[\s\S]*?<\/Choose\s*>|<Target\b[\s\S]*?<\/Target\s*>|<ImportGroup(\s[^>]*)?>([\s\S]*?)<\/ImportGroup\s*>/gi;
+  /<(PropertyGroup|ItemGroup)(\s[^>]*)?(?<!\/)>([\s\S]*?)<\/\1\s*>|<(PropertyGroup|ItemGroup)(\s[^>]*)?\/>|<Import\s([^>]*?)\/?>|<(?:Choose|Target)\b[^>]*\/>|<Choose\b[\s\S]*?<\/Choose\s*>|<Target\b[\s\S]*?<\/Target\s*>|<ImportGroup(\s[^>]*)?(?<!\/)>([\s\S]*?)<\/ImportGroup\s*>/gi;
 const PROPERTY = /<([A-Za-z_][\w.-]*)(\s[^>]*?)?(?:\/>|>([\s\S]*?)<\/\1\s*>)/g;
 const ITEM = /<([A-Za-z_][\w.-]*)\s([^>]*?)\/?>/g;
 const CONDITION = /\bCondition\s*=/i;
@@ -289,8 +290,8 @@ class EvaluationState {
   /**
    * Substitutes `$(Property)` references and the `GetPathOfFileAbove`/`GetDirectoryNameOfFileAbove`
    * property functions; any other function, item or metadata reference, and any reference to an
-   * unset or uncertain property (other than `self`, the property being defined), makes the value
-   * uncertain.
+   * unset or uncertain property, makes the value uncertain. `self`, the property being defined, may
+   * be unset (it reads as empty) but not uncertain.
    */
   private expand(value: string, file: string, self?: string): { value: string; certain: boolean } {
     const directory = path.dirname(file);
@@ -309,7 +310,7 @@ class EvaluationState {
         return path.basename(file);
       }
 
-      if (lower !== self && (!this.properties.has(lower) || !this.isCertain(lower))) {
+      if (lower === self ? !this.isCertain(lower) : !this.properties.has(lower) || !this.isCertain(lower)) {
         certain = false;
       }
 

@@ -13,7 +13,8 @@ import { ImportedNames, UsedNames, describeImport, dottedName, usedNames } from 
  * when that index proves the file binds exactly as before; otherwise the file stays as it is and the
  * reason is reported. What the index cannot see are the namespaces and types of referenced packages:
  * they are assumed not to reuse the name of a namespace or type declared in the project or the framework
- * for something the file uses (`externalReferences` says whether such packages exist).
+ * for something the file uses (`externalReferences` says whether such packages exist). A framework the index
+ * is not generated from (Windows Desktop) adds to the framework namespaces, whose types are then not all known.
  */
 
 export type PlacementDirection = 'outside' | 'inside';
@@ -94,7 +95,7 @@ interface DirectiveBlock {
   readonly leading: readonly Comment[];
   /** What follows the `;` on its line (comments), without trailing white space. */
   readonly trailing: string;
-  /** True when the directive starts the file, so the comments in front of it are the file header. */
+  /** True when the directive starts the file, so the comments on the lines above it are the file header and stay. */
   readonly startsFile: boolean;
 }
 
@@ -152,7 +153,13 @@ function blockOf(source: string, layout: Layout, item: UsingItem): DirectiveBloc
     regionStart = newline + 1;
   }
 
-  const comments = layout.comments.filter((comment) => comment.start >= regionStart && comment.end <= item.start);
+  // In front of a directive that starts the file, only the comments on its own line are its; those above are the file header.
+  const ownLine = lineStart(source, item.start);
+  if (startsFile && layout.comments.some((comment) => comment.start < ownLine && comment.end > ownLine)) {
+    return `a comment in front of '${describe}' starts on an earlier line`;
+  }
+
+  const comments = layout.comments.filter((comment) => comment.start >= (startsFile ? ownLine : regionStart) && comment.end <= item.start);
   const leading: Comment[] = comments.map((comment) => ({
     text: source.slice(comment.start, comment.end),
     inline: !source.slice(comment.end, item.start).includes('\n'),
@@ -175,7 +182,7 @@ function blockOf(source: string, layout: Layout, item: UsingItem): DirectiveBloc
 
   return {
     item,
-    removeStart: lineStart(source, startsFile ? item.start : first),
+    removeStart: lineStart(source, first),
     removeEnd: nextLine(source, item.end),
     leading,
     trailing: source.slice(item.end, eol).trimEnd(),
@@ -213,7 +220,7 @@ interface RewriteContext {
   readonly externalReferences: boolean;
   /** The scopes the target is looked up in at its current place. */
   readonly currentScopes: readonly string[];
-  /** Names of the extern aliases declared inside the namespace the directive leaves. */
+  /** Names of the extern aliases declared inside the namespace the directive leaves or the namespaces around it. */
   readonly innerExterns: ReadonlySet<string>;
   readonly direction: PlacementDirection;
 }
@@ -273,6 +280,9 @@ function rewriteDirective(ctx: RewriteContext, item: UsingItem): Rewritten | str
     } else if (scope !== '') {
       if (ctx.direction === 'inside') {
         insertions.push({ at: token.start, text: 'global::' });
+      } else if (item.tokens[at + 1]?.type === '<') {
+        // Lookup passes over a type of another arity, which the index does not record: the name may bind further out.
+        return `'${describe}' cannot be qualified: the index does not know whether ${scope}.${name} takes the type arguments of '${name}'`;
       } else {
         // `Company.App.Services` written at file level starts with the global `Company`, which must be a namespace there.
         const root = scope.split('.')[0];
@@ -301,7 +311,7 @@ function rewriteDirective(ctx: RewriteContext, item: UsingItem): Rewritten | str
   return { text, target };
 }
 
-/** A directive's text with white space collapsed and `global::` dropped: equal keys import the same thing. */
+/** A directive's text with white space collapsed and `global::` dropped: equal keys of directives written at file level import the same thing. */
 function keyOf(text: string): string {
   return text.replace(/\s+/g, ' ').replace(/global::/g, '').trim();
 }
@@ -369,9 +379,11 @@ function findHiddenBinding(source: string, item: UsingItem, scopes: readonly str
     return imported.types?.has(name) ?? true;
   };
 
-  for (const { name, qualifier } of lookedUpNames(source, item)) {
+  for (const { at, name, qualifier } of lookedUpNames(source, item)) {
     // In front of `::` stands `global`, an extern alias or a using alias of a namespace: only the last is a directive.
-    if (qualifier ? name === 'global' : scopes.some((scope) => index.memberKind(scope, name) !== undefined)) {
+    // A generic name passes over a declaration of another arity, which the index does not record.
+    const declared = item.tokens[at + 1]?.type !== '<' && scopes.some((scope) => index.memberKind(scope, name) !== undefined);
+    if (qualifier ? name === 'global' : declared) {
       continue;
     }
 
@@ -447,7 +459,7 @@ function aliasWins(aliasScope: string, importScope: string): boolean | undefined
 }
 
 /** Directives that are one scope before the move and share it after it (or the reverse) bind names differently. */
-function findRebinding(entries: readonly Entry[], used: UsedNames): string | undefined {
+function findRebinding(entries: readonly Entry[], used: UsedNames, index: DeclarationIndex): string | undefined {
   for (let i = 0; i < entries.length; i++) {
     for (let j = i + 1; j < entries.length; j++) {
       const a = entries[i];
@@ -483,6 +495,18 @@ function findRebinding(entries: readonly Entry[], used: UsedNames): string | und
         }
       }
 
+      // A `using static` imports the nested types of its type, which are known only when the project declares it.
+      if (sharedAfter && (a.imported.kind === 'static') !== (b.imported.kind === 'static')) {
+        const [type, other] = a.imported.kind === 'static' ? [a.imported, b.imported] : [b.imported, a.imported];
+        const known = type.target !== undefined && index.declaresType(type.target);
+        const name = [...(other.types ?? [])].find((candidate) => used.names.has(candidate) && (!known || index.hasType(`${type.target}.${candidate}`)));
+        if (name !== undefined) {
+          return known
+            ? `moving '${a.label}' next to '${b.label}' would make '${name}' ambiguous (${type.target}.${name} and ${other.target}.${name})`
+            : `moving '${a.label}' next to '${b.label}' could make '${name}' ambiguous: the nested types of ${type.target ?? 'the type'} are not known`;
+        }
+      }
+
       if (a.imported.extensions && b.imported.extensions && a.imported.target !== b.imported.target) {
         for (const name of a.imported.extensions) {
           if (used.extensionNames.has(name) && b.imported.extensions.has(name)) {
@@ -496,8 +520,8 @@ function findRebinding(entries: readonly Entry[], used: UsedNames): string | und
   return undefined;
 }
 
-/** An alias is unique in its scope; two aliases of the same name that end up together must mean the same. */
-function findAliasClash(entries: readonly Entry[], rewritten: ReadonlyMap<Entry, string>): string | undefined {
+/** An alias is unique in its scope; two aliases of the same name that end up together must mean the same. `keys` tells what a moved or kept one means, written from the global namespace. */
+function findAliasClash(entries: readonly Entry[], keys: ReadonlyMap<Entry, string>): string | undefined {
   const seen = new Map<string, Entry>();
   for (const entry of entries) {
     if (entry.imported.kind !== 'alias' || !entry.imported.alias) {
@@ -505,7 +529,7 @@ function findAliasClash(entries: readonly Entry[], rewritten: ReadonlyMap<Entry,
     }
 
     const other = seen.get(entry.imported.alias);
-    if (other && other.after === entry.after && keyOf(rewritten.get(other) ?? other.label) !== keyOf(rewritten.get(entry) ?? entry.label)) {
+    if (other && other.after === entry.after && (keys.get(other) ?? keyOf(other.label)) !== (keys.get(entry) ?? keyOf(entry.label))) {
       return `'${other.label}' and '${entry.label}' declare the alias '${entry.imported.alias}' twice`;
     }
 
@@ -544,6 +568,18 @@ interface Moved {
   readonly block: DirectiveBlock;
   readonly rewritten: Rewritten;
   readonly entry: Entry;
+}
+
+/** The extern aliases declared in `namespace` and the namespaces around it: none of them can be named at file level. */
+function enclosingExterns(namespace: NamespaceItem): Set<string> {
+  const names = new Set<string>();
+  for (let scope: NamespaceItem | undefined = namespace; scope; scope = scope.parent) {
+    for (const extern of scope.externs) {
+      names.add(extern.name);
+    }
+  }
+
+  return names;
 }
 
 function moveOutside(source: string, layout: Layout, env: PlacementEnvironment): PlacementResult {
@@ -590,7 +626,7 @@ function moveOutside(source: string, layout: Layout, env: PlacementEnvironment):
         index: env.index,
         externalReferences: env.externalReferences,
         currentScopes: scopesOf(namespace.fullName),
-        innerExterns: new Set(namespace.externs.map((extern) => extern.name)),
+        innerExterns: enclosingExterns(namespace),
         direction: 'outside',
       },
       item
@@ -653,7 +689,7 @@ function moveOutside(source: string, layout: Layout, env: PlacementEnvironment):
     }
   }
 
-  const rebinding = findRebinding(entries, used) ?? findAliasClash(entries, new Map(moved.map((entry) => [entry.entry, entry.rewritten.text] as const)));
+  const rebinding = findRebinding(entries, used, env.index) ?? findAliasClash(entries, new Map(moved.map((entry) => [entry.entry, keyOf(entry.rewritten.text)] as const)));
   if (rebinding) {
     return skip(rebinding);
   }
@@ -706,24 +742,23 @@ interface Survivor {
 }
 
 /**
- * Drops the moved directives that equal one already at the new place or one moved before them; their comments
- * go to the directive that stays. The comments in front of a directive that starts the file are the file
- * header, which does not move.
+ * Drops the moved directives that import what one already at the new place or one moved before them imports; their
+ * comments go to the directive that stays. `existing` carries the key of what each directive imports where it stands,
+ * which its text alone does not tell inside a namespace (`using Shared;` there may import `N.Shared`).
  */
 function settleDuplicates(
-  source: string,
-  existing: readonly UsingItem[],
+  existing: readonly { item: UsingItem; key: string }[],
   moved: readonly { block: DirectiveBlock; text: string }[]
 ): { landings: Landing[]; survivors: Survivor[] } {
   const survivors = new Map<string, Survivor>();
-  for (const item of existing) {
-    survivors.set(keyOf(source.slice(item.start, item.end)), { item, leading: [], trailing: [] });
+  for (const { item, key } of existing) {
+    survivors.set(key, { item, leading: [], trailing: [] });
   }
 
   const landings = new Map<string, Landing>();
   for (const { block, text } of moved) {
     const key = keyOf(text);
-    const comments = block.startsFile ? [] : [...block.leading];
+    const comments = [...block.leading];
     const trailing = block.trailing.trim() ? [block.trailing.trim()] : [];
     const survivor = survivors.get(key) ?? landings.get(key);
     if (survivor) {
@@ -759,7 +794,7 @@ function renderBlock(landing: Landing, indent: string, newline: string): string 
   const { block } = landing;
   let lines = '';
   let inline = '';
-  for (const comment of [...(block.startsFile ? [] : block.leading), ...landing.leading]) {
+  for (const comment of [...block.leading, ...landing.leading]) {
     if (comment.inline) {
       inline += `${comment.text} `;
     } else {
@@ -775,7 +810,8 @@ function renderBlock(landing: Landing, indent: string, newline: string): string 
 }
 
 function buildOutward(source: string, layout: Layout, newline: string, moved: readonly Moved[], insertion: OutwardInsertion): PlacementResult {
-  const { landings, survivors } = settleDuplicates(source, layout.usings, moved.map((entry) => ({ block: entry.block, text: entry.rewritten.text })));
+  const existing = layout.usings.map((item) => ({ item, key: keyOf(source.slice(item.start, item.end)) }));
+  const { landings, survivors } = settleDuplicates(existing, moved.map((entry) => ({ block: entry.block, text: entry.rewritten.text })));
   const edits: TextEdit[] = [
     ...moved.map((entry) => ({ start: entry.block.removeStart, end: entry.block.removeEnd, text: '' })),
     ...survivorEdits(source, survivors, newline, ''),
@@ -901,27 +937,32 @@ function moveInside(source: string, layout: Layout, env: PlacementEnvironment): 
     });
   }
 
-  // What the directives already in the namespace import is what they mean there: relative to the namespace.
-  const keptEntries: Entry[] = namespace.usings.map((item) => {
+  // What the directives already in the namespace import is what they mean there: relative to the namespace. Their key is
+  // that meaning written from the global namespace, where the moved directives come from; one that cannot be written
+  // there equals none of them.
+  const kept = namespace.usings.map((item) => {
     const relative = rewriteDirective(
       {
         source,
         index: env.index,
         externalReferences: true,
         currentScopes: scopes,
-        innerExterns: new Set(namespace.externs.map((extern) => extern.name)),
+        innerExterns: enclosingExterns(namespace),
         direction: 'outside',
       },
       item
     );
-
-    return {
-      label: source.slice(item.start, item.end).replace(/\s+/g, ' '),
+    const label = source.slice(item.start, item.end).replace(/\s+/g, ' ');
+    const entry: Entry = {
+      label,
       imported: describeImport(item, typeof relative === 'string' ? undefined : relative.target, env.index),
       before: namespace.fullName,
       after: namespace.fullName,
     };
+
+    return { item, entry, key: typeof relative === 'string' ? `unresolved ${label}` : keyOf(relative.text) };
   });
+  const keptEntries = kept.map(({ entry }) => entry);
   const globalEntries = [
     ...layout.usings
       .filter((item) => item.isGlobal)
@@ -961,12 +1002,13 @@ function moveInside(source: string, layout: Layout, env: PlacementEnvironment): 
   }
 
   const all = [...movedImports, ...keptEntries, ...globalEntries];
-  const rebinding = findRebinding(all, reachable) ?? findAliasClash(all, new Map(movedEntries.map((moved) => [moved.entry, moved.rewritten.text] as const)));
+  const keys = new Map<Entry, string>([...movedEntries.map((moved) => [moved.entry, keyOf(moved.rewritten.text)] as const), ...kept.map(({ entry, key }) => [entry, key] as const)]);
+  const rebinding = findRebinding(all, reachable, env.index) ?? findAliasClash(all, keys);
   if (rebinding) {
     return skip(rebinding);
   }
 
-  return buildInward(source, env, newline, namespace, opener, movedEntries);
+  return buildInward(source, env, newline, namespace, opener, kept, movedEntries);
 }
 
 /** The token after which directives are written in `namespace`: its last extern alias, else its `{` or `;`. */
@@ -1006,10 +1048,11 @@ function buildInward(
   newline: string,
   namespace: NamespaceItem,
   anchor: { end: number },
+  kept: readonly { item: UsingItem; key: string }[],
   moved: readonly { block: DirectiveBlock; rewritten: Rewritten; entry: Entry }[]
 ): PlacementResult {
   const indent = memberIndentation(source, namespace, env.indent);
-  const { landings, survivors } = settleDuplicates(source, namespace.usings, moved.map((entry) => ({ block: entry.block, text: entry.rewritten.text })));
+  const { landings, survivors } = settleDuplicates(kept, moved.map((entry) => ({ block: entry.block, text: entry.rewritten.text })));
   const edits: TextEdit[] = survivorEdits(source, survivors, newline, indent);
   const blankRunEnd = (from: number): number => {
     let end = from;

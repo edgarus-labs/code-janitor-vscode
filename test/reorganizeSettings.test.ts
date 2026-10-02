@@ -1,32 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  MEMBER_TYPE_KEYS,
-  createDefaultReorganizeSettings,
-  parseMemberTypeSetting,
-  parseReorganizeSettings,
-  serializeMemberTypeSetting,
-} from '../src/reorganize/settings';
-
-// Ported from MemberTypeSettingTests.cs.
-describe('member type setting serialization', () => {
-  it('serializes a member type setting', () => {
-    expect(serializeMemberTypeSetting('Fields', { order: 1, name: 'Member Variables' })).toBe('Fields||1||Member Variables');
-  });
-
-  it('deserializes a member type setting', () => {
-    expect(parseMemberTypeSetting('Fields||1||Member Variables')).toEqual({
-      defaultName: 'Fields',
-      order: 1,
-      effectiveName: 'Member Variables',
-    });
-  });
-
-  it('rejects text that is not a serialized member type setting', () => {
-    expect(parseMemberTypeSetting('Fields|1|x')).toBeUndefined();
-    expect(parseMemberTypeSetting('Fields||x||y')).toBeUndefined();
-    expect(parseMemberTypeSetting('')).toBeUndefined();
-  });
-});
+import { MEMBER_TYPE_KEYS, createDefaultReorganizeSettings, parseReorganizeSettings } from '../src/reorganize/settings';
 
 // The defaults of Properties/Settings.settings of the Visual Studio extension.
 describe('default reorganize settings', () => {

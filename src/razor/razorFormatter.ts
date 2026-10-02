@@ -9,6 +9,7 @@ import {
   isIdentifierStart,
   isVerbatimElement,
   skipElement,
+  skipExpression,
   skipString,
   skipTransition,
   skipWhitespace,
@@ -27,7 +28,8 @@ import {
 export function formatRazor(source: string, options: Partial<RazorFormatOptions> = {}): string {
   const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
   const body = source.slice(bom.length);
-  if (body.trim().length === 0 || /\r(?!\n)/.test(body)) {
+  // A lone CR, or CRLF next to bare LF: the edits are joined with one line ending, which would change the others.
+  if (body.trim().length === 0 || /\r(?!\n)/.test(body) || (body.includes('\r\n') && /(?<!\r)\n/.test(body))) {
     return source;
   }
 
@@ -241,8 +243,9 @@ class Formatter {
             i = bare.close + 1;
           }
         } else {
+          // Razor reads an unterminated comment, code block or expression up to the end of the file.
           const next = skipTransition(text, i);
-          i = next > i ? next : i + 1;
+          i = next < 0 ? text.length : Math.max(next, i + 1);
         }
       }
     }
@@ -371,8 +374,9 @@ class Formatter {
       return { start: block.start, end, text: formatted };
     }
 
+    // A continuation already on a line of its own keeps the blank lines before it, at the chain's indent.
     const gap = this.text.slice(previous.close + 1, block.start);
-    const lead = block.bare || !gap.includes('\n') ? `\n${base}` : gap;
+    const lead = block.bare || !gap.includes('\n') ? `\n${base}` : gap.replace(/[ \t]*$/, base);
 
     return { start: previous.close + 1, end, text: lead + formatted };
   }
@@ -486,13 +490,24 @@ class Formatter {
 
   private formatSegment(inner: string, segment: Segment, margin: string, kinds: Uint8Array, childIndent: string, indent: string): string | undefined {
     const content = inner.slice(segment.start, segment.end);
+    // The lines of a whitespace-significant element are rendered text, also when it is nested in a statement.
+    if (/<(?:pre|textarea|script|style)\b/i.test(content)) {
+      return undefined;
+    }
+
     if (segment.kind === 'markup') {
-      return /<(?:pre|textarea|script|style)\b/i.test(content) ? undefined : shiftLines(content, margin, childIndent, indent, kinds, segment.start);
+      return hasLineBreakInEmbeddedLiteral(content) || hasLineBreakInAttributeValue(content)
+        ? undefined
+        : shiftLines(content, margin, childIndent, indent, kinds, segment.start);
     }
 
     const laid = layoutStatements(content, this.options);
+    if (laid !== undefined) {
+      return indentCode(laid, indent);
+    }
 
-    return laid === undefined ? shiftLines(content, margin, childIndent, indent, kinds, segment.start) : indentCode(laid, indent);
+    // Markup nested in a statement: the line breaks of its attribute values are not C#.
+    return hasLineBreakInAttributeValue(content) ? undefined : shiftLines(content, margin, childIndent, indent, kinds, segment.start);
   }
 
   private lineIndentAt(index: number): string {
@@ -610,6 +625,80 @@ function skipComment(text: string, index: number): number {
   const end = text.indexOf('*/', index + 2);
 
   return end < 0 ? -1 : end + 2;
+}
+
+/**
+ * True when Razor code in markup (`@{ }`, `@(...)`, `@a.b("...")`, a nested `@if`) has a line break
+ * inside a string literal or a comment, whose lines are part of the token and must not be shifted. The
+ * code of a transition is read as C# as a whole, so markup in it may read as a literal: that only ever
+ * reports a line break too many, and the block is then left as authored.
+ */
+function hasLineBreakInEmbeddedLiteral(markup: string): boolean {
+  for (let at = markup.indexOf('@'); at >= 0; at = markup.indexOf('@', at + 1)) {
+    if (markup[at + 1] === '@') {
+      at++;
+      continue;
+    }
+
+    // A Razor comment is not C#, and `name@host` is an e-mail address, not a transition.
+    if (markup[at + 1] === '*' || isIdentifierPart(markup[at - 1])) {
+      continue;
+    }
+
+    const end = skipTransition(markup, at);
+    if (end < 0) {
+      return true;
+    }
+
+    const code = markup.slice(at + 1, end);
+    const kinds = classifyCSharp(code);
+    for (let lineBreak = code.indexOf('\n'); lineBreak >= 0; lineBreak = code.indexOf('\n', lineBreak + 1)) {
+      if (kinds[lineBreak] !== CODE) {
+        return true;
+      }
+    }
+
+    at = Math.max(at, end - 1);
+  }
+
+  return false;
+}
+
+/**
+ * True when a tag in `content` has a quoted attribute value spanning a line break: those lines are
+ * part of the value. Razor expressions in a tag are skipped as `findTagEnd` does. A `<` in C# may
+ * read as a tag: that only ever reports a line break too many, and the block is then left as authored.
+ */
+function hasLineBreakInAttributeValue(content: string): boolean {
+  for (let at = content.indexOf('<'); at >= 0; at = content.indexOf('<', at + 1)) {
+    if (!/[A-Za-z]/.test(content[at + 1] ?? '')) {
+      continue;
+    }
+
+    let quote = '';
+    let i = at + 1;
+    for (; i < content.length && (quote || content[i] !== '>'); i++) {
+      const c = content[i];
+      if (c === '@') {
+        const after = skipExpression(content, i);
+        if (after < 0) {
+          return true;
+        }
+
+        i = after - 1;
+      } else if (quote && c === '\n') {
+        return true;
+      } else if (c === quote) {
+        quote = '';
+      } else if (!quote && (c === '"' || c === "'")) {
+        quote = c;
+      }
+    }
+
+    at = i;
+  }
+
+  return false;
 }
 
 // -----------------------------------------------------------------------------------------------

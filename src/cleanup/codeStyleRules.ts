@@ -2,7 +2,8 @@
  * The Roslyn code-style options Code Janitor can apply when `.editorconfig` does not enforce them
  * (port of `CodeStyleRules.cs` of the Visual Studio extension), and the format of the VS Code
  * setting (`codeJanitor.cleanup.codeStyleRules`) that stores the enabled ones: an object keyed by
- * `.editorconfig` option name whose value is the option value. Naming rules (`dotnet_naming_*`)
+ * `.editorconfig` option name whose value is the option value, or `null` to turn off a rule that
+ * another scope enables (VS Code merges this object across scopes). Naming rules (`dotnet_naming_*`)
  * are not included: they are configured in `.editorconfig` only.
  */
 
@@ -174,7 +175,7 @@ export type CodeStyleValues = Readonly<Record<string, string>>;
 /**
  * Reads the value of the VS Code setting that stores the enabled rules: an object keyed by option
  * name with the option value (matched ignoring case, so `"True"` works). Unknown keys and invalid
- * or non-string values (JSON booleans included) are ignored.
+ * or non-string values (JSON booleans included) are ignored; `null`, which turns a rule off, too.
  */
 export function parseCodeStyleSetting(setting: unknown): CodeStyleValues {
   const values: Record<string, string> = {};
@@ -205,10 +206,30 @@ export function formatCodeStyleSetting(values: Readonly<Record<string, string>>)
   return setting;
 }
 
+/**
+ * The setting value to store at one scope: the enabled rules, and `null` for each rule of `off` that
+ * is not enabled - a rule another scope (the User settings) enables and this one turns off, since VS
+ * Code merges the setting across scopes and only a value at this scope overrides it. In catalog order.
+ */
+export function formatCodeStyleScopeSetting(values: Readonly<Record<string, string>>, off: Iterable<string>): Record<string, string | null> {
+  const enabled = formatCodeStyleSetting(values);
+  const disabled = new Set(off);
+  const setting: Record<string, string | null> = {};
+  for (const entry of CODE_STYLE_RULES) {
+    if (enabled[entry.key] !== undefined) {
+      setting[entry.key] = enabled[entry.key];
+    } else if (disabled.has(entry.key)) {
+      setting[entry.key] = null;
+    }
+  }
+
+  return setting;
+}
+
 /** The property of the `codeJanitor.cleanup.codeStyleRules` setting for one rule, as declared in `package.json`. */
 export interface CodeStyleRuleSchema {
-  readonly type: 'string';
-  readonly enum?: readonly string[];
+  readonly type: readonly ['string', 'null'];
+  readonly enum?: readonly (string | null)[];
   readonly pattern?: string;
   readonly markdownDescription: string;
 }
@@ -222,9 +243,9 @@ export function codeStyleSettingProperties(): Record<string, CodeStyleRuleSchema
     CODE_STYLE_RULES.map((entry): [string, CodeStyleRuleSchema] => [
       entry.key,
       {
-        type: 'string',
-        ...(entry.values.length > 0 ? { enum: entry.values } : { pattern: '^\\s*\\w+(\\s*,\\s*\\w+)*\\s*$' }),
-        markdownDescription: `${entry.group}: ${entry.description} (${entry.diagnosticIds.join(', ')}). Enables the rule with this value, as \`suggestion\`, unless \`.editorconfig\` enforces \`${entry.key}\`. Proposed value: \`${entry.defaultValue}\`.`,
+        type: ['string', 'null'],
+        ...(entry.values.length > 0 ? { enum: [...entry.values, null] } : { pattern: '^\\s*\\w+(\\s*,\\s*\\w+)*\\s*$' }),
+        markdownDescription: `${entry.group}: ${entry.description} (${entry.diagnosticIds.join(', ')}). Enables the rule with this value, as \`suggestion\`, unless \`.editorconfig\` enforces \`${entry.key}\`; \`null\` turns it off here when another scope (the User settings) enables it. Proposed value: \`${entry.defaultValue}\`.`,
       },
     ])
   );

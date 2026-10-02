@@ -34,6 +34,13 @@ describe('insert region around lines', () => {
   it('uses the line endings of the file', () => {
     expect(insertRegionAroundLines('{\r\n  a;\r\n}\r\n', 1, 1, withoutPadding()).text).toBe('{\r\n  #region New Region\r\n  a;\r\n  #endregion New Region\r\n}\r\n');
   });
+
+  it('counts every line break of a file with mixed line endings, as the editor does', () => {
+    const result = insertRegionAroundLines('class C\r\n{\n    int a;\r\n    int b;\r\n}\r\n', 3, 3, withoutPadding());
+
+    expect(result.text).toBe('class C\r\n{\n    int a;\r\n    #region New Region\r\n    int b;\r\n    #endregion New Region\r\n}\r\n');
+    expect(result.nameLine).toBe(3);
+  });
 });
 
 describe('remove regions', () => {
@@ -63,5 +70,10 @@ describe('remove regions', () => {
 
   it('keeps the line endings', () => {
     expect(removeRegionsInLines('x;\r\n#region A\r\ny;\r\n#endregion\r\nz;\r\n', 0, 4)).toBe('x;\r\ny;\r\nz;\r\n');
+  });
+
+  it('counts every line break of a file with mixed line endings, as the editor does', () => {
+    expect(removeRegionsInLines('x;\r\ny;\n#region A\r\nz;\r\n#endregion\r\nw;\r\n', 2, 4)).toBe('x;\r\ny;\nz;\r\nw;\r\n');
+    expect(removeRegionsInLines('x;\n#region A\r\ny;\r\n#endregion', 1, 3)).toBe('x;\ny;');
   });
 });

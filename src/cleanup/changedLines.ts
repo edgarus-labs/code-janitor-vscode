@@ -57,7 +57,8 @@ export function runCleanupOnChangedLines(
   disqualifiedTypeNames?: ReadonlySet<string>,
   onIssue?: EditorConfigIssueListener
 ): ChangedLinesOutcome {
-  let collecting = false;
+  // Issues reported while the pipeline is built (unresolved Code Style rules) are forwarded too.
+  let collecting = true;
   let lines = changed;
   const onLine = (detail: string) => {
     const line = / line (\d+):/.exec(detail)?.[1];
@@ -69,6 +70,7 @@ export function runCleanupOnChangedLines(
       onIssue?.(issue);
     }
   });
+  collecting = false;
   const skip = (ruleId: string) =>
     onIssue?.({ kind: 'unresolved', filePath, detail: `${ruleId}: not applied, its changes span lines not changed since the last commit (${SETTING}).` });
   const skippedSettings: string[] = [];

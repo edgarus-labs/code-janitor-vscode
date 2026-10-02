@@ -4,20 +4,25 @@ import { EditorConfigIssueLog, editorConfigSignature } from '../src/cleanup/edit
 
 const unsupported = (filePath: string, detail: string) => ({ kind: 'unsupported' as const, filePath, detail });
 const unresolved = (filePath: string, detail: string) => ({ kind: 'unresolved' as const, filePath, detail });
+const note = (filePath: string, detail: string) => ({ kind: 'note' as const, filePath, detail });
 
 describe('EditorConfigIssueLog', () => {
-  it('logs violations per file right away and each unsupported setting once, with the files it affects', () => {
+  it('logs violations and notes per file right away, counted apart, and each unsupported setting once, with the files it affects', () => {
     const lines: string[] = [];
     const log = new EditorConfigIssueLog((line) => lines.push(line));
 
     log.report(unsupported('/r/A.cs', '"max_line_length = 120" is not supported and was not applied.'));
     log.report(unresolved('/r/A.cs', 'IDE0011 line 3: braces not added.'));
+    log.report(note('/r/A.cs', 'Line 1: namespace not converted to a file-scoped one.'));
     log.report(unsupported('/r/B.cs', '"max_line_length = 120" is not supported and was not applied.'));
     log.report(unsupported('/r/B.cs', '"csharp_prefer_static_anonymous_function = true" is not supported and was not applied.'));
-    expect(lines).toEqual(['.editorconfig rule not fixed: /r/A.cs: IDE0011 line 3: braces not added.']);
+    expect(lines).toEqual([
+      '.editorconfig rule not fixed: /r/A.cs: IDE0011 line 3: braces not added.',
+      'Cleanup note: /r/A.cs: Line 1: namespace not converted to a file-scoped one.',
+    ]);
 
-    expect(log.finish()).toEqual({ unresolved: 1, unsupported: 2 });
-    expect(lines.slice(1)).toEqual([
+    expect(log.finish()).toEqual({ unresolved: 1, notes: 1, unsupported: 2 });
+    expect(lines.slice(2)).toEqual([
       '.editorconfig setting not supported: "max_line_length = 120" is not supported and was not applied. (2 files)',
       '.editorconfig setting not supported: "csharp_prefer_static_anonymous_function = true" is not supported and was not applied. (1 file)',
     ]);
@@ -34,9 +39,9 @@ describe('EditorConfigIssueLog', () => {
       return log.finish();
     };
 
-    expect(run('/a/A.cs')).toEqual({ unresolved: 0, unsupported: 1 });
-    expect(run('/a/B.cs')).toEqual({ unresolved: 0, unsupported: 0 });
-    expect(run('/b/C.cs')).toEqual({ unresolved: 0, unsupported: 1 });
+    expect(run('/a/A.cs')).toEqual({ unresolved: 0, notes: 0, unsupported: 1 });
+    expect(run('/a/B.cs')).toEqual({ unresolved: 0, notes: 0, unsupported: 0 });
+    expect(run('/b/C.cs')).toEqual({ unresolved: 0, notes: 0, unsupported: 1 });
     expect(lines).toHaveLength(2);
   });
 });

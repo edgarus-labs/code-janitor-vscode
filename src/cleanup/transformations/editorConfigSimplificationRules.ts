@@ -2,7 +2,8 @@ import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { declaredTypeText } from './editorConfigExpressionPreferences';
 import { operatorOf } from './editorConfigPrecedence';
-import { Suppressions, attributeName, describeDiagnostic, isRuleActive } from './editorConfigQualityRulesSupport';
+import { attributeName, describeDiagnostic, isRuleActive } from './editorConfigQualityRulesSupport';
+import { suppressionsOf } from './editorConfigQualityRulesProject';
 import { describeIssue, hasParseErrors, readCodeStyleOption } from './editorConfigSupport';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
 
@@ -32,7 +33,7 @@ export function diagnosticRule(diagnosticId: string, collect: Collect): Rule {
 
       const tree = parseCSharp(source);
       try {
-        const suppressions = new Suppressions(source);
+        const suppressions = suppressionsOf(source, context);
         const suppressed = (node: Node): boolean => suppressions.isSuppressed(diagnosticId, node);
         const report = (node: Node, message: string): void => {
           if (!suppressed(node)) {

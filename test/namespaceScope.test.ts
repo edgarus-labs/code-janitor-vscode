@@ -52,9 +52,21 @@ describe('convertToFileScoped', () => {
     ['nested namespaces', 'namespace A\r\n{\r\n    namespace B\r\n    {\r\n    }\r\n}\r\n'],
     ['a type before the namespace', 'class B { }\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\n'],
     ['a type after the namespace', 'namespace A\r\n{\r\n    class C { }\r\n}\r\nclass B { }\r\n'],
+    ['a global attribute and a type before the namespace', '[assembly: X]\r\nclass B { }\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\n'],
+    ['a global attribute and a type after the namespace', '[assembly: X]\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\nclass B { }\r\n'],
+    ['a type attribute before the namespace', '[Serializable]\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\n'],
     ['a syntax error', 'namespace A\r\n{\r\n    class C {\r\n}\r\n'],
   ])('is not a candidate with %s', (_name, input) => {
     expect(toFileScoped(input)).toEqual({ output: input, reasons: [] });
+  });
+
+  it('converts a namespace that follows global attributes, keeping them before it', () => {
+    expect(
+      toFileScoped('using System;\n[assembly: System.CLSCompliant(true)]\n[module: A(new[] { 1 })] [assembly: B]\n\nnamespace Demo\n{\n    class C { }\n}\n')
+    ).toEqual({
+      output: 'using System;\n[assembly: System.CLSCompliant(true)]\n[module: A(new[] { 1 })] [assembly: B]\n\nnamespace Demo;\n\nclass C { }\n',
+      reasons: [],
+    });
   });
 
   it('never changes the lines inside verbatim, raw and interpolated multi-line strings', () => {
@@ -233,6 +245,14 @@ describe('file-scoped namespaces need C# 10', () => {
 
     expect(converter.apply('namespace A\n{\n    class C { }\n}\n')).toBe('namespace A;\n\nclass C { }\n');
     expect(converter.name).toBe('File-Scoped Namespace');
+  });
+
+  it('converts a file that starts with a byte order mark and keeps the mark', () => {
+    const messages: string[] = [];
+    const converter = createFileScopedNamespaceConverter({ project: { directory: '/p', languageVersion: 10 }, report: (message) => messages.push(message) });
+
+    expect(converter.apply('\uFEFFnamespace A\n{\n    class C { }\n}\n')).toBe('\uFEFFnamespace A;\n\nclass C { }\n');
+    expect(messages).toEqual([]);
   });
 });
 

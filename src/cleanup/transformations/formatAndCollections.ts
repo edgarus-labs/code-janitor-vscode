@@ -103,7 +103,7 @@ function tryBuildInterpolatedString(invocation: Node): string | undefined {
     }
 
     const alignment = match[2] !== undefined ? `,${match[2]}` : '';
-    const formatSpecifier = match[3] !== undefined ? `:${match[3]}` : '';
+    const formatSpecifier = match[3] !== undefined ? `:${escapeForInterpolatedString(match[3])}` : '';
     const index = Number.parseInt(match[1], 10);
     // The colon of a conditional expression would start the format specifier.
     const hole = hasTopLevelColon(argumentNodes[index]!) ? `(${formatArgs[index]})` : formatArgs[index];

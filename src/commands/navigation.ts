@@ -1,8 +1,12 @@
+import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { switchFile } from './switchFile';
 
 /** `vscode.FilePermission.Readonly`: the bit of `FileStat.permissions` that marks a read-only file. */
 const READONLY_PERMISSION = 1;
+
+/** The owner write bit of a file mode; Node clears it for a Windows file with the read-only attribute. */
+const OWNER_WRITE_BIT = 0o200;
 
 /**
  * The Visual Studio navigation and workflow commands that have a VS Code equivalent, under
@@ -47,13 +51,21 @@ export function registerNavigationCommands(context: vscode.ExtensionContext): vo
   );
 }
 
-/** Whether the file cannot be written: on a read-only file system, or marked read-only on disk. */
+/**
+ * Whether the file cannot be written: on a read-only file system, or marked read-only. VS Code never reports
+ * a read-only disk file through `FileStat.permissions` (its disk provider marks it `Locked`, which the
+ * extension API maps to `undefined`), so a `file:` URI is checked for write bits, as VS Code does itself.
+ */
 async function isReadOnly(uri: vscode.Uri): Promise<boolean> {
   if (vscode.workspace.fs.isWritableFileSystem(uri.scheme) === false) {
     return true;
   }
 
   try {
+    if (uri.scheme === 'file') {
+      return ((await fs.promises.stat(uri.fsPath)).mode & OWNER_WRITE_BIT) === 0;
+    }
+
     const stat = await vscode.workspace.fs.stat(uri);
 
     return ((stat.permissions ?? 0) & READONLY_PERMISSION) !== 0;

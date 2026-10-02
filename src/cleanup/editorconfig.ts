@@ -246,14 +246,15 @@ export function resolveDiagnosticSeverity(
 }
 
 /**
- * The diagnostics cleanup follows that are disabled by default: only `dotnet_diagnostic.<id>.severity`
- * enables them (CA1852, sealing classes).
+ * The diagnostics cleanup follows that the .NET analyzers declare disabled by default
+ * (`RuleLevel.Disabled`): only `dotnet_diagnostic.<id>.severity` or a rule set enables them. The other
+ * CA rules with a default severity of `none` (CA1305, CA1310, CA1805, CA1852) are bulk-configurable.
  */
-const DISABLED_BY_DEFAULT_DIAGNOSTICS: ReadonlySet<string> = new Set(['CA1852']);
+const DISABLED_BY_DEFAULT_DIAGNOSTICS: Readonly<Record<string, true>> = { CA1307: true, CA1867: true };
 
 /** Whether category and global severities leave the rule off (only its own `dotnet_diagnostic` severity enables it). */
 export function isDisabledByDefaultDiagnostic(diagnosticId: string): boolean {
-  return DISABLED_BY_DEFAULT_DIAGNOSTICS.has(diagnosticId.toUpperCase());
+  return DISABLED_BY_DEFAULT_DIAGNOSTICS[diagnosticId.toUpperCase()] === true;
 }
 
 function configuredSeverity(

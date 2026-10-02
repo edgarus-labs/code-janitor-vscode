@@ -52,6 +52,37 @@ const files: Record<string, string> = {
   'Sliced.cs': 'internal sealed class Sliced { public int[] Slice(int a, int b) => new int[b]; private int Length => 3; public int[] Middle() => this[1..^1]; }\n',
   'AddBase.cs': 'internal class AddBase { internal void Add(int x) { } }\n',
   'AddDerived.cs': 'using System.Collections;\ninternal sealed class AddDerived : AddBase, IEnumerable { public IEnumerator GetEnumerator() => null!; public static AddDerived Make() => new AddDerived { 1 }; }\n',
+  'Handler.cs': [
+    'using System.Runtime.CompilerServices;',
+    '[InterpolatedStringHandler]',
+    'internal ref struct NoOpHandler',
+    '{',
+    '    public NoOpHandler(int literalLength, int formattedCount) { }',
+    '    public bool AppendLiteral(string s) => true;',
+    '    public bool AppendFormatted<T>(T value) => true;',
+    '}',
+    'internal static class UseHandler { public static void Write(NoOpHandler handler) { } public static void M(int x) => Write($"x={x}"); }',
+    '',
+  ].join('\n'),
+  'Builder.cs': [
+    'using System;',
+    'using System.Runtime.CompilerServices;',
+    'internal struct WorkBuilder',
+    '{',
+    '    public static WorkBuilder Create() => default;',
+    '    public Work Task => default;',
+    '    public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();',
+    '    public void SetStateMachine(IAsyncStateMachine stateMachine) { }',
+    '    public void SetResult() { }',
+    '    public void SetException(Exception exception) { }',
+    '    public void AwaitOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine) where TAwaiter : INotifyCompletion where TStateMachine : IAsyncStateMachine { }',
+    '    public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine) where TAwaiter : ICriticalNotifyCompletion where TStateMachine : IAsyncStateMachine { }',
+    '}',
+    '[AsyncMethodBuilder(typeof(WorkBuilder))]',
+    'internal struct Work { }',
+    'internal static class UseWork { public static async Work M() { await System.Threading.Tasks.Task.Yield(); } }',
+    '',
+  ].join('\n'),
 };
 
 const folders: string[] = [];
@@ -95,6 +126,8 @@ describe.skipIf(!dotnetAvailable)('cross-file facts of seal / make static agains
     expect(text('LengthBase.cs'), 'Length a derived type of another file indexes through is never made static').not.toMatch(/static int Length/);
     expect(text('Sliced.cs'), 'Length of a type with Slice is never made static').not.toMatch(/static int Length/);
     expect(text('AddBase.cs'), 'Add a derived collection type of another file initializes through is never made static').not.toMatch(/static void Add/);
+    expect(text('Handler.cs'), 'members of an interpolated string handler are never made static').not.toMatch(/static bool Append/);
+    expect(text('Builder.cs'), 'members of an async method builder are never made static').not.toMatch(/static (?:Work Task|void Set|void Await)/);
 
     const after = buildProject(folder);
     expect(newCompilerErrors(before.errors, after.errors), formatErrors(after)).toEqual([]);

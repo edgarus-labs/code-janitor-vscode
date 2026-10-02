@@ -75,8 +75,9 @@ function modifierOrder(source: string, { props }: RuleContext): string {
 
 /**
  * Adds `readonly` to a (non-partial) struct whose instance fields are all `readonly`, which has
- * no settable auto property, no field-like instance event and never assigns `this` outside a
- * constructor, so nothing in it can change the instance.
+ * no settable auto property, no field-like instance event, never assigns `this` outside a
+ * constructor and never writes a primary constructor parameter (instance state a `readonly`
+ * struct may not change), so nothing in it can change the instance.
  */
 function readonlyStructs(source: string): string {
   return edit(source, (root) => {
@@ -103,7 +104,9 @@ function readonlyStructs(source: string): string {
       const assignsThis = findAll(struct, 'assignment_expression').some(
         (assignment) => assignment.childForFieldName('left')?.type === 'this_expression' && !isInside(assignment, 'constructor_declaration')
       );
-      if (mutable || assignsThis || /&\s*this\b|\bref\s+this\b/.test(struct.text)) {
+      const parameters = new Set((struct.childForFieldName('parameters')?.namedChildren ?? []).map((parameter) => parameter.childForFieldName('name')?.text));
+      const writesParameter = !!body && findAll(body, 'identifier').some((identifier) => parameters.has(identifier.text) && isWritten(identifier));
+      if (mutable || assignsThis || writesParameter || /&\s*this\b|\bref\s+this\b/.test(struct.text)) {
         continue;
       }
 
@@ -123,6 +126,24 @@ function isInside(node: Node, type: string): boolean {
   }
 
   return false;
+}
+
+/** True when `identifier` is written: assigned (also in a deconstructing tuple), incremented, or taken by `ref`/`out`. */
+function isWritten(identifier: Node): boolean {
+  let target = identifier;
+  while (target.parent?.type === 'tuple_expression' || target.parent?.type === 'parenthesized_expression' || (target.parent?.type === 'argument' && target.parent.parent?.type === 'tuple_expression')) {
+    target = target.parent;
+  }
+
+  const parent = target.parent;
+
+  return (
+    (parent?.type === 'assignment_expression' && parent.childForFieldName('left') === target) ||
+    parent?.type === 'postfix_unary_expression' ||
+    (parent?.type === 'prefix_unary_expression' && /^(?:\+\+|--)/.test(parent.text)) ||
+    parent?.type === 'ref_expression' ||
+    (identifier.parent?.type === 'argument' && /^(?:ref|out)\b/.test(identifier.parent.text))
+  );
 }
 
 // ---------------------------------------------------------------------------------------------

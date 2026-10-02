@@ -1,8 +1,10 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CleanupFinding, analyzeCleanup, applyRuleOnly, fixFindingOccurrence } from '../cleanup/analysis';
 import { EditorConfigSeverity } from '../cleanup/editorconfig';
+import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { logError, logInfo } from '../logging';
-import { discoverDisqualifiedTypeNamesForFile, isPathCleanable, siblingCSharpFileNames } from './cleanupCore';
+import { isPathCleanable } from './cleanupCore';
 import { readCleanupSettingsForUri } from './settings';
 
 /**
@@ -44,15 +46,26 @@ export function registerCleanupDiagnostics(context: vscode.ExtensionContext): vo
   const collection = vscode.languages.createDiagnosticCollection(SOURCE);
   const diagnostics = new CleanupDiagnostics(collection);
 
+  // The other files of a document's folder are read once; a file created, changed or deleted is read again.
+  const csharpFiles = vscode.workspace.createFileSystemWatcher('**/*.cs');
+  const onDisk = (uri: vscode.Uri) => diagnostics.invalidateFile(uri);
+
   context.subscriptions.push(
     collection,
     diagnostics,
+    csharpFiles,
+    csharpFiles.onDidCreate(onDisk),
+    csharpFiles.onDidChange(onDisk),
+    csharpFiles.onDidDelete(onDisk),
     vscode.workspace.onDidOpenTextDocument((document) => diagnostics.schedule(document)),
     vscode.workspace.onDidChangeTextDocument((event) => diagnostics.schedule(event.document)),
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.forget(document.uri)),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (/(?:^|[\\/])(?:\.editorconfig|\.globalconfig|\.codejanitor)$/i.test(document.uri.fsPath)) {
         diagnostics.refreshAll();
+      } else {
+        // The watcher only sees the workspace folders; a file saved outside them changed on disk too.
+        diagnostics.invalidateFile(document.uri);
       }
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -72,6 +85,10 @@ export function registerCleanupDiagnostics(context: vscode.ExtensionContext): vo
 export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Disposable {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly analyzed = new Map<string, Analyzed>();
+  /** The entries of each folder read so far, by folder path. */
+  private readonly folders = new Map<string, Promise<readonly [string, vscode.FileType][]>>();
+  /** The type names each `.cs` file read so far disqualifies from sealing, by file path. */
+  private readonly disqualifiedByFile = new Map<string, Promise<ReadonlySet<string>>>();
 
   constructor(private readonly collection: vscode.DiagnosticCollection) {}
 
@@ -105,9 +122,17 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     vscode.workspace.textDocuments.forEach((document) => this.schedule(document));
   }
 
+  /** `uri` was created, changed or deleted on disk: it and its folder's entries are read again when needed. */
+  invalidateFile(uri: vscode.Uri): void {
+    this.disqualifiedByFile.delete(uri.fsPath);
+    this.folders.delete(path.dirname(uri.fsPath));
+  }
+
   dispose(): void {
     this.timers.forEach((timer) => clearTimeout(timer));
     this.timers.clear();
+    this.folders.clear();
+    this.disqualifiedByFile.clear();
   }
 
   provideCodeActions(document: vscode.TextDocument, _range: vscode.Range, context: vscode.CodeActionContext): vscode.CodeAction[] {
@@ -167,7 +192,7 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
 
     const text = document.getText();
     const settings = readCleanupSettingsForUri(uri);
-    const fixed = applyRuleOnly(text, uri.fsPath, settings, ruleId, await discoverDisqualifiedTypeNamesForFile(uri, text));
+    const fixed = applyRuleOnly(text, uri.fsPath, settings, ruleId, (await this.folderFacts(uri, text)).disqualifiedTypeNames);
     if (document.getText() !== text) {
       void vscode.window.showWarningMessage(`Code Janitor: ${uri.fsPath} changed while ${ruleId} was being fixed; nothing was changed.`);
 
@@ -201,6 +226,44 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     );
   }
 
+  /**
+   * The type names `text` and the other `.cs` files of its folder disqualify from sealing, and the
+   * `.cs` names of the folder. The folder and its files are read once, until {@link invalidateFile}.
+   */
+  private async folderFacts(uri: vscode.Uri, text: string): Promise<{ disqualifiedTypeNames: Set<string>; siblingFileNames: Set<string> }> {
+    const directory = path.dirname(uri.fsPath);
+    let entries = this.folders.get(directory);
+    if (!entries) {
+      entries = Promise.resolve(vscode.workspace.fs.readDirectory(vscode.Uri.file(directory))).catch(() => []);
+      this.folders.set(directory, entries);
+    }
+
+    const csharp = (await entries).filter(([name]) => name.toLowerCase().endsWith('.cs'));
+    const disqualifiedTypeNames = discoverDisqualifiedTypeNames([text]);
+    for (const [name, type] of csharp) {
+      const file = path.join(directory, name);
+      if ((type & vscode.FileType.File) !== 0 && file !== uri.fsPath) {
+        (await this.disqualifiedBy(file)).forEach((typeName) => disqualifiedTypeNames.add(typeName));
+      }
+    }
+
+    return { disqualifiedTypeNames, siblingFileNames: new Set(csharp.map(([name]) => name)) };
+  }
+
+  /** The type names the file on disk disqualifies from sealing; none when it cannot be read. */
+  private disqualifiedBy(file: string): Promise<ReadonlySet<string>> {
+    let names = this.disqualifiedByFile.get(file);
+    if (!names) {
+      names = Promise.resolve(vscode.workspace.fs.readFile(vscode.Uri.file(file))).then(
+        (bytes) => discoverDisqualifiedTypeNames([Buffer.from(bytes).toString('utf8')]),
+        () => new Set<string>()
+      );
+      this.disqualifiedByFile.set(file, names);
+    }
+
+    return names;
+  }
+
   private async analyze(document: vscode.TextDocument): Promise<void> {
     const key = document.uri.toString();
     const version = document.version;
@@ -210,8 +273,7 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
 
     try {
       const text = document.getText();
-      const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, text);
-      const siblingFileNames = await siblingCSharpFileNames(document.uri);
+      const { disqualifiedTypeNames, siblingFileNames } = await this.folderFacts(document.uri, text);
       // Superseded while reading the folder: the newer version is analyzed instead.
       if (document.isClosed || document.version !== version) {
         return;

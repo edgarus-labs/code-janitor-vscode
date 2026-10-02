@@ -165,8 +165,12 @@ export const previewState = {
   closedTabs: [] as Tab[],
   /** Schemes reported as not writable. */
   readOnlySchemes: new Set<string>(),
-  /** Paths reported as read-only by `fs.stat`. */
-  readOnlyPaths: new Set<string>(),
+  /**
+   * Non-`file:` resources (`uri.toString()`) whose provider reports `FilePermission.Readonly`. VS Code never
+   * reports it for `file:` URIs: the disk provider marks a file without write permission `Locked`, which the
+   * extension host maps to `permissions: undefined`. Model those with a real file and `chmod`.
+   */
+  readOnlyResources: new Set<string>(),
   /** Text of a virtual document, as VS Code shows it in the diff. */
   text(uri: Uri): string {
     return previewState.providers.get(uri.scheme)?.provideTextDocumentContent(uri) ?? '';
@@ -191,7 +195,7 @@ export function installPreviewMock(): void {
   previewState.tabs = [];
   previewState.closedTabs = [];
   previewState.readOnlySchemes = new Set();
-  previewState.readOnlyPaths = new Set();
+  previewState.readOnlyResources = new Set();
 
   Object.assign(window, {
     createQuickPick: () => new FakeQuickPick(),
@@ -221,7 +225,11 @@ export function installPreviewMock(): void {
     stat: (uri: Uri) => Thenable<{ type: number; permissions?: number }>;
   };
   fs.isWritableFileSystem = (scheme) => !previewState.readOnlySchemes.has(scheme);
-  fs.stat = async (uri) => ({ ...(await originalStat(uri)), ...(previewState.readOnlyPaths.has(uri.fsPath) ? { permissions: 1 } : {}) });
+  fs.stat = async (uri) => {
+    const stat = await originalStat(uri);
+
+    return uri.scheme !== 'file' && previewState.readOnlyResources.has(uri.toString()) ? { ...stat, permissions: 1 } : stat;
+  };
 
   state.commands.set('vscode.diff', (before, after, title, options) => {
     previewState.diffs.push({ before: before as Uri, after: after as Uri, title: title as string, options });

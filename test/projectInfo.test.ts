@@ -80,6 +80,24 @@ describe('findProject reads MSBuild properties as MSBuild evaluates them', () =>
     const opaqueInfo = findProject(opaque) as ProjectInfo;
     expect([opaqueInfo.nullable, opaqueInfo.targetFrameworks, opaqueInfo.languageVersion]).toEqual([undefined, undefined, 11]);
   });
+
+  it('keeps a self-referencing redefinition uncertain when the earlier value is uncertain', () => {
+    const appended = sourceIn({
+      'App/App.csproj': project(
+        '<PropertyGroup><TargetFrameworks>net8.0</TargetFrameworks><Nullable>disable</Nullable></PropertyGroup>\n<PropertyGroup><TargetFrameworks Condition="\'$(OS)\' == \'Windows_NT\'">$(TargetFrameworks);net48</TargetFrameworks><Nullable Condition="\'$(Configuration)\' == \'Release\'">enable</Nullable></PropertyGroup>'
+      ),
+      'Directory.Build.targets': '<Project><PropertyGroup><TargetFrameworks>$(TargetFrameworks);net9.0</TargetFrameworks><Nullable>$(Nullable)</Nullable></PropertyGroup></Project>',
+    });
+    const info = findProject(appended) as ProjectInfo;
+    expect([info.targetFrameworks, info.modernRuntime, info.languageVersion, info.nullable]).toEqual([undefined, undefined, undefined, undefined]);
+
+    // A certain earlier value, or none at all, keeps the redefinition certain.
+    const certain = sourceIn({
+      'App/App.csproj': project('<PropertyGroup><TargetFrameworks>net8.0</TargetFrameworks><LangVersion>$(LangVersion)</LangVersion></PropertyGroup>'),
+      'Directory.Build.targets': '<Project><PropertyGroup><TargetFrameworks>$(TargetFrameworks);net9.0</TargetFrameworks></PropertyGroup></Project>',
+    });
+    expect(findProject(certain)).toMatchObject({ targetFrameworks: ['net8.0', 'net9.0'], languageVersion: 12 });
+  });
 });
 
 describe('IDE0240 with an unknown nullable context', () => {

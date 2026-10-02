@@ -546,7 +546,7 @@
             "default": false,
             "markdownDescription": "Before **Cleanup Selected Files** starts, ask whether to start the cleanup or to preview the C# text changes first (the Visual Studio options dialog). Off: the command starts the cleanup at once."
           },
-          "codeJanitor.preview.maxFileSizeKb": {
+          "codeJanitor.preview.maxFileSizeKB": {
             "type": "number",
             "default": 1024,
             "minimum": 1,
@@ -760,433 +760,644 @@
             "additionalProperties": false,
             "properties": {
               "csharp_preferred_modifier_order": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "pattern": "^\\s*\\w+(\\s*,\\s*\\w+)*\\s*$",
-                "markdownDescription": "Modifiers: Order modifiers (IDE0036). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_preferred_modifier_order`. Proposed value: `public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async`."
+                "markdownDescription": "Modifiers: Order modifiers (IDE0036). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_preferred_modifier_order`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async`."
               },
               "csharp_prefer_static_local_function": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modifiers: Make local functions static (IDE0062). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_static_local_function`. Proposed value: `true`."
+                "markdownDescription": "Modifiers: Make local functions static (IDE0062). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_static_local_function`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_prefer_static_anonymous_function": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modifiers: Make anonymous functions static (IDE0320). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_static_anonymous_function`. Proposed value: `true`."
+                "markdownDescription": "Modifiers: Make anonymous functions static (IDE0320). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_static_anonymous_function`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_readonly_struct": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modifiers: Make structs readonly (IDE0250). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_readonly_struct`. Proposed value: `true`."
+                "markdownDescription": "Modifiers: Make structs readonly (IDE0250). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_readonly_struct`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_readonly_struct_member": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modifiers: Make struct members readonly (IDE0251). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_readonly_struct_member`. Proposed value: `true`."
+                "markdownDescription": "Modifiers: Make struct members readonly (IDE0251). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_readonly_struct_member`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_prefer_braces": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_multiline"
+                  "when_multiline",
+                  null
                 ],
-                "markdownDescription": "Blocks: Use braces (IDE0011). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_braces`. Proposed value: `true`."
+                "markdownDescription": "Blocks: Use braces (IDE0011). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_braces`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_prefer_simple_using_statement": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Blocks: Use simple 'using' statements (IDE0063). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_simple_using_statement`. Proposed value: `true`."
+                "markdownDescription": "Blocks: Use simple 'using' statements (IDE0063). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_simple_using_statement`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_method_group_conversion": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Blocks: Convert lambdas to method groups (IDE0200). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_method_group_conversion`. Proposed value: `true`."
+                "markdownDescription": "Blocks: Convert lambdas to method groups (IDE0200). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_method_group_conversion`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_expression_bodied_methods": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_on_single_line"
+                  "when_on_single_line",
+                  null
                 ],
-                "markdownDescription": "Expression-bodied members: Methods (IDE0022). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_methods`. Proposed value: `false`."
+                "markdownDescription": "Expression-bodied members: Methods (IDE0022). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_methods`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "csharp_style_expression_bodied_constructors": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_on_single_line"
+                  "when_on_single_line",
+                  null
                 ],
-                "markdownDescription": "Expression-bodied members: Constructors (IDE0021). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_constructors`. Proposed value: `false`."
+                "markdownDescription": "Expression-bodied members: Constructors (IDE0021). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_constructors`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "csharp_style_expression_bodied_operators": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_on_single_line"
+                  "when_on_single_line",
+                  null
                 ],
-                "markdownDescription": "Expression-bodied members: Operators (IDE0023, IDE0024). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_operators`. Proposed value: `false`."
+                "markdownDescription": "Expression-bodied members: Operators (IDE0023, IDE0024). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_operators`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "csharp_style_expression_bodied_properties": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_on_single_line"
+                  "when_on_single_line",
+                  null
                 ],
-                "markdownDescription": "Expression-bodied members: Properties (IDE0025). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_properties`. Proposed value: `true`."
+                "markdownDescription": "Expression-bodied members: Properties (IDE0025). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_properties`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_expression_bodied_indexers": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_on_single_line"
+                  "when_on_single_line",
+                  null
                 ],
-                "markdownDescription": "Expression-bodied members: Indexers (IDE0026). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_indexers`. Proposed value: `true`."
+                "markdownDescription": "Expression-bodied members: Indexers (IDE0026). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_indexers`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_expression_bodied_accessors": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_on_single_line"
+                  "when_on_single_line",
+                  null
                 ],
-                "markdownDescription": "Expression-bodied members: Accessors (IDE0027). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_accessors`. Proposed value: `true`."
+                "markdownDescription": "Expression-bodied members: Accessors (IDE0027). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_accessors`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_expression_bodied_local_functions": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
                   "false",
-                  "when_on_single_line"
+                  "when_on_single_line",
+                  null
                 ],
-                "markdownDescription": "Expression-bodied members: Local functions (IDE0061). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_local_functions`. Proposed value: `false`."
+                "markdownDescription": "Expression-bodied members: Local functions (IDE0061). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_expression_bodied_local_functions`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "csharp_style_pattern_matching_over_is_with_cast_check": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Pattern matching: Pattern matching over 'is' with cast (IDE0020, IDE0038). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_pattern_matching_over_is_with_cast_check`. Proposed value: `true`."
+                "markdownDescription": "Pattern matching: Pattern matching over 'is' with cast (IDE0020, IDE0038). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_pattern_matching_over_is_with_cast_check`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_pattern_matching_over_as_with_null_check": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Pattern matching: Pattern matching over 'as' with null check (IDE0019, IDE0260). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_pattern_matching_over_as_with_null_check`. Proposed value: `true`."
+                "markdownDescription": "Pattern matching: Pattern matching over 'as' with null check (IDE0019, IDE0260). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_pattern_matching_over_as_with_null_check`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_pattern_matching": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Pattern matching: Combine patterns (IDE0078). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_pattern_matching`. Proposed value: `true`."
+                "markdownDescription": "Pattern matching: Combine patterns (IDE0078). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_pattern_matching`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_not_pattern": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Pattern matching: Use 'not' pattern (IDE0083). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_not_pattern`. Proposed value: `true`."
+                "markdownDescription": "Pattern matching: Use 'not' pattern (IDE0083). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_not_pattern`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_extended_property_pattern": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Pattern matching: Use extended property patterns (IDE0170). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_extended_property_pattern`. Proposed value: `true`."
+                "markdownDescription": "Pattern matching: Use extended property patterns (IDE0170). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_extended_property_pattern`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_switch_expression": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Pattern matching: Use switch expressions (IDE0066). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_switch_expression`. Proposed value: `true`."
+                "markdownDescription": "Pattern matching: Use switch expressions (IDE0066). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_switch_expression`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_coalesce_expression": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Null checking: Use '??' (IDE0029, IDE0030, IDE0270). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_coalesce_expression`. Proposed value: `true`."
+                "markdownDescription": "Null checking: Use '??' (IDE0029, IDE0030, IDE0270). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_coalesce_expression`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_null_propagation": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Null checking: Use '?.' (IDE0031). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_null_propagation`. Proposed value: `true`."
+                "markdownDescription": "Null checking: Use '?.' (IDE0031). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_null_propagation`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_throw_expression": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Null checking: Use throw expressions (IDE0016). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_throw_expression`. Proposed value: `true`."
+                "markdownDescription": "Null checking: Use throw expressions (IDE0016). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_throw_expression`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_conditional_delegate_call": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Null checking: Invoke delegates with '?.' (IDE1005). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_conditional_delegate_call`. Proposed value: `true`."
+                "markdownDescription": "Null checking: Invoke delegates with '?.' (IDE1005). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_conditional_delegate_call`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_primary_constructors": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use primary constructors (IDE0290). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_primary_constructors`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use primary constructors (IDE0290). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_primary_constructors`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_implicit_object_creation_when_type_is_apparent": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use target-typed 'new()' (IDE0090). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_implicit_object_creation_when_type_is_apparent`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use target-typed 'new()' (IDE0090). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_implicit_object_creation_when_type_is_apparent`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_index_operator": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use index operator '^' (IDE0056). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_index_operator`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use index operator '^' (IDE0056). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_index_operator`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_range_operator": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use range operator '..' (IDE0057). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_range_operator`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use range operator '..' (IDE0057). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_range_operator`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_utf8_string_literals": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use UTF-8 string literals (IDE0230). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_utf8_string_literals`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use UTF-8 string literals (IDE0230). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_utf8_string_literals`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_prefer_tuple_swap": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Swap values with tuples (IDE0180). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_tuple_swap`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Swap values with tuples (IDE0180). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_prefer_tuple_swap`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_deconstructed_variable_declaration": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Deconstruct variable declarations (IDE0042). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_deconstructed_variable_declaration`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Deconstruct variable declarations (IDE0042). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_deconstructed_variable_declaration`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "csharp_style_unused_value_assignment_preference": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "discard_variable",
-                  "unused_local_variable"
+                  "unused_local_variable",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Unused value assignments (IDE0059). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_unused_value_assignment_preference`. Proposed value: `discard_variable`."
+                "markdownDescription": "Modern expressions: Unused value assignments (IDE0059). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_style_unused_value_assignment_preference`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `discard_variable`."
               },
               "csharp_prefer_simple_default_expression": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use 'default' literal (IDE0034). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_simple_default_expression`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use 'default' literal (IDE0034). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `csharp_prefer_simple_default_expression`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_prefer_auto_properties": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use auto-properties (IDE0032). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_auto_properties`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use auto-properties (IDE0032). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_auto_properties`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_prefer_compound_assignment": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use compound assignment (IDE0054, IDE0074). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_compound_assignment`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use compound assignment (IDE0054, IDE0074). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_compound_assignment`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_prefer_simplified_boolean_expressions": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Simplify boolean expressions (IDE0075). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_simplified_boolean_expressions`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Simplify boolean expressions (IDE0075). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_simplified_boolean_expressions`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_prefer_simplified_interpolation": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Simplify interpolation (IDE0071). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_simplified_interpolation`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Simplify interpolation (IDE0071). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_simplified_interpolation`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_object_initializer": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use object initializers (IDE0017). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_object_initializer`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use object initializers (IDE0017). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_object_initializer`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_collection_initializer": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use collection initializers (IDE0028). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_collection_initializer`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use collection initializers (IDE0028). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_collection_initializer`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_explicit_tuple_names": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use explicit tuple names (IDE0033). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_explicit_tuple_names`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use explicit tuple names (IDE0033). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_explicit_tuple_names`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_prefer_inferred_tuple_names": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use inferred tuple element names (IDE0037). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_inferred_tuple_names`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use inferred tuple element names (IDE0037). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_inferred_tuple_names`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_prefer_inferred_anonymous_type_member_names": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Modern expressions: Use inferred anonymous type member names (IDE0037). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_inferred_anonymous_type_member_names`. Proposed value: `true`."
+                "markdownDescription": "Modern expressions: Use inferred anonymous type member names (IDE0037). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_prefer_inferred_anonymous_type_member_names`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_qualification_for_field": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "'this.' qualification: Fields (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_field`. Proposed value: `false`."
+                "markdownDescription": "'this.' qualification: Fields (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_field`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "dotnet_style_qualification_for_property": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "'this.' qualification: Properties (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_property`. Proposed value: `false`."
+                "markdownDescription": "'this.' qualification: Properties (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_property`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "dotnet_style_qualification_for_method": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "'this.' qualification: Methods (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_method`. Proposed value: `false`."
+                "markdownDescription": "'this.' qualification: Methods (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_method`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "dotnet_style_qualification_for_event": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "'this.' qualification: Events (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_event`. Proposed value: `false`."
+                "markdownDescription": "'this.' qualification: Events (IDE0003, IDE0009). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_qualification_for_event`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `false`."
               },
               "dotnet_style_predefined_type_for_locals_parameters_members": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Language keywords vs. framework type names: Locals, parameters and members (IDE0049). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_predefined_type_for_locals_parameters_members`. Proposed value: `true`."
+                "markdownDescription": "Language keywords vs. framework type names: Locals, parameters and members (IDE0049). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_predefined_type_for_locals_parameters_members`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_predefined_type_for_member_access": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "true",
-                  "false"
+                  "false",
+                  null
                 ],
-                "markdownDescription": "Language keywords vs. framework type names: Member access expressions (IDE0049). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_predefined_type_for_member_access`. Proposed value: `true`."
+                "markdownDescription": "Language keywords vs. framework type names: Member access expressions (IDE0049). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_predefined_type_for_member_access`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `true`."
               },
               "dotnet_style_parentheses_in_arithmetic_binary_operators": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "always_for_clarity",
-                  "never_if_unnecessary"
+                  "never_if_unnecessary",
+                  null
                 ],
-                "markdownDescription": "Parentheses: Arithmetic operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_arithmetic_binary_operators`. Proposed value: `always_for_clarity`."
+                "markdownDescription": "Parentheses: Arithmetic operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_arithmetic_binary_operators`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `always_for_clarity`."
               },
               "dotnet_style_parentheses_in_relational_binary_operators": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "always_for_clarity",
-                  "never_if_unnecessary"
+                  "never_if_unnecessary",
+                  null
                 ],
-                "markdownDescription": "Parentheses: Relational operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_relational_binary_operators`. Proposed value: `always_for_clarity`."
+                "markdownDescription": "Parentheses: Relational operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_relational_binary_operators`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `always_for_clarity`."
               },
               "dotnet_style_parentheses_in_other_binary_operators": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "always_for_clarity",
-                  "never_if_unnecessary"
+                  "never_if_unnecessary",
+                  null
                 ],
-                "markdownDescription": "Parentheses: Other binary operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_other_binary_operators`. Proposed value: `always_for_clarity`."
+                "markdownDescription": "Parentheses: Other binary operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_other_binary_operators`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `always_for_clarity`."
               },
               "dotnet_style_parentheses_in_other_operators": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "enum": [
                   "always_for_clarity",
-                  "never_if_unnecessary"
+                  "never_if_unnecessary",
+                  null
                 ],
-                "markdownDescription": "Parentheses: Other operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_other_operators`. Proposed value: `never_if_unnecessary`."
+                "markdownDescription": "Parentheses: Other operators (IDE0047, IDE0048). Enables the rule with this value, as `suggestion`, unless `.editorconfig` enforces `dotnet_style_parentheses_in_other_operators`; `null` turns it off here when another scope (the User settings) enables it. Proposed value: `never_if_unnecessary`."
               }
             },
             "markdownDescription": "Roslyn code-style options Code Janitor applies when the repository's `.editorconfig` does not enforce them: each entry enables one rule with its value, as `suggestion`; rules that are not listed are off. A rule `.editorconfig` enforces keeps its `.editorconfig` value, and the `cleanup.codeStyle` section of `.codejanitor` (a value enables the rule, `null` disables it) wins over this setting. Nothing is written to `.editorconfig`. Naming rules (`dotnet_naming_*`) are configured in `.editorconfig` only."

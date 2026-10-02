@@ -1,11 +1,11 @@
-import { CODE, STRING, classifyCSharp } from '../csharpScanner';
+import { classifyCSharp } from '../csharpScanner';
 import { ProjectInfo } from '../projectInfo';
 import { lex } from '../syntax/lexer';
 import { SourceTransformation } from '../types';
-import { Layout, analyzeLayout } from '../usings/layout';
+import { Layout, NamespaceItem, analyzeLayout } from '../usings/layout';
 import { PlacementDirection, placeUsings } from '../usings/placement';
 import { projectContextOf } from '../usings/workspaceIndex';
-import { indentFollowingLines, isBlank, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
+import { dedentBlock, indentFollowingLines, isBlank, newlineOf } from './editorConfigSupport';
 
 // ---------------------------------------------------------------------------------------------
 // Using directive placement (`moveUsingsOutsideNamespace`, `csharp_using_directive_placement`)
@@ -76,7 +76,7 @@ export function createUsingPlacementConverter(options: UsingPlacementOptions): S
 function hasDirectivesToMove(layout: Layout, direction: PlacementDirection): boolean {
   return direction === 'outside'
     ? layout.namespaces.some((namespace) => namespace.usings.length > 0)
-    : layout.usings.some((item) => !item.isGlobal) && layout.topLevel.length === 1 && !layout.otherTopLevel && !layout.hasGlobalAttributes;
+    : layout.usings.some((item) => !item.isGlobal) && layout.topLevel.length === 1 && !layout.otherTopLevel;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -115,39 +115,53 @@ export function createFileScopedNamespaceConverter(options: {
 }): SourceTransformation {
   return {
     name: 'File-Scoped Namespace',
-    apply: (source) => {
+    apply: (input) => {
+      // A byte order mark is not code (the lexer would read it as a member before the namespace).
+      const bom = input.startsWith('\uFEFF') ? '\uFEFF' : '';
+      const source = input.slice(bom.length);
       if (!source.trim()) {
-        return source;
+        return input;
       }
 
       const unsupported = fileScopedNamespacesUnsupported(options.project);
       if (unsupported) {
         // Only a file with a block-scoped namespace to convert is worth a report.
-        const candidate = analyzeLayout(source).topLevel.some((namespace) => namespace.kind === 'block');
-        if (candidate) {
+        if (hasBlockScopedNamespace(source)) {
           options.report(`namespace not converted to a file-scoped one: ${unsupported}.`, source, 0);
         }
 
-        return source;
+        return input;
       }
 
-      return convertToFileScoped(source, {
+      const converted = convertToFileScoped(source, {
         indent: options.indent?.(source) ?? '    ',
         report: (reason, offset) => options.report(`namespace not converted: ${reason}`, source, offset),
       });
+
+      return converted === source ? input : bom + converted;
     },
   };
 }
 
+/** True when the file declares a block-scoped namespace at top level: the conversion to a file-scoped one concerns it. */
+export function hasBlockScopedNamespace(source: string): boolean {
+  return analyzeLayout(source).topLevel.some((namespace) => namespace.kind === 'block');
+}
+
 /**
  * Converts the file's only (block-scoped) namespace to a file-scoped one, keeping any using
- * directives inside it. Like Roslyn, files with other top-level members, nested namespaces or
- * several namespaces are not candidates (and are left unchanged without a report).
+ * directives inside it and any global attributes (`[assembly: ...]`) before it. Like Roslyn, files
+ * with other top-level members, nested namespaces or several namespaces are not candidates (and are
+ * left unchanged without a report).
  */
 export function convertToFileScoped(source: string, options: NamespaceConversionOptions): string {
   const layout = analyzeLayout(source);
   const [namespace] = layout.topLevel;
-  if (layout.topLevel.length !== 1 || layout.otherTopLevel || namespace.kind !== 'block' || namespace.nested.length > 0 || !layout.ok) {
+  if (layout.topLevel.length !== 1 || namespace.kind !== 'block' || namespace.nested.length > 0 || !layout.ok) {
+    return source;
+  }
+
+  if (layout.otherTopLevel && !onlyGlobalAttributesBefore(source, layout, namespace)) {
     return source;
   }
 
@@ -175,6 +189,36 @@ export function convertToFileScoped(source: string, options: NamespaceConversion
   const header = source.slice(0, namespace.keywordStart);
 
   return `${header}namespace ${source.slice(namespace.nameStart, namespace.nameEnd)};${body ? newline + newline + body : ''}${newline}`;
+}
+
+/**
+ * True when the file level holds nothing besides its directives, global attribute lists before the
+ * namespace and the namespace itself, so a file-scoped namespace can follow the attributes.
+ */
+function onlyGlobalAttributesBefore(source: string, layout: Layout, namespace: NamespaceItem): boolean {
+  const directivesEnd = Math.max(0, ...layout.externs.map((item) => item.end), ...layout.usings.map((item) => item.end));
+  const end = namespace.close?.end ?? source.length;
+  let depth = 0;
+  for (let i = 0; i < layout.tokens.length; i++) {
+    const token = layout.tokens[i];
+    if (token.start < directivesEnd || (token.start >= namespace.keywordStart && token.start < end)) {
+      continue;
+    }
+
+    // Every list at file level opens with `[assembly:` or `[module:` and closes before the namespace.
+    if (token.start >= end) {
+      return false;
+    }
+
+    const target = layout.tokens[i + 1];
+    if (depth === 0 && !(token.type === '[' && target?.type === 'identifier' && /^(?:assembly|module)$/.test(source.slice(target.start, target.end)) && layout.tokens[i + 2]?.type === ':')) {
+      return false;
+    }
+
+    depth += token.type === '[' ? 1 : token.type === ']' ? -1 : 0;
+  }
+
+  return depth === 0;
 }
 
 /** Converts a file-scoped namespace to a block-scoped one, indenting everything after it by one level. */
@@ -237,78 +281,4 @@ function directivesStraddle(source: string, from: number, to: number): boolean {
 
   // A block left open runs to the end of the file.
   return groups.some((group) => group.some((position) => position >= from && position < to) && group.some((position) => position < from));
-}
-
-/**
- * The text between `start` and `end` without its surrounding blank lines and with the indentation
- * of its first line removed from every line that starts in code. Lines that continue a string
- * literal (verbatim, raw, multi-line interpolated) and every line break stay as they are.
- */
-function dedentBlock(source: string, kinds: Uint8Array, start: number, end: number): string {
-  const text = source.slice(start, end);
-  const firstContent = text.search(/\S/);
-  if (firstContent < 0) {
-    return '';
-  }
-
-  // Text on the line of the `{` (a trailing comment, or code) has no indentation of its own: the body
-  // starts at that text, and the unit comes from the lines below it.
-  const onBraceLine = !text.slice(0, firstContent).includes('\n');
-  const bodyStart = onBraceLine ? firstContent : lineStartAt(text, firstContent);
-  const unit = memberIndent(text, kinds, start, onBraceLine ? firstContent : bodyStart) ?? (onBraceLine ? '' : lineIndentAt(text, firstContent));
-  const body = text.slice(bodyStart).trimEnd();
-  const offset = start + bodyStart;
-  let result = '';
-  let lineStart = 0;
-  while (lineStart < body.length) {
-    const next = body.indexOf('\n', lineStart);
-    const lineEnd = next < 0 ? body.length : next + 1;
-    const line = body.slice(lineStart, lineEnd);
-    const startsInString = lineStart > 0 && kinds[offset + lineStart - 1] === STRING;
-    const content = line.replace(/\r?\n$/, '');
-    result += startsInString ? line : isBlank(content) ? line.slice(content.length) : line.startsWith(unit) ? line.slice(unit.length) : line;
-    lineStart = lineEnd;
-  }
-
-  return result;
-}
-
-/**
- * Indentation of the first line in `text` from `from` on that starts a namespace member: a line of
- * code at brace depth 0, or the line whose leading `}` returns to it. Directives (column 0 whatever
- * the code's indentation), lines continuing a comment or string, and lines nested in a block opened
- * on the `{` line set no unit. `from` inside a line (text on the `{` line) only counts its braces.
- * `undefined` when no line qualifies.
- */
-function memberIndent(text: string, kinds: Uint8Array, offset: number, from: number): string | undefined {
-  const isCode = (index: number) => kinds[offset + index] === CODE;
-  let depth = 0;
-  let lineStart = from;
-  while (lineStart < text.length) {
-    const next = text.indexOf('\n', lineStart);
-    const lineEnd = next < 0 ? text.length : next;
-    const indent = /^[ \t]*/.exec(text.slice(lineStart, lineEnd))![0];
-    const first = lineStart + indent.length;
-    const startsLine = lineStart > 0 && text[lineStart - 1] === '\n';
-    if (startsLine && first < lineEnd && isCode(first - 1) && text[first] !== '#' && text[first] !== '\r') {
-      let closers = 0;
-      while (text[first + closers] === '}' && isCode(first + closers)) {
-        closers++;
-      }
-
-      if (depth - closers <= 0) {
-        return indent;
-      }
-    }
-
-    for (let index = lineStart; index < lineEnd; index++) {
-      if (isCode(index)) {
-        depth += text[index] === '{' ? 1 : text[index] === '}' ? -1 : 0;
-      }
-    }
-
-    lineStart = lineEnd + 1;
-  }
-
-  return undefined;
 }

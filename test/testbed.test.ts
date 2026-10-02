@@ -250,20 +250,32 @@ interface BuildRun {
 }
 
 function buildAndRun(root: string): BuildRun {
+  // A failed build must not run the program of an earlier build of the same copy.
+  const program = path.join(root, 'src', 'Scenarios', 'bin', 'Debug', 'net10.0', 'Scenarios.dll');
+  fs.rmSync(program, { force: true });
+
   // The .NET host sometimes dies with an internal CLR error before it compiles anything; that says nothing about the code.
   let output = '';
+  let failed: string | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const build = spawnSync('dotnet', ['build', path.join(root, 'CodeJanitor.Testbed.slnx'), '-nologo', '-v:q', '-clp:NoSummary', '-nodeReuse:false'], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 900_000 });
     output = `${build.stdout}\n${build.stderr}`;
+    // A build can fail without a coded error line: a timeout, a signal, the CLR error left after the last attempt, a bare `error :`.
+    failed = build.error
+      ? `dotnet build could not run: ${build.error.message}`
+      : build.status !== 0
+        ? `dotnet build exited with ${build.signal ?? `code ${build.status}`}: ${output.trim().split('\n').slice(-20).join('\n')}`
+        : undefined;
     if (!/Internal CLR error/.test(output)) {
       break;
     }
   }
 
-  const errors = [...new Set(output.split('\n').filter((line) => /: error [A-Z]+\d+/.test(line)).map((line) => line.replace(root, '').replace(/\s+\[[^\]]+\]$/, '')))];
+  const coded = output.split('\n').filter((line) => /: error [A-Z]+\d+/.test(line)).map((line) => line.replace(root, '').replace(/\s+\[[^\]]+\]$/, ''));
+  const errors = [...new Set(coded.length === 0 && failed ? [failed] : coded)];
   const lines = new Map<string, string>();
   if (errors.length === 0) {
-    const run = spawnSync('dotnet', [path.join(root, 'src', 'Scenarios', 'bin', 'Debug', 'net10.0', 'Scenarios.dll')], { encoding: 'utf8', timeout: 120_000 });
+    const run = spawnSync('dotnet', [program], { encoding: 'utf8', timeout: 120_000 });
     for (const line of run.stdout.split('\n').filter(Boolean)) {
       const at = line.indexOf('=');
       lines.set(line.slice(0, at), line.slice(at + 1));
@@ -437,18 +449,12 @@ suite('the Code Janitor testbed', () => {
       const copy = copyTestbed(root);
       folders.push(copy);
       const before = buildAndRun(copy);
-      const everything = createDefaultSettings() as unknown as Record<string, unknown>;
-      for (const [key, value] of Object.entries(everything)) {
-        if (typeof value === 'boolean') {
-          everything[key] = !(key in NOT_A_TEXT_TRANSFORMATION);
-        }
-      }
-
-      everything.codeStyleRules = Object.fromEntries(CODE_STYLE_RULES.map((rule) => [rule.key, rule.defaultValue]));
-      everything.reorganize = { ...createDefaultReorganizeSettings(), runAtStartOfCleanup: true };
+      expect(before.errors, 'the unfixed testbed must build').toEqual([]);
+      expect(before.lines.size).toBeGreaterThan(0);
+      const everything: CleanupSettings = { ...everythingOn(), reorganize: { ...createDefaultReorganizeSettings(), runAtStartOfCleanup: true } };
       for (const scenario of scenarios.filter((candidate) => candidate.entry === 'cleanup')) {
         const file = path.join(copy, scenario.file);
-        fs.writeFileSync(file, runCleanup(fs.readFileSync(file, 'utf8'), file, everything as unknown as CleanupSettings));
+        fs.writeFileSync(file, runCleanup(fs.readFileSync(file, 'utf8'), file, everything));
       }
 
       const after = buildAndRun(copy);

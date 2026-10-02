@@ -181,6 +181,16 @@ describe('formatRazor: continuations and indentation', () => {
     expect(formatRazor(input)).toBe(expected);
     expect(formatRazor(expected)).toBe(expected);
   });
+
+  it('puts an @else written on an indented line of its own at the indent of the chain', () => {
+    const input = '@if (a)\n{\n<p>x</p>\n}\n    @else if(b){\n<p>y</p>\n}';
+    const blankLine = '@if (a)\n{\n<p>x</p>\n}\n\n    @else{\n<p>y</p>\n}';
+    const expected = '@if (a)\n{\n    <p>x</p>\n}\n@else if (b)\n{\n    <p>y</p>\n}';
+
+    expect(formatRazor(input)).toBe(expected);
+    expect(formatRazor(expected)).toBe(expected);
+    expect(formatRazor(blankLine)).toBe('@if (a)\n{\n    <p>x</p>\n}\n\n@else\n{\n    <p>y</p>\n}');
+  });
 });
 
 describe('formatRazor: content it must not touch', () => {
@@ -211,6 +221,30 @@ describe('formatRazor: content it must not touch', () => {
   unchanged('a block alone on its line with markup on the brace line, followed by text', '<p>Total:\n@if (a) {<b>x</b>}\nitems</p>');
   unchanged('two blocks on consecutive lines with markup on the brace lines', '@if (a) {<b>x</b>}\n@if (b) {<i>y</i>}\n');
   unchanged('markup followed by code on its line inside the block', '@if (a) {\n<i>y</i>var x = 1;\n<b>z</b>\n}\n');
+  // Whitespace-significant elements nested in a statement of the block: their lines are rendered text.
+  unchanged('a pre element nested in a statement of a block', '@if(a){\nif(b){\n<pre>\nkeep\n  this\n</pre>\n}\n}\n');
+  unchanged('a textarea nested in a statement of a block', '@foreach(var x in xs){\nforeach(var y in x){\n<textarea>\nline1\nline2</textarea>\n}\n}');
+  // The lines of a multi-line literal in Razor code inside markup are part of its value.
+  unchanged('a verbatim string in a code block inside markup', '@if(a){\n<div>\n@{ var s = @"x\ny"; }\n<p>@s</p>\n</div>\n}');
+  unchanged('a verbatim string in an expression inside an attribute', '@if(a){\n<div title="@(@"x\ny")">\n</div>\n}');
+  // Rewriting every line ending as CRLF would change the LF lines inside literals and pre elements too.
+  unchanged('a file with mixed line endings', '<p>a</p>\r\n@if(a){\n<pre>\n  x\n</pre>\n}\r\n@code{\nstring s=@"a\nb";\n}\n');
+  // A line break inside a quoted attribute value is part of the value.
+  unchanged('a multi-line attribute value in markup of a block', '@if(a){\n<div data-x="one\n  two">\n</div>\n}');
+  unchanged('a multi-line attribute value nested in a statement of a block', "@if(a){\nif(b){\n<div data-x='one\n  two'>\n</div>\n}\n}");
+  // Razor reads an unterminated comment or code block up to the end of the file.
+  unchanged('a block after an unterminated Razor comment', '@* disabled:\n@if(a){var x=1;}');
+  unchanged('a block after an unterminated code block', '@{ var y = 1;\n@if(a){var x=1;}');
+
+  it('still formats a block whose markup has its attributes on lines of their own', () => {
+    const input = '@if(a){\n<div\n  id="x"\n  title="@(b ? "y" : "z")">\n</div>\n}';
+    expect(formatRazor(input)).toBe('@if (a)\n{\n    <div\n      id="x"\n      title="@(b ? "y" : "z")">\n    </div>\n}');
+  });
+
+  it('still formats a block whose markup holds Razor code without multi-line literals', () => {
+    const input = '@if(a){\n<div>\n@{ var s = "x"; }\n<p title="@(b ? "y" : "z")">@s</p>\n</div>\n}';
+    expect(formatRazor(input)).toBe('@if (a)\n{\n    <div>\n    @{ var s = "x"; }\n    <p title="@(b ? "y" : "z")">@s</p>\n    </div>\n}');
+  });
 
   it('still moves markup off the brace line when whitespace is rendered around it anyway', () => {
     const indentedNext = '<p>Total:\n    @if (a) {<b>x</b>}\n    items</p>';

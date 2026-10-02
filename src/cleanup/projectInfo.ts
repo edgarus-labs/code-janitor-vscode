@@ -1,6 +1,5 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { readMSBuildProject } from './msbuildProperties';
+import { findProjectFile, readMSBuildProject } from './msbuildProperties';
 
 /** What cleanup reads from the project file a C# file belongs to. */
 export interface ProjectInfo {
@@ -35,37 +34,19 @@ const NULLABLE_CONTEXTS: Record<string, true> = { enable: true, disable: true, a
 
 /**
  * The project of a C# file: the single `.csproj` in the nearest folder (from the file's folder up)
- * that has one. `undefined` when there is no such project or several project files share the folder.
+ * that has one ({@link findProjectFile}). `undefined` when there is no such project or several
+ * project files share the folder.
  */
 export function findProject(filePath: string): ProjectInfo | undefined {
-  if (!filePath.trim()) {
-    return undefined;
-  }
+  const projectFile = filePath.trim() ? findProjectFile(filePath) : undefined;
 
-  let directory = path.dirname(path.resolve(filePath));
-  for (;;) {
-    let projects: string[] = [];
-    try {
-      projects = fs.readdirSync(directory).filter((name) => name.toLowerCase().endsWith('.csproj'));
-    } catch {
-      return undefined;
-    }
-
-    if (projects.length > 0) {
-      return projects.length === 1 ? readProject(directory, projects[0]) : undefined;
-    }
-
-    const parent = path.dirname(directory);
-    if (parent === directory) {
-      return undefined;
-    }
-
-    directory = parent;
-  }
+  return projectFile ? readProject(projectFile) : undefined;
 }
 
-function readProject(directory: string, fileName: string): ProjectInfo | undefined {
-  const project = readMSBuildProject(path.join(directory, fileName));
+function readProject(projectFile: string): ProjectInfo | undefined {
+  const project = readMSBuildProject(projectFile);
+  const directory = path.dirname(projectFile);
+  const fileName = path.basename(projectFile);
   if (!project) {
     return undefined;
   }

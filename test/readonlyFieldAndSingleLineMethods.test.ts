@@ -287,3 +287,35 @@ describe('readonlyFieldConverter and writes inside interpolated strings', () => 
     expect(apply('class C { private string _s; string M() => $"{_s.Length}"; }')).toContain('private readonly string _s');
   });
 });
+
+describe('readonlyFieldConverter and defensive copies of struct fields', () => {
+  const apply = (input: string): string => readonlyFieldConverter.apply(input);
+
+  it.each([
+    ['int', 'private int _v; public C(int v) { _v = v; } public override string ToString() => _v.ToString();'],
+    ['nullable long', 'private long? _v; bool M() => _v.HasValue;'],
+    ['bool', 'private bool _v; bool M(bool o) => _v.Equals(o);'],
+    ['System.Int32', 'private System.Int32 _v; int M(int o) => _v.CompareTo(o);'],
+    ['Guid', 'private Guid _v; string M() => _v.ToString("N");'],
+    ['DateTime', 'private System.DateTime _v; int M() => _v.Year;'],
+    ['TimeSpan in a hole', 'private TimeSpan _v; string M() => $"{_v.TotalSeconds}";'],
+    ['same-file enum', 'private Kind _v; string M() => _v.ToString(); enum Kind { A }'],
+  ])('marks a field of an immutable value type readonly when its members are accessed: %s', (_name, members) => {
+    expect(apply(`class C { ${members} }`)).toMatch(/private readonly [\w.?]+ _v;/);
+  });
+
+  it.each([
+    ['struct', 'struct IOCounter { int n; public void Increment() => n++; }'],
+    ['record struct', 'record struct IOCounter(int N) { public int n; public void Increment() => n++; }'],
+  ])('keeps a field of a same-file %s whose name looks like an interface mutable', (_name, declaration) => {
+    const input = `class C { private IOCounter _c; void M() => _c.Increment(); } ${declaration}`;
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('keeps a field of a same-file struct that shadows a known immutable type mutable', () => {
+    const input = 'class C { private Guid _g; void M() => _g.Increment(); } struct Guid { int n; public void Increment() => n++; }';
+
+    expect(apply(input)).toBe(input);
+  });
+});

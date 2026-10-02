@@ -50,7 +50,15 @@ export type Receiver =
   | { readonly kind: 'this' }
   | { readonly kind: 'base' }
   | { readonly kind: 'conditional' }
-  | { readonly kind: 'expression'; readonly name?: string; readonly qualifiedName?: string };
+  | {
+      readonly kind: 'expression';
+      /** A simple-name receiver. */
+      readonly name?: string;
+      /** A qualified receiver (`A.B.Name`, `x.y.Name`): its last name. */
+      readonly qualifiedName?: string;
+      /** A qualified receiver made of names only: every name (`A.B<T>.C` gives `A`, `B`, `C`). */
+      readonly path?: readonly string[];
+    };
 
 export type OccurrenceRole =
   | { readonly kind: 'declaration' }
@@ -59,6 +67,7 @@ export type OccurrenceRole =
   | { readonly kind: 'type' }
   | { readonly kind: 'member'; readonly receiver: Receiver }
   | { readonly kind: 'namedArgument'; readonly call: Node }
+  /** `creation` is the object creation or `with` expression, undefined in a nested initializer. */
   | { readonly kind: 'initializerMember'; readonly creation: Node | undefined }
   | { readonly kind: 'skip' }
   | { readonly kind: 'projection' }
@@ -82,6 +91,7 @@ export interface SourceModel {
   readonly symbols: readonly DeclaredSymbol[];
   readonly symbolByNameNode: ReadonlyMap<Node, DeclaredSymbol>;
   readonly occurrencesByName: ReadonlyMap<string, readonly Occurrence[]>;
+  readonly symbolsByName: ReadonlyMap<string, readonly DeclaredSymbol[]>;
   /** Members containing constructs the parser could not structure reliably. */
   readonly opaqueRoots: ReadonlySet<Node>;
   /** `///` and `/** *\/` comments. */
@@ -295,6 +305,17 @@ class ModelBuilder {
       }
     }
 
+    this.excludeInterfaceImplementations();
+    const symbolsByName = new Map<string, DeclaredSymbol[]>();
+    for (const symbol of this.symbols) {
+      const list = symbolsByName.get(symbol.name);
+      if (list) {
+        list.push(symbol);
+      } else {
+        symbolsByName.set(symbol.name, [symbol]);
+      }
+    }
+
     return {
       source: this.source,
       root,
@@ -302,9 +323,66 @@ class ModelBuilder {
       symbols: this.symbols,
       symbolByNameNode: this.declarationNames,
       occurrencesByName,
+      symbolsByName,
       opaqueRoots: this.opaqueRoots,
       docComments: this.docComments,
     };
+  }
+
+  /**
+   * Roslyn does not analyze a member that implements an interface member. A public instance method,
+   * property or event of a class or struct implements one implicitly when an interface its type lists
+   * (or one of that interface's bases) declares the name; only interfaces declared in the file are known.
+   */
+  private excludeInterfaceImplementations(): void {
+    const interfaces = new Map<string, TypeInfo[]>();
+    for (const type of this.types.filter((candidate) => candidate.kind === 'interface')) {
+      interfaces.set(type.name, [...(interfaces.get(type.name) ?? []), type]);
+    }
+
+    if (interfaces.size === 0) {
+      return;
+    }
+
+    const implementsInterfaceMember = (type: TypeInfo, name: string): boolean => {
+      const pending = baseTypeNames(type.node);
+      const seen = new Set<string>();
+      while (pending.length > 0) {
+        const base = pending.pop() as string;
+        if (seen.has(base)) {
+          continue;
+        }
+
+        seen.add(base);
+        for (const declared of interfaces.get(base) ?? []) {
+          if (declared.memberNames.has(name)) {
+            return true;
+          }
+
+          pending.push(...baseTypeNames(declared.node));
+        }
+      }
+
+      return false;
+    };
+
+    this.symbols.forEach((symbol, index) => {
+      const type = symbol.type;
+      if (
+        symbol.analyzable &&
+        symbol.category === 'member' &&
+        (symbol.kind === 'method' || symbol.kind === 'property' || symbol.kind === 'event') &&
+        symbol.accessibility === 'public' &&
+        !symbol.modifiers.has('static') &&
+        (type?.kind === 'class' || type?.kind === 'struct') &&
+        type.hasBaseList &&
+        implementsInterfaceMember(type, symbol.name)
+      ) {
+        const excluded = { ...symbol, analyzable: false };
+        this.symbols[index] = excluded;
+        this.declarationNames.set(symbol.nameNode, excluded);
+      }
+    });
   }
 
   private declare(node: Node): void {
@@ -551,7 +629,8 @@ class ModelBuilder {
         type,
         regionPrecise: false,
         declaredType,
-        analyzable: true,
+        // An `override` event field implements its base event, which Roslyn does not analyze.
+        analyzable: !modifiers.has('override'),
         blocker: memberBlocker(type, accessibility, modifiers),
       });
     }
@@ -1065,6 +1144,26 @@ function declaredMemberNames(member: Node): string[] {
     : [];
 }
 
+/** Simple names of the base types in a type's base list (`Ns.List<int>` gives `List`). */
+export function baseTypeNames(typeNode: Node): string[] {
+  const list = typeNode.namedChildren.find((child) => child.type === 'base_list');
+  if (!list) {
+    return [];
+  }
+
+  return list.namedChildren.flatMap((base) => {
+    const named = base.type === 'primary_constructor_base_type' ? base.namedChildren[0] : base;
+    if (!named) {
+      return [];
+    }
+
+    const last = named.type === 'qualified_name' ? named.childForFieldName('name') ?? named : named;
+    const identifier = last.type === 'generic_name' ? last.namedChildren[0] : last;
+
+    return identifier?.type === 'identifier' ? [identifierName(identifier.text)] : [named.text];
+  });
+}
+
 /** Scope of a local declared by a statement: the enclosing block or switch section list. */
 function statementScope(node: Node): Node | undefined {
   const parent = node.parent;
@@ -1196,15 +1295,20 @@ function memberRole(access: Node): OccurrenceRole {
     return UNKNOWN_ROLE;
   }
 
+  return { kind: 'member', receiver: describeReceiver(receiver) };
+}
+
+/** How the receiver expression of a member access (or `with` expression) designates its type. */
+export function describeReceiver(receiver: Node): Receiver {
   if (receiver.type === 'this_expression') {
-    return { kind: 'member', receiver: { kind: 'this' } };
+    return { kind: 'this' };
   }
 
   if (receiver.type === 'base_expression') {
-    return { kind: 'member', receiver: { kind: 'base' } };
+    return { kind: 'base' };
   }
 
-  return { kind: 'member', receiver: expressionReceiver(receiver) };
+  return expressionReceiver(receiver);
 }
 
 function expressionReceiver(receiver: Node): Receiver {
@@ -1216,11 +1320,30 @@ function expressionReceiver(receiver: Node): Receiver {
     const last = receiver.type === 'generic_name' ? receiver.namedChildren[0] : receiver.childForFieldName('name');
     const lastName = last?.type === 'generic_name' ? last.namedChildren[0] : last;
     if (lastName?.type === 'identifier') {
-      return { kind: 'expression', qualifiedName: identifierName(lastName.text) };
+      return { kind: 'expression', qualifiedName: identifierName(lastName.text), path: namePath(receiver) };
     }
   }
 
   return { kind: 'expression' };
+}
+
+/** The names of a name or a dotted chain of names (`A.B<T>.C` gives `A`, `B`, `C`); undefined for anything else. */
+export function namePath(node: Node | null): string[] | undefined {
+  switch (node?.type) {
+    case 'identifier':
+      return [identifierName(node.text)];
+    case 'generic_name':
+      return namePath(node.namedChildren[0] ?? null);
+    case 'qualified_name':
+    case 'member_access_expression': {
+      const head = namePath(node.childForFieldName(node.type === 'qualified_name' ? 'qualifier' : 'expression'));
+      const name = namePath(node.childForFieldName('name'));
+
+      return head && name ? [...head, ...name] : undefined;
+    }
+    default:
+      return undefined;
+  }
 }
 
 function namedArgumentRole(argument: Node): OccurrenceRole {
@@ -1246,6 +1369,11 @@ function assignmentTargetRole(assignment: Node): OccurrenceRole {
 
     if (creation?.type === 'assignment_expression') {
       return { kind: 'initializerMember', creation: undefined };
+    }
+
+    // `value with { Name = ... }` sets a member of the value's type.
+    if (creation?.type === 'with_expression') {
+      return { kind: 'initializerMember', creation };
     }
 
     return REFERENCE_ROLE;
@@ -1325,15 +1453,22 @@ function holeRole(tokens: readonly { type: string; start: number; end: number }[
     }
 
     if (receiver?.type === 'identifier') {
-      const receiverName = identifierName(text.slice(receiver.start, receiver.end));
-      const beforeReceiver = tokens[index - 3]?.type;
-      return {
-        kind: 'member',
-        receiver:
-          beforeReceiver === '.' || beforeReceiver === '?.'
-            ? { kind: 'expression', qualifiedName: receiverName }
-            : { kind: 'expression', name: receiverName },
-      };
+      const nameAt = (token: { start: number; end: number }) => identifierName(text.slice(token.start, token.end));
+      const receiverName = nameAt(receiver);
+      if (tokens[index - 3]?.type !== '.' && tokens[index - 3]?.type !== '?.') {
+        return { kind: 'member', receiver: { kind: 'expression', name: receiverName } };
+      }
+
+      // `A.B.Name`: the names of the chain, unless it starts from something else (`x?.B`, `this.B`, `f().B`).
+      const path = [receiverName];
+      let first = index - 2;
+      while (tokens[first - 1]?.type === '.' && tokens[first - 2]?.type === 'identifier') {
+        first -= 2;
+        path.unshift(nameAt(tokens[first]));
+      }
+
+      const fromName = !['.', '?.', '::', '->'].includes(tokens[first - 1]?.type ?? '');
+      return { kind: 'member', receiver: { kind: 'expression', qualifiedName: receiverName, path: fromName ? path : undefined } };
     }
 
     return { kind: 'member', receiver: { kind: 'expression' } };

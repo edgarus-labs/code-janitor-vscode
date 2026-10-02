@@ -1,6 +1,10 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { CODE_STYLE_GROUPS, CODE_STYLE_RULES, formatCodeStyleSetting, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
+import { CODE_STYLE_GROUPS, CODE_STYLE_RULES, formatCodeStyleScopeSetting, formatCodeStyleSetting, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
 import { editorConfigOverrideNotes } from '../cleanup/overrideNotes';
+import { readRepositoryPolicy } from '../cleanup/repositoryOverrides';
+import { CleanupSettings } from '../cleanup/types';
+import { vscodeSettingOf } from './repositorySettings';
 import { readCleanupSettings } from './settings';
 
 /**
@@ -153,11 +157,11 @@ function humanize(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function nonEmpty(value: Record<string, string>): Record<string, string> | undefined {
+function nonEmpty<T>(value: Record<string, T>): Record<string, T> | undefined {
   return Object.keys(value).length > 0 ? value : undefined;
 }
 
-/** What the workspace's `.editorconfig` overrides, as the panel shows it (see `cleanup/overrideNotes.ts`). */
+/** What the workspace's `.editorconfig` and `.codejanitor` override, as the panel shows it (see `cleanup/overrideNotes.ts`). */
 export interface OverrideNotes {
   /** Note by setting id (`codeJanitor.cleanup.convertToVarWhenApparent`). */
   notes: Record<string, string>;
@@ -166,14 +170,30 @@ export interface OverrideNotes {
 }
 
 /**
- * The notes for the first workspace folder: a setting (or rule) `.editorconfig` decides there shows
- * `Overridden by .editorconfig: <key> in <path>` and is disabled. Nothing without a workspace.
+ * The notes for the first workspace folder: a setting (or rule) its `.codejanitor` lists, or its
+ * `.editorconfig` decides (which wins over both), shows `Overridden by <file>: <key> in <path>` and
+ * is disabled: changing it has no effect on cleanup there. Nothing without a workspace.
  */
 export function readOverrideNotes(): OverrideNotes {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const notes: OverrideNotes = { notes: {}, ruleNotes: {} };
   if (!root) {
     return notes;
+  }
+
+  const policy = readRepositoryPolicy(root);
+  if (policy.configPath) {
+    const pinned = (key: string): string => `Overridden by ${path.basename(policy.configPath!)}: ${key} in ${policy.configPath}`;
+    for (const key of Object.keys(policy.overrides) as (keyof CleanupSettings)[]) {
+      const setting = vscodeSettingOf(key);
+      if (setting !== undefined) {
+        notes.notes[`codeJanitor.cleanup.${setting}`] = pinned(setting);
+      }
+    }
+
+    for (const rule of Object.keys(policy.codeStyle)) {
+      notes.ruleNotes[rule] = pinned(rule);
+    }
   }
 
   const ruleKeys = new Set(CODE_STYLE_RULES.map((rule) => rule.key));
@@ -300,9 +320,15 @@ class SettingsPanel {
 
   private async update(key: string, value: unknown): Promise<void> {
     try {
-      // Only valid rules are stored (an empty selection is the default, which is not written).
-      const stored = key === CODE_STYLE_RULES_SETTING && value !== undefined ? nonEmpty(formatCodeStyleSetting(parseCodeStyleSetting(value))) : value;
-      await vscode.workspace.getConfiguration().update(key, stored, this.target);
+      const config = vscode.workspace.getConfiguration();
+      // Only valid rules are stored (an empty selection is the default, which is not written). VS Code
+      // merges the rules across scopes, so in Workspace scope a rule the User settings enable is turned
+      // off with `null`; nothing lies below the User scope.
+      const stored =
+        key === CODE_STYLE_RULES_SETTING && value !== undefined
+          ? nonEmpty(formatCodeStyleScopeSetting(parseCodeStyleSetting(value), this.scope === 'workspace' ? Object.keys(parseCodeStyleSetting(config.inspect(key)?.globalValue)) : []))
+          : value;
+      await config.update(key, stored, this.target);
     } catch (err) {
       void vscode.window.showErrorMessage(`Code Janitor: ${(err as Error).message}`);
     }
@@ -329,7 +355,9 @@ class SettingsPanel {
         const override =
           this.scope === 'workspace' ? inspected?.workspaceValue : inspected?.globalValue;
 
-        values[setting.key] = override ?? setting.defaultValue;
+        // The rule editor offers each value in its normalized form (`True` is `true`); invalid rules are not shown.
+        values[setting.key] =
+          setting.kind === 'codeStyleRules' && override !== undefined ? formatCodeStyleSetting(parseCodeStyleSetting(override)) : (override ?? setting.defaultValue);
       }
     }
 

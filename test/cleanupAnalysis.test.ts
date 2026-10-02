@@ -84,6 +84,19 @@ describe('analyzeCleanup', () => {
     expect(naming?.message).toContain("'count' should be named '_count'");
   });
 
+  it('points a naming violation at the name in the analyzed text when an earlier step rewrote its line', () => {
+    fs.appendFileSync(path.join(root, '.editorconfig'), '[*.cs]\ncsharp_style_namespace_declarations = file_scoped:warning\n');
+    fs.writeFileSync(path.join(root, 'Demo.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>');
+    const source = ['namespace Demo', '{', '    internal class Counter', '    {', '        private int count;', '', '        public int Count => count;', '    }', '}', ''].join('\n');
+    const settings = createDefaultSettings();
+
+    const naming = analyzeCleanup(source, filePath, settings).findings.find((finding) => finding.ruleId === 'IDE1006' && finding.fixable)!;
+
+    // `count` is at line 4, columns 20-25 of the analyzed text, whatever the file-scoped conversion did to it.
+    expect(naming).toMatchObject({ startLine: 4, endLine: 4, startCharacter: 20, endCharacter: 25 });
+    expect(fixFindingOccurrence(source, filePath, settings, naming)).toContain('        private int _count;\n\n        public int Count => _count;');
+  });
+
   it('applies one rule to the whole file and nothing else', () => {
     const output = applyRuleOnly(SOURCE, filePath, createDefaultSettings(), 'IDE0011');
 

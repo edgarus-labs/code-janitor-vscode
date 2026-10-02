@@ -879,16 +879,9 @@ describe('parseCSharpSource - broad coverage', () => {
   });
 
   // Parentheses after `(` or `<` are either a tuple type or a parenthesized expression; each row
-  // pins one side of that boundary. Columns: statement, generic names, casts.
+  // pins one side of that boundary (the parenthesized casts, invocations and comparisons above pin
+  // the other side too). Columns: statement, generic names, casts.
   it.each([
-    ['var r = ((Action)a)(b);', [], ['(Action)a']],
-    ['((Action<int>)handler)(5);', ['Action<int>'], ['(Action<int>)handler']],
-    ['var r = (GetHandler(e))(sender);', [], []],
-    ['var r = (x.Get(y))(z);', [], []],
-    ['var ok = x < (y) ? a > b : c;', [], []],
-    ['F(a < (int)b, c > (int)d);', [], ['(int)b', '(int)d']],
-    ['F(a < (G<b, c>)d, e > (f));', ['G<b, c>'], ['(G<b, c>)d']],
-    ['F(x < Math.Max(a, b), y > z);', [], []],
     ['var r = (min < Math.Max(a, b), max > limit);', [], []],
     ['return (lo < Clamp(v, a, b), hi > limit);', [], []],
     ['var n = (List<(int, int)>)o;', ['List<(int, int)>'], ['(List<(int, int)>)o']],

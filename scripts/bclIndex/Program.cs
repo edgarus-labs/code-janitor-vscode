@@ -39,7 +39,7 @@ foreach (var directory in args.Skip(1))
             foreach (var methodHandle in type.GetMethods())
             {
                 var method = reader.GetMethodDefinition(methodHandle);
-                if ((method.Attributes & System.Reflection.MethodAttributes.Public) != 0 && IsExtension(reader, method))
+                if ((method.Attributes & System.Reflection.MethodAttributes.MemberAccessMask) == System.Reflection.MethodAttributes.Public && IsExtension(reader, method))
                 {
                     Add(extensions, ns, reader.GetString(method.Name));
                 }

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { WorkspaceProject, discoverProjects } from '../naming/workspaceScope';
+import { WorkspaceProject, readProject } from '../naming/workspaceScope';
 import { DeclarationAggregate, DeclarationIndex, FileSummary, summarizeDeclarations } from './declarations';
 
 /** What the using-directive placement knows about the project a file belongs to. */
@@ -26,6 +26,7 @@ interface CachedProject {
   aggregate: DeclarationAggregate;
   summaries: Map<string, FileSummary>;
   externalReferences: boolean;
+  unindexedFramework: boolean;
   incomplete?: string;
 }
 
@@ -60,7 +61,7 @@ export function projectContextOf(filePath: string, source: string): ProjectConte
   const own = cached.summaries.get(file);
 
   return {
-    index: cached.aggregate.view(own, summarizeDeclarations(source)),
+    index: cached.aggregate.view(own, summarizeDeclarations(source), cached.unindexedFramework),
     externalReferences: cached.externalReferences,
     incomplete: cached.incomplete,
     projectFile: located.projectFile,
@@ -99,11 +100,11 @@ function loadProject(projectFile: string): CachedProject {
     return existing;
   }
 
-  const projects = referencedProjects(projectFile);
+  const { projects, problems } = referencedProjects(projectFile);
   const aggregate = new DeclarationAggregate();
   const summaries = new Map<string, FileSummary>();
-  const problems: string[] = [];
   let externalReferences = false;
+  let unindexedFramework = false;
 
   // The SDK writes the `<Using>` items of the project (`<ImplicitUsings>` adds some) into a generated file; they are global usings like the written ones.
   const msbuildUsings = msbuildGlobalUsingsOf(projects[0]);
@@ -113,14 +114,18 @@ function loadProject(projectFile: string): CachedProject {
 
   problems.push(...msbuildUsings.problems);
 
-  for (const project of projects) {
+  for (const [position, project] of projects.entries()) {
     if (project.problem) {
       problems.push(project.problem);
     }
 
-    externalReferences ||= hasExternalReferences(project);
+    const references = referencesOf(project);
+    externalReferences ||= references.external;
+    unindexedFramework ||= references.unindexedFramework;
     for (const file of project.csharpFiles) {
-      const summary = summaryOf(file);
+      const read = summaryOf(file);
+      // A `global using` applies only in the compilation that declares it: those of referenced projects do not reach this one.
+      const summary = read && position > 0 ? withoutGlobalUsings(read) : read;
       if (summary) {
         aggregate.add(summary);
         summaries.set(file, summary);
@@ -135,6 +140,7 @@ function loadProject(projectFile: string): CachedProject {
     aggregate,
     summaries,
     externalReferences,
+    unindexedFramework,
     ...(problems.length > 0 ? { incomplete: problems.join('; ') } : {}),
   };
   projectCache.set(projectFile, project);
@@ -142,32 +148,47 @@ function loadProject(projectFile: string): CachedProject {
   return project;
 }
 
-/** `projectFile` and the projects it references, directly or through other projects. */
-function referencedProjects(projectFile: string): WorkspaceProject[] {
-  const result: WorkspaceProject[] = [];
-  const seen = new Set<string>();
-  const pending: { file: string; depth: number }[] = [{ file: projectFile, depth: 0 }];
+/**
+ * `projectFile` and the projects it references, directly or through other projects, with why a reference
+ * contributes no declarations: MSBuild has to evaluate its path, or the project is not there.
+ */
+function referencedProjects(projectFile: string): { projects: WorkspaceProject[]; problems: string[] } {
+  const projects: WorkspaceProject[] = [];
+  const problems: string[] = [];
+  const seen: string[] = [];
+  const pending: { file: string; depth: number; from?: string }[] = [{ file: projectFile, depth: 0 }];
   while (pending.length > 0) {
-    const { file, depth } = pending.pop() as { file: string; depth: number };
-    if (seen.has(file)) {
+    const { file, depth, from } = pending.pop() as { file: string; depth: number; from?: string };
+    if (seen.some((other) => samePath(other, file))) {
       continue;
     }
 
-    seen.add(file);
-    const project = discoverProjects([path.dirname(file)]).find((candidate) => candidate.projectFile === file);
-    if (!project) {
+    seen.push(file);
+    // Only this project is read: listing the projects of its folder would read every project nested below it as well.
+    if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
+      problems.push(`the project ${file} referenced by ${from ?? projectFile} could not be found`);
       continue;
     }
 
-    result.push(project);
+    const project = readProject(file);
+    projects.push(project);
+    for (const unresolved of project.unresolvedReferences) {
+      problems.push(`${project.projectFile} references '${unresolved}', which MSBuild has to resolve`);
+    }
+
     if (depth < MAX_REFERENCE_DEPTH) {
       for (const reference of project.references) {
-        pending.push({ file: reference, depth: depth + 1 });
+        pending.push({ file: reference, depth: depth + 1, from: project.projectFile });
       }
     }
   }
 
-  return result;
+  return { projects, problems };
+}
+
+/** Windows paths are case-insensitive: `..\lib\Lib.csproj` names `Lib/Lib.csproj`. */
+function samePath(a: string, b: string): boolean {
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function summaryOf(file: string): FileSummary | undefined {
@@ -191,6 +212,12 @@ function summaryOf(file: string): FileSummary | undefined {
   } catch {
     return undefined;
   }
+}
+
+function withoutGlobalUsings(summary: FileSummary): FileSummary {
+  const keys = [...summary.keys];
+
+  return keys.some((key) => key.startsWith('G:')) ? { keys: new Set(keys.filter((key) => !key.startsWith('G:'))) } : summary;
 }
 
 const IMPLICIT_USINGS: Readonly<Record<string, readonly string[]>> = {
@@ -346,9 +373,14 @@ function msbuildGlobalUsingsOf(project: WorkspaceProject | undefined): { usings:
 }
 
 const EXTERNAL_REFERENCE = /<(?:PackageReference|Reference|FrameworkReference|COMReference|PackageVersion)\b/i;
+/** Windows Desktop (Windows Forms, WPF) or another shared framework than the two the index is generated from. */
+const UNINDEXED_FRAMEWORK = /<(?:UseWPF|UseWindowsForms)>\s*true\s*<|<FrameworkReference\s[^>]*\bInclude\s*=\s*"(?!Microsoft\.(?:NETCore|AspNetCore)\.App")|\bSdk\s*=\s*"Microsoft\.NET\.Sdk\.WindowsDesktop"/i;
 
-/** True when the project, its `Directory.Build.*` files or its SDK add assemblies the index does not list. */
-function hasExternalReferences(project: WorkspaceProject): boolean {
+/**
+ * What the project, its `Directory.Build.*` files or its SDK reference besides what the index lists: assemblies (`external`),
+ * among them a framework (`unindexedFramework`) that adds types and extension methods to the namespaces of the listed ones.
+ */
+function referencesOf(project: WorkspaceProject): { external: boolean; unindexedFramework: boolean } {
   const texts: string[] = [];
   const read = (file: string): void => {
     try {
@@ -369,10 +401,15 @@ function hasExternalReferences(project: WorkspaceProject): boolean {
     }
   }
 
-  return (
-    texts.some((text) => EXTERNAL_REFERENCE.test(text)) ||
-    // A project SDK other than the plain one brings its own references (web, Razor, MSTest, ...).
-    /<Project\s[^>]*\bSdk\s*=\s*"(?!Microsoft\.NET\.Sdk")/i.test(texts[0] ?? '') ||
-    fs.existsSync(path.join(project.directory, 'packages.config'))
-  );
+  const unindexedFramework = texts.some((text) => UNINDEXED_FRAMEWORK.test(text));
+
+  return {
+    external:
+      unindexedFramework ||
+      texts.some((text) => EXTERNAL_REFERENCE.test(text)) ||
+      // A project SDK other than the plain one brings its own references (web, Razor, MSTest, ...).
+      /<Project\s[^>]*\bSdk\s*=\s*"(?!Microsoft\.NET\.Sdk")/i.test(texts[0] ?? '') ||
+      fs.existsSync(path.join(project.directory, 'packages.config')),
+    unindexedFramework,
+  };
 }

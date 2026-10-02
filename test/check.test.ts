@@ -1,14 +1,14 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkPaths } from '../src/cli/check';
 
 const EDITORCONFIG = ['root = true', '', '[*.cs]', 'csharp_prefer_braces = true:warning', 'dotnet_naming_rule.public_fields.symbols = public_fields', 'dotnet_naming_rule.public_fields.style = pascal', 'dotnet_naming_rule.public_fields.severity = error', 'dotnet_naming_symbols.public_fields.applicable_kinds = field', 'dotnet_naming_symbols.public_fields.applicable_accessibilities = public', 'dotnet_naming_style.pascal.capitalization = pascal_case', ''].join('\n');
 
 const CLEAN = 'namespace Demo;\n\ninternal class Clean\n{\n    public int Total;\n}\n';
 
-describe('checkPaths (code-janitor check)', () => {
+describe('checkPaths (check mode, npm run check)', () => {
   let root: string;
 
   beforeEach(() => {
@@ -88,6 +88,18 @@ describe('checkPaths (code-janitor check)', () => {
     expect(report.exitCode).toBe(0);
   });
 
+  it('lists an enabled Code Style rule cleanup does not implement as a note', async () => {
+    fs.writeFileSync(path.join(root, 'src', '.codejanitor'), JSON.stringify({ cleanup: { codeStyle: { dotnet_style_predefined_type_for_locals_parameters_members: 'false' } } }));
+
+    const report = await checkPaths([path.join(root, 'src', 'Clean.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Clean.cs: note: Code Style rule dotnet_style_predefined_type_for_locals_parameters_members = false (IDE0049) is not implemented by Code Janitor for VS Code, so it was not applied.',
+      'Code Janitor check: 1 file(s) checked, all clean.',
+    ]);
+    expect(report.exitCode).toBe(0);
+  });
+
   it('fails on an enforced .editorconfig rule cleanup cannot apply, naming the option once', async () => {
     fs.appendFileSync(path.join(root, '.editorconfig'), 'csharp_style_namespace_declarations = file_scoped:warning\n');
     fs.writeFileSync(path.join(root, 'src', 'Legacy.csproj'), '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <LangVersion>7.3</LangVersion>\n  </PropertyGroup>\n</Project>\n');
@@ -100,5 +112,40 @@ describe('checkPaths (code-janitor check)', () => {
       'Code Janitor check: 1 file(s) checked, 0 would change, 1 violation(s) cleanup cannot fix.',
     ]);
     expect(report.exitCode).toBe(1);
+  });
+
+  it('skips a file passed explicitly when it is not a .cs file', async () => {
+    fs.writeFileSync(path.join(root, 'src', 'readme.md'), 'hello  \n');
+
+    const report = await checkPaths([path.join(root, 'src', 'readme.md'), path.join(root, 'src', 'Clean.cs')], root);
+
+    expect(report.lines).toEqual(['Code Janitor check: 1 file(s) checked, all clean.']);
+    expect(report.exitCode).toBe(0);
+  });
+
+  it('keeps at most one source file open at a time, so large folders do not exhaust file descriptors', async () => {
+    for (let index = 0; index < 20; index++) {
+      fs.writeFileSync(path.join(root, 'src', `Many${index}.cs`), `namespace Demo;\n\ninternal class Many${index}\n{\n}\n`);
+    }
+    const readFile = fs.promises.readFile;
+    let open = 0;
+    let mostOpen = 0;
+    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (...args: Parameters<typeof readFile>) => {
+      mostOpen = Math.max(mostOpen, ++open);
+      try {
+        return await readFile(...args);
+      } finally {
+        open--;
+      }
+    });
+
+    try {
+      const report = await checkPaths([path.join(root, 'src')], root);
+
+      expect(report.lines.at(-1)).toBe('Code Janitor check: 21 file(s) checked, all clean.');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mostOpen).toBe(1);
   });
 });

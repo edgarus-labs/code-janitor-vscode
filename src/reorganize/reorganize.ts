@@ -63,6 +63,13 @@ export function reorganizeSourceDetailed(
     return unchanged();
   }
 
+  // The parser reads a byte order mark as an identifier: reorganize the text after it and keep the mark.
+  if (source.startsWith('\uFEFF')) {
+    const result = reorganizeSourceDetailed(source.slice(1), settings, cleanup);
+
+    return { ...result, output: `\uFEFF${result.output}` };
+  }
+
   // Preprocessor conditionals are only reorganized when the policy says yes; 'ask' needs a user to ask.
   if (settings.performWhenPreprocessorConditionals !== 'yes' && hasPreprocessorConditionals(source)) {
     return unchanged([], true);
@@ -187,7 +194,7 @@ class Session {
     const label = `${plan.kind === 'unit' ? 'file' : plan.typeName || plan.kind} (line ${(plan.node.parent ?? plan.node).startPosition.row + 1})`;
 
     if (hasBrokenSyntax(plan.node)) {
-      this.skip(label, 'it has syntax the parser does not understand');
+      this.skip(label, 'syntax the parser does not understand');
 
       return;
     }
@@ -487,7 +494,7 @@ class Session {
       .sort((a, b) => this.compare(a.key, b.key))
       .map((item) => item.index);
 
-    const predecessors = initializationConstraints(members);
+    const predecessors = orderConstraints(members);
     const placed = new Set<number>();
     const remaining = [...wanted];
     const ordered: MemberEntry[] = [];
@@ -629,8 +636,9 @@ function hasFixedLayout(node: Node): boolean {
   );
 }
 
+/** `[global::System.Runtime.InteropServices.StructLayout(...)]` -> `System.Runtime.InteropServices.StructLayout`. */
 function attributeName(attribute: Node): string {
-  return attribute.text.replace(/\(.*$/s, '').trim();
+  return attribute.text.replace(/\(.*$/s, '').trim().replace(/^global\s*::\s*/, '');
 }
 
 /** The parser reports a semicolon after a member and assembly attributes that no declaration follows as incomplete declarations. */
@@ -683,14 +691,19 @@ function sortableOf(info: MemberInfo, offset: number): SortableMember {
   };
 }
 
-/** For each member, the members declared before it that must stay before it. */
-function initializationConstraints(members: readonly MemberEntry[]): Map<number, number[]> {
+/**
+ * For each member, the members declared before it that must stay before it: initializers that depend on
+ * declaration order, and parts of the same partial type (whose initializers run in the order of the parts).
+ */
+function orderConstraints(members: readonly MemberEntry[]): Map<number, number[]> {
   const constraints = new Map<number, number[]>();
-  const bearing = members.flatMap((member, index) => (member.info.init !== NO_INIT ? [index] : []));
+  const bearing = members.flatMap((member, index) => (member.info.init !== NO_INIT || member.info.partialTypes.size > 0 ? [index] : []));
 
   bearing.forEach((second, position) => {
     for (const first of bearing.slice(0, position)) {
-      if (mustKeepOrder(members[first].info.init, members[second].info.init)) {
+      const a = members[first].info;
+      const b = members[second].info;
+      if (mustKeepOrder(a.init, b.init) || [...b.partialTypes].some((name) => a.partialTypes.has(name))) {
         constraints.set(second, [...(constraints.get(second) ?? []), first]);
       }
     }

@@ -176,4 +176,53 @@ describe('reorganize: initializers that depend on declaration order', () => {
 
     expect(members(reorganize(source))).toEqual(['A', 'B']);
   });
+
+  it('keeps initializers that increment a field with postfix ++ or -- in order', () => {
+    // Each `counter++` both reads and changes counter: swapping them swaps the values a and b get.
+    const staticForm = 'class C\n{\n    static int counter;\n    static int b = counter++;\n    static int a = counter--;\n}\n';
+    const instanceForm = 'class C\n{\n    static int counter;\n    int b = counter++;\n    int a = counter++;\n}\n';
+
+    expect(members(reorganize(staticForm))).toEqual(['b', 'a', 'counter']);
+    expect(members(reorganize(instanceForm))).toEqual(['counter', 'b', 'a']);
+  });
+
+  it('keeps an instance initializer reading a static field after one that runs code, which may change it', () => {
+    const increment = 'class C\n{\n    static int counter;\n    int z = ++counter;\n    int b = counter;\n}\n';
+    const call = 'class C\n{\n    static int counter = 0;\n    int z = Next();\n    int b = counter;\n    static int Next() => ++counter;\n}\n';
+
+    expect(members(reorganize(increment))).toEqual(['counter', 'z', 'b']);
+    expect(members(reorganize(call))).toEqual(['counter', 'z', 'b', 'Next']);
+  });
+
+  it('follows a read through the generic type name and treats another generic type as running code', () => {
+    // B = C<T>.Z + 1 reads Z; G<int>.V may run G's static constructor, which may read Z.
+    const self = 'class C<T>\n{\n    public static int Z = 1;\n    public static int B = C<T>.Z + 1;\n}\n';
+    const other = 'class C\n{\n    public static int Z = 1;\n    public static int B = G<int>.V + 1;\n}\n';
+    const library = 'class C\n{\n    public static int Z = 1;\n    public static EqualityComparer<int> B = EqualityComparer<int>.Default;\n}\n';
+
+    expect(members(reorganize(self))).toEqual(['Z', 'B']);
+    expect(members(reorganize(other))).toEqual(['Z', 'B']);
+    expect(members(reorganize(library))).toEqual(['B', 'Z']);
+  });
+
+  it('keeps the parts of a partial type in order, since their initializers run in declaration order', () => {
+    // B = A + 1 reads A from the earlier part: swapping the parts makes B read the default of A.
+    const access = 'partial class C\n{\n    public static int A = 1;\n}\n\npublic partial class C\n{\n    public static int B = A + 1;\n}\n';
+    const staticPart = 'partial class C\n{\n    public static int A = 1;\n}\n\nstatic partial class C\n{\n    public static int B = A + 1;\n}\n';
+    const conditional = 'partial class C\n{\n    public static int A = 1;\n}\n\n#if DEBUG\npublic class Helper\n{\n}\n\npublic partial class C\n{\n    public static int B = A + 1;\n}\n#endif\n';
+
+    expect(reorganize(access)).toBe(access);
+    expect(reorganize(staticPart)).toBe(staticPart);
+    expect(reorganize(conditional, { performWhenPreprocessorConditionals: 'yes' })).toBe(conditional);
+  });
+
+  it('treats a value converted to a type declared in the program as running a conversion operator', () => {
+    // Alpha = 2 runs `implicit operator Meters(int)`, which reads Scale: Scale must stay before Alpha.
+    const literal =
+      'struct Meters\n{\n    static readonly int Scale = 10;\n    static readonly Meters Alpha = 2;\n    int value;\n    public static implicit operator Meters(int v) => new Meters { value = v * Scale };\n}\n';
+    const cast = 'class C\n{\n    static int Scale = 10;\n    static Meters Alpha = (Meters)2;\n}\n';
+
+    expect(members(reorganize(literal))).toEqual(['Scale', 'Alpha', 'value', 'Meters']);
+    expect(members(reorganize(cast))).toEqual(['Scale', 'Alpha']);
+  });
 });

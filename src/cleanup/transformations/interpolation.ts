@@ -216,7 +216,10 @@ function readHole(text: string, start: number, braces: number): { text: string; 
   return { text: formatFree(text.slice(start)), nested, end: text.length };
 }
 
-/** The expression of a hole without its alignment or format part (`x,10:D3` -> `x`), keeping a conditional's `:`. */
+/**
+ * A hole without its format part (`x,10:D3` -> `x,10`), keeping a conditional's `:`. The alignment
+ * stays: a top-level `,` can also separate type arguments (`F<A, B>()`), which this scan cannot tell apart.
+ */
 function formatFree(hole: string): string {
   let depth = 0;
   for (let i = 0; i < hole.length; i++) {

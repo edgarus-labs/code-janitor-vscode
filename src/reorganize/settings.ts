@@ -97,17 +97,6 @@ export function createDefaultReorganizeSettings(): ReorganizeSettings {
   };
 }
 
-/** `Fields||1||Member Variables` (the VS serialization of one member type setting). */
-export function serializeMemberTypeSetting(defaultName: string, setting: MemberTypeSetting): string {
-  return `${defaultName}||${setting.order}||${setting.name}`;
-}
-
-export function parseMemberTypeSetting(text: string): { defaultName: string; order: number; effectiveName: string } | undefined {
-  const match = /^(\w+)\|\|(\d+)\|\|(.*)$/.exec(text);
-
-  return match ? { defaultName: match[1], order: Number(match[2]), effectiveName: match[3] } : undefined;
-}
-
 const FLAG_KEYS = [
   'alphabetizeMembersOfTheSameGroup',
   'explicitMembersAtEnd',

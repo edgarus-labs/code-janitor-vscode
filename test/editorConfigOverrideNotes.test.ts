@@ -62,6 +62,8 @@ describe('override notes', () => {
     ['dotnet_style_allow_multiple_blank_lines_experimental = false', 'removeMultipleConsecutiveBlankLines', 'dotnet_style_allow_multiple_blank_lines_experimental'],
     ['csharp_prefer_braces = when_multiline:warning', 'csharp_prefer_braces', 'csharp_prefer_braces'],
     ['dotnet_diagnostic.IDE0003.severity = error', 'dotnet_style_qualification_for_event', 'dotnet_diagnostic.ide0003.severity'],
+    ['dotnet_sort_system_directives_first = true', 'organizeUsings', 'dotnet_sort_system_directives_first'],
+    ['dotnet_separate_import_directive_groups = true', 'organizeUsings', 'dotnet_separate_import_directive_groups'],
   ])('names the key and the defining file for %s', (option, settingName, key) => {
     const configPath = writeEditorConfig(workspace, false, option);
 
@@ -106,6 +108,7 @@ describe('override notes', () => {
         'inlineOutVariableDeclarations',
         'makeFieldsReadonlyWhenSafe',
         'moveUsingsOutsideNamespace',
+        'organizeUsings',
         'removeEndOfLineWhitespace',
       ].sort()
     );

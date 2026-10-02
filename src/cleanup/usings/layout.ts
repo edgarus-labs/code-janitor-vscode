@@ -190,7 +190,8 @@ export function analyzeLayout(source: string): Layout {
         depth++;
       } else if (type === '}' || type === ')' || type === ']') {
         depth--;
-        if (depth === 0 && type === '}') {
+        // A member ends at its closing brace; an attribute list (`[assembly: X]` in front of a namespace) at its `]`.
+        if (depth === 0 && (type === '}' || (type === ']' && tokens[from].type === '['))) {
           return i + 1;
         }
 

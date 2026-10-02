@@ -187,8 +187,8 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
   // Outside its constructor, a readonly field of a mutable struct is copied before each member
   // access, so a call that changed it would change the copy instead
   // (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/readonly#readonly-field-example).
-  // Unless the field's type is known to be a reference type, it must not be accessed that way,
-  // inside an interpolation hole (only visible in the literal's text) either.
+  // Unless the field's type is known to be a reference type or an immutable value type, it must not
+  // be accessed that way, inside an interpolation hole (only visible in the literal's text) either.
   const type = declaration?.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '';
   let root: Node = typeDeclaration;
   while (root.parent) {
@@ -196,7 +196,7 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
   }
 
   return (
-    isKnownReferenceType(type, root) ||
+    isCopySafeType(type, root) ||
     ![...scopeNodes(typeDeclaration)].some(
       (node) =>
         (node.type === 'interpolated_string_expression'
@@ -212,16 +212,34 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
 const KNOWN_REFERENCE_TYPES =
   /^(?:(?:System\.)?(?:string|object|String|Object|Random|Exception|Type|Uri|Task|StringBuilder|Stopwatch|SemaphoreSlim|CancellationTokenSource|HttpClient|Regex|Timer)|(?:List|Dictionary|HashSet|Queue|Stack|SortedDictionary|SortedList|SortedSet|LinkedList|ConcurrentDictionary|ConcurrentQueue|ConcurrentBag|Lazy|Func|Action|Task|ObservableCollection|Collection|WeakReference)<.+>|I[A-Z]\w*(?:<.+>)?|.+\[\])\??$/;
 
-function isKnownReferenceType(type: string, root: Node): boolean {
-  if (KNOWN_REFERENCE_TYPES.test(type)) {
-    return true;
+/** Built-in and BCL value types without mutating members: a defensive copy of them cannot change behavior. */
+const KNOWN_IMMUTABLE_VALUE_TYPES =
+  /^(?:bool|byte|sbyte|char|decimal|double|float|int|uint|nint|nuint|long|ulong|short|ushort|(?:System\.)?(?:Boolean|Byte|SByte|Char|Decimal|Double|Single|Half|Int16|Int32|Int64|Int128|UInt16|UInt32|UInt64|UInt128|IntPtr|UIntPtr|Guid|DateTime|DateTimeOffset|DateOnly|TimeOnly|TimeSpan|Index|Range)|(?:System\.Threading\.)?CancellationToken)\??$/;
+
+/**
+ * Whether member accesses on a readonly field of this type can never act on a defensive copy that
+ * matters: reference types, and value types without mutating members. A same-file struct is never
+ * assumed safe, even if its name matches a known type or the `I[A-Z]` interface heuristic.
+ */
+function isCopySafeType(type: string, root: Node): boolean {
+  const name = type.replace(/\?$/, '').replace(/<.*>$/, '');
+  const declarations = findAll(root, [
+    'class_declaration',
+    'struct_declaration',
+    'interface_declaration',
+    'delegate_declaration',
+    'record_declaration',
+    'enum_declaration',
+  ]).filter((declaration) => declaration.childForFieldName('name')?.text === name);
+  const isSameFileStruct = declarations.some(
+    (declaration) =>
+      declaration.type === 'struct_declaration' || declaration.children.some((child) => child.type === 'struct')
+  );
+  if (isSameFileStruct) {
+    return false;
   }
 
-  const name = type.replace(/\?$/, '').replace(/<.*>$/, '');
-
-  return findAll(root, ['class_declaration', 'interface_declaration', 'delegate_declaration', 'record_declaration']).some(
-    (declaration) => declaration.childForFieldName('name')?.text === name && !declaration.children.some((child) => child.type === 'struct')
-  );
+  return KNOWN_REFERENCE_TYPES.test(type) || KNOWN_IMMUTABLE_VALUE_TYPES.test(type) || declarations.length > 0;
 }
 
 /** Every descendant of the type, including any nested type declarations it contains. */

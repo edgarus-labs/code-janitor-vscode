@@ -107,8 +107,6 @@ describe('precedence: .editorconfig, then .codejanitor, then user settings', () 
     const effective = resolveEffectiveCleanupSettings('', { ...createDefaultSettings(), ...user });
 
     expect(effective.settings.convertToVarWhenApparent).toBe(true);
-    expect(effective.namespaceDeclarations).toBe('fileScoped');
-    expect(effective.usingDirectivePlacement).toBe('unchanged');
     expect(effective.settings.removeRegions).toBe(true);
     expect(effective.settings.organizeUsings).toBe(false);
     expect(effective.editorConfigKeys.size).toBe(0);
@@ -121,7 +119,6 @@ describe('namespace declarations', () => {
 
     const effective = resolve({ convertToFileScopedNamespace: false });
 
-    expect(effective.namespaceDeclarations).toBe('fileScoped');
     expect(effective.settings.convertToFileScopedNamespace).toBe(true);
   });
 
@@ -131,17 +128,7 @@ describe('namespace declarations', () => {
 
     const effective = resolve({ convertToFileScopedNamespace: true });
 
-    expect(effective.namespaceDeclarations).toBe('blockScoped');
     expect(effective.settings.convertToFileScopedNamespace).toBe(false);
-  });
-
-  it.each([
-    [true, false, 'fileScoped'],
-    [false, true, 'unchanged'],
-  ] as const)('lets the repository policy (%s) beat the user setting (%s) when .editorconfig is silent', (policy, userSetting, expected) => {
-    writePolicy(`"convertToFileScopedNamespace": ${policy}`);
-
-    expect(resolve({ convertToFileScopedNamespace: userSetting }).namespaceDeclarations).toBe(expected);
   });
 
   it('enforces a silent option through the diagnostic severity', () => {
@@ -149,7 +136,6 @@ describe('namespace declarations', () => {
 
     const effective = resolve({ convertToFileScopedNamespace: false });
 
-    expect(effective.namespaceDeclarations).toBe('fileScoped');
     expect(effective.settings.convertToFileScopedNamespace).toBe(true);
     expect(keyOf(effective, 'convertToFileScopedNamespace')).toBe('csharp_style_namespace_declarations');
   });
@@ -159,7 +145,7 @@ describe('namespace declarations', () => {
 
     const effective = resolve({ convertToFileScopedNamespace: true });
 
-    expect(effective.namespaceDeclarations).toBe('fileScoped');
+    expect(effective.settings.convertToFileScopedNamespace).toBe(true);
     expect(keyOf(effective, 'convertToFileScopedNamespace')).toBeUndefined();
   });
 
@@ -169,47 +155,32 @@ describe('namespace declarations', () => {
 
     const effective = resolve({ convertToFileScopedNamespace: false });
 
-    expect(effective.namespaceDeclarations).toBe('fileScoped');
     expect(effective.settings.convertToFileScopedNamespace).toBe(true);
   });
 });
 
 describe('using directive placement', () => {
   it.each([
-    ['inside_namespace', true, 'insideNamespace', false],
-    ['outside_namespace:suggestion', false, 'outsideNamespace', true],
-  ] as const)('lets %s beat the user setting', (option, userSetting, expected, expectedMoveOutside) => {
+    ['inside_namespace', true, false],
+    ['outside_namespace:suggestion', false, true],
+  ] as const)('lets %s beat the user setting', (option, userSetting, expectedMoveOutside) => {
     writeRootEditorConfig(`csharp_using_directive_placement = ${option}`);
 
     const effective = resolve({ moveUsingsOutsideNamespace: userSetting });
 
-    expect(effective.usingDirectivePlacement).toBe(expected);
     expect(effective.settings.moveUsingsOutsideNamespace).toBe(expectedMoveOutside);
   });
 
   it.each([
-    [undefined, true, 'outsideNamespace'],
-    [undefined, false, 'unchanged'],
-    [false, true, 'unchanged'],
-    [true, false, 'outsideNamespace'],
-  ] as const)('lets the repository policy (%s) beat the user setting (%s) when .editorconfig is silent', (policy, userSetting, expected) => {
-    if (policy !== undefined) {
-      writePolicy(`"moveUsingsOutsideNamespace": ${policy}`);
-    }
-
-    expect(resolve({ moveUsingsOutsideNamespace: userSetting }).usingDirectivePlacement).toBe(expected);
-  });
-
-  it.each([
-    ['csharp_using_directive_placement = inside_namespace:warning', 'dotnet_diagnostic.IDE0065.severity = none', 'outsideNamespace', false],
-    ['csharp_using_directive_placement = inside_namespace:silent', 'dotnet_diagnostic.IDE0065.severity = warning', 'insideNamespace', true],
-    [undefined, 'dotnet_diagnostic.IDE0065.severity = warning', 'outsideNamespace', true],
-  ] as const)('resolves %s with the diagnostic severity %s', (option, severity, expected, locked) => {
+    ['csharp_using_directive_placement = inside_namespace:warning', 'dotnet_diagnostic.IDE0065.severity = none', true, false],
+    ['csharp_using_directive_placement = inside_namespace:silent', 'dotnet_diagnostic.IDE0065.severity = warning', false, true],
+    [undefined, 'dotnet_diagnostic.IDE0065.severity = warning', true, true],
+  ] as const)('resolves %s with the diagnostic severity %s', (option, severity, expectedMoveOutside, locked) => {
     writeRootEditorConfig(option, severity);
 
     const effective = resolve({ moveUsingsOutsideNamespace: true });
 
-    expect(effective.usingDirectivePlacement).toBe(expected);
+    expect(effective.settings.moveUsingsOutsideNamespace).toBe(expectedMoveOutside);
     expect(effective.editorConfigKeys.has('moveUsingsOutsideNamespace')).toBe(locked);
   });
 });
@@ -224,28 +195,35 @@ describe('plain options', () => {
     expect(resolve({ removeEndOfLineWhitespace: userSetting }).settings.removeEndOfLineWhitespace).toBe(expected);
   });
 
+  const SORT = 'dotnet_sort_system_directives_first';
+  const SEPARATE = 'dotnet_separate_import_directive_groups';
   it.each([
-    ['true', 'false', undefined, true, 'System first, groups not separated'],
-    ['true', undefined, false, true, 'System first beats policy opt-out'],
-    ['true', 'true', true, false, 'separated groups beat policy'],
-    ['false', undefined, true, false, 'System not first beats policy'],
-    ['true:none', 'true:none', true, true, 'none is ignored, policy decides'],
-    [undefined, 'false', true, true, 'sort order undefined falls back to policy'],
-    [undefined, undefined, true, true, 'editorconfig silent uses policy'],
-    [undefined, undefined, undefined, false, 'nothing configured'],
-    ['true:none', undefined, undefined, false, 'System first ignored by none, no policy'],
-    ['true:none', undefined, false, false, 'System first ignored by none, policy opt-out'],
-  ] as const)('decides organizing usings from the sort order %s, separated groups %s and policy %s: %s', (sortSystemFirst, separateGroups, policy, expected, _reason) => {
-    writeRootEditorConfig(
-      sortSystemFirst === undefined ? undefined : `dotnet_sort_system_directives_first = ${sortSystemFirst}`,
-      separateGroups === undefined ? undefined : `dotnet_separate_import_directive_groups = ${separateGroups}`
-    );
-    if (policy !== undefined) {
-      writePolicy(`"organizeUsings": ${policy}`);
-    }
+    ['true', 'false', undefined, true, SORT, 'System first, groups not separated'],
+    ['true', undefined, false, true, SORT, 'System first beats policy opt-out'],
+    ['true', 'true', true, false, SEPARATE, 'separated groups beat policy'],
+    ['false', undefined, true, false, SORT, 'System not first beats policy'],
+    ['true:none', 'true:none', true, true, undefined, 'none is ignored, policy decides'],
+    [undefined, 'false', true, true, undefined, 'sort order undefined falls back to policy'],
+    [undefined, undefined, true, true, undefined, 'editorconfig silent uses policy'],
+    [undefined, undefined, undefined, false, undefined, 'nothing configured'],
+    ['true:none', undefined, undefined, false, undefined, 'System first ignored by none, no policy'],
+    ['true:none', undefined, false, false, undefined, 'System first ignored by none, policy opt-out'],
+  ] as const)(
+    'decides organizing usings from the sort order %s, separated groups %s and policy %s: %s (deciding key %s)',
+    (sortSystemFirst, separateGroups, policy, expected, decidingKey, _reason) => {
+      writeRootEditorConfig(
+        sortSystemFirst === undefined ? undefined : `${SORT} = ${sortSystemFirst}`,
+        separateGroups === undefined ? undefined : `${SEPARATE} = ${separateGroups}`
+      );
+      if (policy !== undefined) {
+        writePolicy(`"organizeUsings": ${policy}`);
+      }
 
-    expect(resolve().settings.organizeUsings).toBe(expected);
-  });
+      const effective = resolve();
+      expect(effective.settings.organizeUsings).toBe(expected);
+      expect(effective.editorConfigKeys.get('organizeUsings')).toBe(decidingKey);
+    }
+  );
 });
 
 describe('linked options', () => {
@@ -433,10 +411,9 @@ describe('linked options', () => {
 
     const effective = resolve({ convertToFileScopedNamespace: true, moveUsingsOutsideNamespace: true, convertToVarWhenApparent: true });
 
-    expect(effective.namespaceDeclarations).toBe('unchanged');
     expect(effective.settings.convertToFileScopedNamespace).toBe(false);
     expect(effective.settings.convertToVarWhenApparent).toBe(false);
-    expect(effective.usingDirectivePlacement).toBe('outsideNamespace');
+    expect(effective.settings.moveUsingsOutsideNamespace).toBe(true);
   });
 });
 
@@ -487,11 +464,10 @@ describe('bulk severities', () => {
     expect(effective.codeStyleValues.size).toBe(0);
     expect(effective.analyzerConfigOverrides.size).toBe(0);
     expect(effective.settings.makeFieldsReadonlyWhenSafe).toBe(true);
-    expect(effective.namespaceDeclarations).toBe('blockScoped');
     expect(effective.settings.convertToFileScopedNamespace).toBe(false);
   });
 
-  it('applies a category severity only to the enabled-by-default diagnostics of that category', () => {
+  it('applies a category severity to the bulk-configurable diagnostics of that category', () => {
     writeRootEditorConfig('dotnet_analyzer_diagnostic.category-Performance.severity = warning');
 
     const effective = resolve({
@@ -502,16 +478,19 @@ describe('bulk severities', () => {
     });
 
     expect(effective.settings.reuseJsonSerializerOptionsForCA1869, 'CA1869 is an enabled Performance rule').toBe(true);
-    expect(effective.settings.sealClassesWhenSafe, 'CA1852 is disabled by default, so bulk severities do not enable it').toBe(false);
-    expect(effective.editorConfigKeys.has('sealClassesWhenSafe')).toBe(false);
+    expect(effective.settings.sealClassesWhenSafe, 'CA1852 is bulk-configurable, so the category severity enables it').toBe(true);
+    expect(effective.editorConfigKeys.get('sealClassesWhenSafe')).toBe('dotnet_analyzer_diagnostic.category-performance.severity');
     expect(effective.settings.convertToStringNameOf, 'CA1507 is a Maintainability rule').toBe(false);
     expect(effective.codeStyleEditorConfigKeys.has('csharp_prefer_braces')).toBe(false);
   });
 
-  it('enables CA1852 only through its own diagnostic severity, whatever the bulk severity says', () => {
+  it("lets CA1852's own severity none beat an enforcing bulk severity, so the setting decides", () => {
     writeRootEditorConfig('dotnet_analyzer_diagnostic.severity = error', 'dotnet_diagnostic.CA1852.severity = none');
 
-    expect(resolve({ sealClassesWhenSafe: true }).editorConfigKeys.has('sealClassesWhenSafe')).toBe(false);
+    const effective = resolve({ sealClassesWhenSafe: true });
+
+    expect(effective.editorConfigKeys.has('sealClassesWhenSafe')).toBe(false);
+    expect(effective.settings.sealClassesWhenSafe).toBe(true);
   });
 
   it.each([
@@ -549,14 +528,30 @@ describe('project severities (NoWarn, rule sets)', () => {
     expect(effective.editorConfigKeys.has('sealClassesWhenSafe')).toBe(false);
   });
 
-  it('lets NoWarn beat an option suffix that would enforce a Code Style rule', () => {
+  it('reports an enabled Code Style rule the project NoWarn suppresses as suppressed, without applying it', () => {
     writeRootEditorConfig('csharp_prefer_braces = false:warning');
     writeProject('<NoWarn>$(NoWarn);IDE0011</NoWarn>');
 
     const effective = resolve({ codeStyleRules: { csharp_prefer_braces: 'true' } });
 
     expect(effective.codeStyleEditorConfigKeys.has('csharp_prefer_braces')).toBe(false);
-    expect(effective.codeStyleValues.get('csharp_prefer_braces')).toBe('true');
+    expect(effective.codeStyleValues.has('csharp_prefer_braces')).toBe(false);
+    expect(effective.analyzerConfigOverrides.size).toBe(0);
+    expect(effective.unresolvedRules).toEqual([
+      "Code Style rule csharp_prefer_braces = true (IDE0011) is suppressed by the project's NoWarn, so it was not applied.",
+    ]);
+  });
+
+  it('reports only the rules whose selected diagnostic NoWarn suppresses', () => {
+    writeProject('<NoWarn>IDE0003</NoWarn>');
+
+    const effective = resolve({ codeStyleRules: { dotnet_style_qualification_for_field: 'true', dotnet_style_qualification_for_property: 'false' } });
+
+    expect(effective.codeStyleValues.get('dotnet_style_qualification_for_field')).toBe('true');
+    expect(effective.codeStyleValues.has('dotnet_style_qualification_for_property')).toBe(false);
+    expect(effective.unresolvedRules).toEqual([
+      "Code Style rule dotnet_style_qualification_for_property = false (IDE0003) is suppressed by the project's NoWarn, so it was not applied.",
+    ]);
   });
 
   it('lets a rule set none beat a bulk severity', () => {
@@ -656,7 +651,6 @@ describe('Code Style rules', () => {
     ['csharp_prefer_braces = false:suggestion', false],
     ['csharp_prefer_braces = false:warning', false],
     ['csharp_prefer_braces = false:error', false],
-    ['csharp_prefer_braces = false', false],
     ['dotnet_diagnostic.IDE0011.severity = warning', false],
     ['dotnet_diagnostic.IDE0011.severity = silent', true],
   ])('applies the Code Style rule only when .editorconfig does not enforce it (%s)', (option, applied) => {
@@ -667,6 +661,18 @@ describe('Code Style rules', () => {
     expect(effective.codeStyleValues.has('csharp_prefer_braces')).toBe(applied);
     expect(effective.codeStyleEditorConfigKeys.has('csharp_prefer_braces')).toBe(!applied);
     expect(effective.analyzerConfigOverrides.get('csharp_prefer_braces')).toBe(applied ? 'when_multiline:suggestion' : undefined);
+  });
+
+  it('applies the .editorconfig value of an enabled rule whose option has no severity suffix, which the rule engine alone ignores', () => {
+    writeRootEditorConfig('csharp_prefer_braces = true');
+
+    const enabled = resolve({ codeStyleRules: { csharp_prefer_braces: 'when_multiline' } });
+    const disabled = resolve();
+
+    expect(enabled.codeStyleEditorConfigKeys.get('csharp_prefer_braces')).toBe('csharp_prefer_braces');
+    expect(effectiveEditorConfigValue(enabled.properties, 'csharp_prefer_braces')).toBe('true');
+    expect(enabled.unresolvedRules).toEqual([]);
+    expect(effectiveEditorConfigValue(disabled.properties, 'csharp_prefer_braces')).toBeUndefined();
   });
 
   it('applies a rule whose diagnostic severity is none, although the option suffix enforces it', () => {

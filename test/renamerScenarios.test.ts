@@ -465,6 +465,37 @@ const scenarios: Scenario[] = [
     expect: 'renamed',
     mustContain: ['    val = 99;'],
   },
+  {
+    name: 'a field named like a member set by a with expression on another record type',
+    cls: 'W1',
+    code: 'public record W1Other(int Count); public class W1 { private int Count = 1; public static int Run() { W1 w = new W1(); return (w.M(new W1Other(5)) == new W1Other(7) ? 10 : 20) + w.Count; } private W1Other M(W1Other o) => o with { Count = 7 }; }',
+    pairs: [['Count', '_count']],
+    expect: 'kept',
+    mustIssue: "'with' expression",
+  },
+  {
+    name: 'a field set by with expressions on values of its own record type',
+    cls: 'W2',
+    code: 'public record W2 { private int Count = 3; public static int Run() { W2 a = new W2(); W2 b = a.Bump(a); return b.Count * 10 + a.Count; } private W2 Bump(W2 other) => this with { Count = other.Count + 1 }; }',
+    pairs: [['Count', '_count']],
+    expect: 'renamed',
+  },
+  {
+    name: 'a field reached through a qualified name of another type with the same simple name',
+    cls: 'W3',
+    code: 'namespace W3Lib { public class Settings { public static int Level = 1; } } namespace W3App { public class Settings { private static int Level = 2; public static int Get() => W3Lib.Settings.Level + Level; } } public class W3 { public static int Run() => W3App.Settings.Get(); }',
+    pairs: [['Level', '_level']],
+    expect: 'kept',
+    mustIssue: 'qualified name',
+  },
+  {
+    name: 'a field and a constructor parameter reached through base from a nested derived type',
+    cls: 'W4',
+    code: 'public class W4 { private int Count = 4; private readonly int _seed; private W4(int Seed) { _seed = Seed; } private W4() : this(1) { } public static int Run() => new D().M(); private class D : W4 { public D() : base(Seed: 3) { } public int M() => base.Count + _seed; } }',
+    pairs: [['Count', '_count'], ['Seed', 'seed']],
+    expect: 'kept',
+    mustIssue: 'base',
+  },
 ];
 
 const occurrences = (text: string, name: string): number => (text.match(new RegExp(`(?<![\\w@])${name}(?!\\w)`, 'g')) ?? []).length;

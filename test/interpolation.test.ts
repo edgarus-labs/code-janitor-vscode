@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { interpolationAccessesMember, interpolationHoles, interpolationWritesName } from '../src/cleanup/transformations/interpolation';
 
 describe('interpolationHoles', () => {
-  it('returns the expression of each hole without its format or alignment', () => {
+  it('returns the expression of each hole without its format, keeping any alignment', () => {
     expect(interpolationHoles('$"a {x} b {y + 1:D3} c {z,10} d {w,-5:N2}"')).toEqual(['x', 'y + 1', 'z,10', 'w,-5']);
   });
 

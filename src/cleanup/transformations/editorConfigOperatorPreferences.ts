@@ -14,7 +14,7 @@ import {
   unparenthesized,
   withParentheses,
 } from './editorConfigPrecedence';
-import { EditorConfigIssueReporter, describeIssue, hasParseErrors, lineStartAt } from './editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, hasParseErrors } from './editorConfigSupport';
 import { NULLABLE_VALUE_TYPE, isNonNullableValueType, isPlainReferenceType, isVariable } from './typeFacts';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
 
@@ -139,7 +139,6 @@ const PRIMARY_EXPRESSIONS: Record<string, true> = {
   member_access_expression: true,
   invocation_expression: true,
   element_access_expression: true,
-  parenthesized_expression: true,
   object_creation_expression: true,
   string_literal: true,
   verbatim_string_literal: true,
@@ -232,7 +231,8 @@ function unnecessaryParentheses(source: string, root: Node, values: Record<Paren
       continue;
     }
 
-    if (isUnnecessary(parenthesized, inner, values)) {
+    // `((a || b)) && c`: the outer pair is judged by what it finally encloses, since the inner pair goes too.
+    if (isUnnecessary(parenthesized, unparenthesized(inner), values)) {
       edits.push({ start: parenthesized.startIndex, end: inner.startIndex, text: '' }, { start: inner.endIndex, end: parenthesized.endIndex, text: '' });
     }
   }
@@ -349,6 +349,8 @@ const compoundAssignment: Collect = (source, root) => {
       (operator === '??' && !isVariable(left)) ||
       !operandLeft ||
       !operandRight ||
+      // `x ??= throw ...` does not compile (CS8115): a throw expression is only allowed after `??`.
+      unparenthesized(operandRight).type === 'throw_expression' ||
       normalized(operandLeft.text) !== normalized(left.text) ||
       hasParseErrors(assignment) ||
       hasComment(source, left.endIndex, operandRight.startIndex)
@@ -481,7 +483,8 @@ const coalesceExpressions: Collect = (_source, root) => {
       edits.push({
         start: conditional.startIndex,
         end: conditional.endIndex,
-        text: withParentheses(`${test.subject.text} ?? ${withParentheses(other.text, precedenceOf(other), 2)}`, 2, requiredPrecedence(conditional)),
+        // A throw expression must stay bare after `??`: `x ?? (throw e)` does not compile (CS8115).
+        text: withParentheses(`${test.subject.text} ?? ${other.type === 'throw_expression' ? other.text : withParentheses(other.text, precedenceOf(other), 2)}`, 2, requiredPrecedence(conditional)),
       });
     }
   }
@@ -527,17 +530,12 @@ function receiverInChain(access: Node, subject: string): Node | undefined {
 
 /**
  * True when a value of the declared `type` may be a `Nullable<T>`: its type is unknown (`var`), ends in `?`,
- * names `Nullable<…>`, or is a `using` alias the file declares (`using N = int?;`). A named class or struct
- * written without `?`, such as `XElement` or `Lazy<string>`, never is.
+ * names `Nullable<…>`, or is a plain name, which a `using` alias may bind to `Nullable<T>` (`using N = int?;`,
+ * also as a `global using` in another file or a project `<Using Alias>`). A generic or qualified name, such as
+ * `Lazy<string>`, never is: an alias is neither.
  */
-function mayBeNullableValueType(type: string | undefined, source: string): boolean {
-  if (type === undefined || type === 'var' || type.endsWith('?') || /\bNullable\s*</.test(type)) {
-    return true;
-  }
-
-  const name = /^@?([\p{L}_][\p{L}\p{N}_]*)$/u.exec(type)?.[1];
-
-  return name !== undefined && new RegExp(`\\busing\\s+(?:static\\s+)?@?${name}\\s*=`, 'u').test(source);
+function mayBeNullableValueType(type: string | undefined): boolean {
+  return type === undefined || type.endsWith('?') || /\bNullable\s*</.test(type) || /^@?[\p{L}_][\p{L}\p{N}_]*$/u.test(type);
 }
 
 /** `x != null ? x.Y : null` becomes `x?.Y`. */
@@ -561,7 +559,7 @@ const nullPropagation: Collect = (source, root) => {
       /\?[.[]/.test(value.text) ||
       (!test.byPattern && !isPlainReferenceType(type, root)) ||
       // Only `Nullable<T>` has these members, and on it `x?.M` binds `M` on `T`: `x?.Value` does not compile.
-      (/^\.\s*@?(?:Value|HasValue|GetValueOrDefault)\b/.test(source.slice(receiver.endIndex)) && mayBeNullableValueType(type, source) && !isPlainReferenceType(type, root))
+      (/^\.\s*@?(?:Value|HasValue|GetValueOrDefault)\b/.test(source.slice(receiver.endIndex)) && mayBeNullableValueType(type) && !isPlainReferenceType(type, root))
     ) {
       continue;
     }
@@ -1244,8 +1242,8 @@ function forwardedParameters(lambda: Node): { name: string; type?: string }[] | 
 /**
  * `x => M(x)` becomes `M` when `M` is the file's only method or local function of that name,
  * not generic, and its parameter and return types equal the delegate's (written as `Func`/`Action`
- * of the variable, or as the lambda's parameter types for a `void` method). Other lambdas that
- * only forward their parameters are reported.
+ * of the variable, or as the lambda's parameter types of a `var` local for a `void` method).
+ * `async`/`static` lambdas are kept; other lambdas that only forward their parameters are reported.
  */
 function methodGroups(report: EditorConfigIssueReporter): Collect {
   return (source, root) => {
@@ -1261,7 +1259,11 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
         args.length === parameters.length &&
         args.every((argument, index) => argument.text === parameters[index].name) &&
         (callee?.type === 'identifier' || callee?.type === 'member_access_expression');
-      const modifiers = /\b(?:async|static)\s*$/.test(source.slice(lineStartAt(source, lambda.startIndex), lambda.startIndex));
+      // `async x => M(x)` is a lambda holding `async` and the lambda it modifies; `static` comes first.
+      const modifiers =
+        lambda.children[0]?.type === 'static' ||
+        (lambda.children[0]?.type === 'identifier' && lambda.children[0].text === 'async') ||
+        (lambda.parent?.type === 'lambda_expression' && lambda.parent.childForFieldName('body') !== lambda);
       if (!forwards || modifiers || !callee || isInPossibleExpressionTree(lambda) || hasParseErrors(lambda)) {
         continue;
       }
@@ -1270,7 +1272,9 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
       const delegateTypes = delegateParameterTypes(declared ?? undefined)?.map((type) => type.replace(/\s+/g, ''));
       const typeArgs = declared?.namedChildren.find((child) => child.type === 'type_argument_list')?.namedChildren ?? [];
       const returns = declared?.namedChildren[0]?.text === 'Func' ? typeArgs[typeArgs.length - 1]?.text.replace(/\s+/g, '') : delegateTypes ? 'void' : undefined;
-      const parameterTypes = delegateTypes ?? (parameters!.every((parameter) => parameter.type) ? parameters!.map((parameter) => parameter.type!) : undefined);
+      // Without a written `Func`/`Action`, only `var` makes the lambda's own parameter types the delegate's:
+      // any other target (an argument, `Expression<...>`) may be an expression tree, which a method group cannot become.
+      const parameterTypes = delegateTypes ?? (declared?.text === 'var' && parameters!.every((parameter) => parameter.type) ? parameters!.map((parameter) => parameter.type!) : undefined);
       const candidates = callee.type === 'identifier' ? methods.filter((method) => method.childForFieldName('name')?.text === callee.text) : [];
       const method = candidates.length === 1 ? candidates[0] : undefined;
       const methodParameters = method?.childForFieldName('parameters')?.namedChildren.filter((child) => child.type === 'parameter') ?? [];

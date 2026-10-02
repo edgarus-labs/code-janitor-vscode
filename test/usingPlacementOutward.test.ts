@@ -251,6 +251,14 @@ describe('outward move: skipped with a reason', () => {
     expect(skipped(input)).toMatch(/extern alias 'V1'/);
   });
 
+  it('skips a using of an extern alias declared in an enclosing namespace', () => {
+    const nested = 'namespace Outer\r\n{\r\n    extern alias Lib;\r\n    namespace Inner\r\n    {\r\n        using Lib::Vendor;\r\n        class C { Widget w; }\r\n    }\r\n}\r\n';
+    const aliased = 'namespace Outer\r\n{\r\n    extern alias Lib;\r\n    namespace Inner\r\n    {\r\n        using V = Lib::Vendor.Widget;\r\n        class C { V w; }\r\n    }\r\n}\r\n';
+
+    expect(skipped(nested)).toMatch(/extern alias 'Lib'/);
+    expect(skipped(aliased)).toMatch(/extern alias 'Lib'/);
+  });
+
   it('skips a move that would silently rebind a name', () => {
     // Inside Company.App, 'using Models;' makes Foo mean Company.App.Models.Foo; at file level the import
     // is searched after the enclosing namespace Company, whose Foo would win without any error.
@@ -348,6 +356,27 @@ describe('outward move: skipped with a reason', () => {
   it("skips a directive that names a file-level alias before '::': directives of one scope do not see each other", () => {
     expect(skipped('using T = System.Text;\n\nnamespace N\n{\n    using B = T::StringBuilder;\n\n    class C { B b; }\n}\n')).toMatch(/'T'/);
   });
+
+  it('skips a using static that would share the file level with a namespace import holding a used type of the same name', () => {
+    const library = ['namespace Company { public static class Util { public class Bar { } } }\n', 'namespace Models { public class Bar { } }\n'];
+    const input = 'using Models;\n\nnamespace App\n{\n    using static Company.Util;\n\n    class C { Bar b; }\n}\n';
+
+    expect(skipped(input, ...library)).toMatch(/'Bar' ambiguous/);
+  });
+
+  it('skips a generic name an enclosing namespace declares with an arity the index does not know', () => {
+    // In App, Box<int> passes over App.Box, which takes no type arguments, and binds the global Box<T>.
+    expect(skipped('namespace App\n{\n    using X = Box<int>;\n\n    class C { X x; }\n}\n', 'public class Box<T> { }\n', 'namespace App { class Box { } }\n')).toMatch(
+      /'Box'/
+    );
+  });
+
+  it('skips a generic name a file-level import may provide when the global namespace declares it with an unknown arity', () => {
+    // From N, Box<int> passes over the global Box and binds Lib.Box<T> through 'using Lib;', which it no longer sees at file level.
+    const input = 'using Lib;\n\nnamespace N\n{\n    using X = Box<int>;\n\n    class C { X x; }\n}\n';
+
+    expect(skipped(input, 'public class Box { }\n', 'namespace Lib { public class Box<T> { } }\n')).toMatch(/'Box' through 'using Lib;'/);
+  });
 });
 
 describe('outward move: what reaches other parts of the file', () => {
@@ -410,6 +439,12 @@ describe('outward move: other layouts', () => {
   it('leaves an extern alias of the namespace where it is and moves the usings behind it', () => {
     expect(moved('namespace N\r\n{\r\n    extern alias V1;\r\n    using System;\r\n\r\n    class C { Action a; }\r\n}\r\n')).toBe(
       'using System;\r\n\r\nnamespace N\r\n{\r\n    extern alias V1;\r\n\r\n    class C { Action a; }\r\n}\r\n'
+    );
+  });
+
+  it('puts the moved directives in front of global attributes that precede the namespace', () => {
+    expect(moved('[assembly: System.CLSCompliant(true)]\r\nnamespace N\r\n{\r\n    using System;\r\n\r\n    class C { Action a; }\r\n}\r\n')).toBe(
+      'using System;\r\n\r\n[assembly: System.CLSCompliant(true)]\r\nnamespace N\r\n{\r\n    class C { Action a; }\r\n}\r\n'
     );
   });
 

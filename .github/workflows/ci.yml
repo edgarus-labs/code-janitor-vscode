@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [develop, main]
 
+# Read-only token: jobs build and run code from another repository (the testbed).
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and Test
@@ -88,12 +92,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # No token is left in .git/config: the testbed's MSBuild targets and program run in this job.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Pinned, bumped deliberately: a push to the testbed must not change what this repository's CI checks.
       - uses: actions/checkout@v4
         with:
           repository: edgarus-labs/code-janitor-testbed
-          ref: develop
+          ref: fad6873ed30f8b1e3357e666cc2314cf4d8f6692
           path: .testbed
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

@@ -1,6 +1,7 @@
 import { CODE, classifyCSharp } from '../csharpScanner';
 import { isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
+import { BCL_TYPES } from '../usings/bclIndex.generated';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { declaredTypeText } from './editorConfigExpressionPreferences';
 import { operatorOf, precedenceOf } from './editorConfigPrecedence';
@@ -476,10 +477,76 @@ function collectSimpleAccessors(_source: string, root: Node): TextEdit[] {
 /** Pointer syntax, or anything else that may need an unsafe context. */
 const UNSAFE_SYNTAX = /\*|&(?!&)|->|\b(?:stackalloc|fixed|sizeof|__arglist|__makeref|__refvalue)\b/;
 
-/** `unsafe` on a declaration whose code (strings and comments aside) holds no pointer syntax goes. */
-const collectUnsafeModifiers: Collect = (source, root, _context, { suppressed }) => {
+/** Parents whose identifiers name a type, namespace, attribute, label or argument name: never a pointer value. */
+const NAME_ONLY_PARENTS: Record<string, true> = {
+  attribute: true, type_parameter: true, type_parameter_constraints_clause: true, qualified_name: true, alias_qualified_name: true, base_list: true,
+  type_argument_list: true, implicit_type: true, array_type: true, nullable_type: true, ref_type: true, tuple_element: true, name_colon: true,
+  name_equals: true, goto_statement: true, labeled_statement: true,
+};
+
+/**
+ * Whether each member name of the file is declared with a pointer or function pointer type (in
+ * its type or parameters) by any of its declarations. The parser does not read pointer-typed
+ * fields and properties (`int* _p;`), so every member of a type it misreads counts as a pointer.
+ */
+function pointerMembers(root: Node): Map<string, boolean> {
+  const pointers = new Map<string, boolean>();
+  for (const type of findAll(root, [...TYPE_DECLARATIONS, 'interface_declaration'])) {
+    const body = type.childForFieldName('body') ?? type.namedChildren.find((child) => child.type === 'declaration_list');
+    const misread = (body?.namedChildren ?? []).some((member) => member.type === 'incomplete_declaration' || hasParseErrors(member));
+    for (const member of body?.namedChildren ?? []) {
+      const variables = member.namedChildren.find((child) => child.type === 'variable_declaration');
+      const signature = `${(member.childForFieldName('type') ?? variables?.childForFieldName('type'))?.text ?? ''} ${member.childForFieldName('parameters')?.text ?? ''}`;
+      const declared = variables ? findAll(variables, 'variable_declarator').map((declarator) => declarator.childForFieldName('name')?.text) : [member.childForFieldName('name')?.text];
+      // A misread `int* _p;` leaves a declaration of just `_p;`, without a declarator (or any identifier node).
+      const names = misread && declared.every((name) => !name) ? member.text.match(/[A-Za-z_]\w*/g) ?? [] : declared;
+      for (const name of names) {
+        if (name) {
+          pointers.set(name, pointers.get(name) === true || misread || UNSAFE_SYNTAX.test(signature));
+        }
+      }
+    }
+  }
+
+  return pointers;
+}
+
+/**
+ * The names `declaration` reads or calls as values: not its own locals, nor the receiver of a
+ * member access (a pointer has no members), nor types, namespaces and other names that are no value.
+ */
+function valueReferences(declaration: Node): string[] {
+  const locals = declaredNames(declaration);
+  const isField = (parent: Node, field: string, node: Node): boolean => parent.childForFieldName(field)?.startIndex === node.startIndex && parent.childForFieldName(field)?.endIndex === node.endIndex;
+
+  return findAll(declaration, 'identifier').flatMap((identifier) => {
+    let top = identifier.parent?.type === 'generic_name' ? identifier.parent : identifier;
+    while (top.parent?.type === 'member_access_expression' && isField(top.parent, 'name', top)) {
+      top = top.parent;
+    }
+
+    const parent = top.parent;
+    const nameOnly =
+      !parent ||
+      NAME_ONLY_PARENTS[parent.type] === true ||
+      (parent.type === 'member_access_expression' && isField(parent, 'expression', top)) ||
+      isField(parent, 'type', top) ||
+      (/_declaration$/.test(parent.type) && isField(parent, 'name', top));
+
+    return nameOnly || locals.has(identifier.text) || identifier.text === 'value' || identifier.text === 'nameof' ? [] : [identifier.text];
+  });
+}
+
+/**
+ * `unsafe` on a declaration goes when its code (strings and comments aside) holds no pointer
+ * syntax and every member it reads or calls is declared in the file without pointer types: a
+ * pointer passed from one call to another, or read from a field, needs the unsafe context too.
+ * A member of another file may have pointer types, so its use is reported instead.
+ */
+const collectUnsafeModifiers: Collect = (source, root, _context, { suppressed, report }) => {
   const kinds = classifyCSharp(source);
   const codeOf = (node: Node): string => [...source.slice(node.startIndex, node.endIndex)].map((ch, i) => (kinds[node.startIndex + i] === CODE ? ch : ' ')).join('');
+  const pointers = pointerMembers(root);
 
   return findAll(root, 'modifier').flatMap((modifier): TextEdit[] => {
     const declaration = modifier.parent;
@@ -488,7 +555,15 @@ const collectUnsafeModifiers: Collect = (source, root, _context, { suppressed })
     }
 
     const code = codeOf(declaration).replace(/\bunsafe\b/g, '');
-    if (UNSAFE_SYNTAX.test(code)) {
+    const references = valueReferences(declaration);
+    if (UNSAFE_SYNTAX.test(code) || references.some((name) => pointers.get(name) === true)) {
+      return [];
+    }
+
+    const unknown = references.find((name) => !pointers.has(name));
+    if (unknown !== undefined) {
+      report(declaration, `'unsafe' was kept: '${unknown}' is not declared in the file, so whether it has pointer types is not known.`);
+
       return [];
     }
 
@@ -737,9 +812,10 @@ const AMBIGUOUS_BCL_NAMES: Record<string, true> = {
 
 /**
  * IDE0001: in type positions, `N.T` becomes `T` when the file imports `N`, every namespace it
- * imports is a .NET one (`System*`, `Microsoft*`, whose type names are known not to clash except
- * for the names above), and no type, member, local or parameter named `T` is declared in the file
- * or the project.
+ * imports is a .NET one in the reference-assembly index ({@link BCL_TYPES}), `N` is the only
+ * imported namespace declaring a type named `T` (nor is it one of the names above, which other
+ * .NET versions declare in several namespaces), and no type, member, local or parameter named `T`
+ * is declared in the file or the project.
  */
 const collectQualifiedNames: Collect = (_source, root, context, { suppressed }) => {
   const project = context.project;
@@ -750,10 +826,11 @@ const collectQualifiedNames: Collect = (_source, root, context, { suppressed }) 
   const facts = loadProjectFacts(project, context.filePath);
   const usings = findAll(root, 'using_directive').map((directive) => /^(?:global\s+)?using\s+([\w.]+)\s*;$/.exec(directive.text.trim())?.[1]);
   const imported = [...usings, ...facts.others.globalUsings];
-  if (facts.incomplete || imported.some((namespace) => namespace === undefined || !/^(?:System|Microsoft)(?:\.|$)/.test(namespace))) {
+  if (facts.incomplete || imported.some((namespace) => namespace === undefined || BCL_TYPES[namespace] === undefined)) {
     return [];
   }
 
+  const typesOf = new Map((imported as string[]).map((namespace) => [namespace, new Set(BCL_TYPES[namespace].split(' '))]));
   const values = valueNames(root);
   const localTypes = new Set(findAll(root, [...TYPE_DECLARATIONS, 'interface_declaration', 'enum_declaration', 'delegate_declaration']).map((type) => type.childForFieldName('name')?.text ?? ''));
   const members = new Set(findAll(root, TYPE_DECLARATIONS).flatMap((type) => [...membersOf(type).keys()]));
@@ -770,7 +847,8 @@ const collectQualifiedNames: Collect = (_source, root, context, { suppressed }) 
       !qualifier ||
       !simple ||
       !simpleName ||
-      !imported.includes(qualifier.text.replace(/\s+/g, '').replace(/^global::/, '')) ||
+      // The qualifier must be the only imported namespace declaring the name.
+      [...typesOf].filter(([, types]) => types.has(simpleName)).map(([namespace]) => namespace).join() !== qualifier.text.replace(/\s+/g, '').replace(/^global::/, '') ||
       AMBIGUOUS_BCL_NAMES[simpleName] === true ||
       localTypes.has(simpleName) ||
       facts.others.typeNames.has(simpleName) ||

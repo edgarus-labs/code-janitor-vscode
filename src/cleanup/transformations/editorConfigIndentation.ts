@@ -143,6 +143,7 @@ class Indenter {
 
   run(): string {
     this.readLines();
+    this.keepLinesAfterUnbalancedConditional();
     this.collect(this.root);
     this.collectTokens(this.root);
     this.tokenStarts.sort((a, b) => a - b);
@@ -209,6 +210,67 @@ class Indenter {
       }
 
       start = newline + 1;
+    }
+  }
+
+  /**
+   * The parser reads every branch of `#if`/`#elif`/`#else`, while the compiler (and Roslyn's
+   * formatter) sees one. When a branch leaves a brace or parenthesis open or closes one it did not
+   * open (each branch opening its own `foreach (...) {`), the parsed nesting is off from there to
+   * the end of the file, so those lines keep their indentation and the group is reported.
+   */
+  private keepLinesAfterUnbalancedConditional(): void {
+    const source = this.source;
+    // Per open `#if`: its first line and the brace and parenthesis depth of its current branch.
+    const groups: { line: number; braces: number; parens: number }[] = [];
+    let unbalancedFrom = -1;
+
+    this.lines.forEach((line, index) => {
+      const end = index + 1 < this.lines.length ? this.lines[index + 1].start : source.length;
+      const isDirective = line.fixed && source[line.first] === '#' && this.kinds[line.first] === CODE;
+      const directive = isDirective ? /^#\s*(if|elif|else|endif)\b/.exec(source.slice(line.first, end))?.[1] : undefined;
+      if (directive !== undefined) {
+        const group = groups[groups.length - 1];
+        if (directive === 'if') {
+          groups.push({ line: index, braces: 0, parens: 0 });
+        } else if (group) {
+          if (group.braces !== 0 || group.parens !== 0) {
+            unbalancedFrom = unbalancedFrom < 0 ? group.line : Math.min(unbalancedFrom, group.line);
+          }
+
+          group.braces = 0;
+          group.parens = 0;
+          if (directive === 'endif') {
+            groups.pop();
+          }
+        }
+
+        return;
+      }
+
+      for (let i = line.start; i < end && groups.length > 0; i++) {
+        if (this.kinds[i] !== CODE) {
+          continue;
+        }
+
+        const braces = source[i] === '{' ? 1 : source[i] === '}' ? -1 : 0;
+        const parens = source[i] === '(' ? 1 : source[i] === ')' ? -1 : 0;
+        for (const group of braces !== 0 || parens !== 0 ? groups : []) {
+          group.braces += braces;
+          group.parens += parens;
+        }
+      }
+    });
+
+    if (unbalancedFrom < 0) {
+      return;
+    }
+
+    this.report(
+      describeIssue('IDE0055', 'indentation', source, this.lines[unbalancedFrom].first, 'the lines from here to the end of the file keep their indentation: a branch of this #if group leaves a brace or parenthesis unbalanced.')
+    );
+    for (let index = unbalancedFrom; index < this.lines.length; index++) {
+      this.lines[index] = { ...this.lines[index], fixed: true };
     }
   }
 

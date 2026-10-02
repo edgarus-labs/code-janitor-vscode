@@ -129,6 +129,28 @@ describe('csharp_style_namespace_declarations', () => {
     }
   });
 
+  it('reports the unknown or older C# version only for a file with a block-scoped namespace to convert', () => {
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n\n[*.cs]\ncsharp_style_namespace_declarations = file_scoped:warning\n' }], '/repo/src/Sample.cs');
+
+    for (const project of [undefined, { directory: '/repo' }, { directory: '/repo', languageVersion: 9 }]) {
+      for (const source of [lines('namespace Demo;', '', 'class C { }'), lines('class C { }')]) {
+        const issues: string[] = [];
+        const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName: 'Sample.cs', project }).apply(source);
+
+        expect({ output, issues }).toEqual({ output: source, issues: [] });
+      }
+    }
+  });
+
+  it('converts a namespace that follows global attributes', () => {
+    const source = lines('using System;', '[assembly: System.CLSCompliant(true)]', '', 'namespace Demo', '{', '    class C { }', '}');
+
+    expect(codeStyle(source, 'csharp_style_namespace_declarations = file_scoped:warning')).toEqual({
+      output: lines('using System;', '[assembly: System.CLSCompliant(true)]', '', 'namespace Demo;', '', 'class C { }'),
+      issues: [],
+    });
+  });
+
   it('does not treat files with several namespaces as candidates', () => {
     const source = lines('namespace A', '{', '}', 'namespace B', '{', '}');
 
@@ -673,5 +695,30 @@ describe('csharp_prefer_simple_using_statement', () => {
 
     expect(output).toBe(source);
     expect(issues).toEqual([expect.stringMatching(/^IDE0063 .* line 6: .*'stream'/)]);
+  });
+
+  it('reports a using statement whose pattern designations or labels are declared elsewhere in the block', () => {
+    const block = (...body: string[]) => lines('class Sample', '{', '    void M(object o, IDisposable d)', '    {', ...body.map((line) => `        ${line}`), '    }', '}');
+    const cases = [
+      block('{ var t = ""; Use(t); }', 'using (var r = d)', '{', '    var ok = o is string t && t.Length > 0;', '}'),
+      block('{ var t = 1; }', 'using (var r = d)', '{', '    var ok = o is { } t;', '}'),
+      block('{ var a = 1; }', 'using (var r = d)', '{', '    var ok = o is var (a, b);', '}'),
+      block('{ L: ; }', 'using (var r = d)', '{', '    L: r.Dispose();', '}'),
+    ];
+
+    for (const source of cases) {
+      const { output, issues } = codeStyle(source, 'csharp_prefer_simple_using_statement = true:warning');
+
+      expect(output).toBe(source);
+      expect(issues).toEqual([expect.stringMatching(/^IDE0063 .* line 6: .*'(t|a|L)' is also used/)]);
+    }
+  });
+
+  it('converts a using statement whose pattern names nothing declared elsewhere', () => {
+    const source = lines('class Sample', '{', '    void M(object o, IDisposable d)', '    {', '        Use(typeof(Uri));', '        using (var r = d)', '        {', '            var ok = o is string t || o is Exception or Uri;', '        }', '    }', '}');
+
+    expect(codeStyle(source, 'csharp_prefer_simple_using_statement = true:warning').output).toBe(
+      lines('class Sample', '{', '    void M(object o, IDisposable d)', '    {', '        Use(typeof(Uri));', '        using var r = d;', '        var ok = o is string t || o is Exception or Uri;', '    }', '}')
+    );
   });
 });

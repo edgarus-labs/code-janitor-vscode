@@ -43,17 +43,26 @@ const accept = (picker: FakeQuickPick) => picker.accept();
 
 const CHANGED = ['Models/Customer.cs', 'Models/Order.cs', 'Services/Legacy.cs', 'Program.cs'];
 
-/** The mock file system as a plain object, to compare the text of several files at once. */
+/** The text of a file as the user would save it: its editor buffer when open, otherwise the mock file system. */
+function textOf(filePath: string): string | undefined {
+  const document = state.documents.find((candidate) => !candidate.isClosed && candidate.uri.fsPath === filePath);
+
+  return document ? document.getText() : state.files.get(filePath);
+}
+
+/** The text of several files at once (see `textOf`), as a plain object. */
 function snapshot(project: PreviewProject, files: readonly string[]): Record<string, string | undefined> {
-  return Object.fromEntries(files.map((file) => [file, state.files.get(project.file(file))]));
+  return Object.fromEntries(files.map((file) => [file, textOf(project.file(file))]));
 }
 
 /**
  * What the ordinary (non-preview) cleanup makes of the files - the reference for the applied
- * preview. Runs on the original text and leaves the mock file system as it was.
+ * preview. Runs on the original text, with no editor open, and leaves the mock workspace as it was.
  */
 async function ordinaryCleanup(project: PreviewProject, files: readonly string[]): Promise<Record<string, string | undefined>> {
   const current = new Map(state.files);
+  const documents = state.documents;
+  state.documents = [];
   restoreOriginals(project);
   try {
     await runCleanupOnUris(createContext(), files.map((file) => project.uri(file)));
@@ -61,6 +70,7 @@ async function ordinaryCleanup(project: PreviewProject, files: readonly string[]
     return snapshot(project, files);
   } finally {
     state.files = current;
+    state.documents = documents;
   }
 }
 
@@ -96,7 +106,7 @@ describe('multi-file cleanup preview: the plan', () => {
   it('shows why a file is skipped: excluded, too large, not UTF-8, unreadable', async () => {
     const project = previewProject();
     state.configuration.set('codeJanitor.cleanup.exclude', ['Program\\.cs$']);
-    state.configuration.set('codeJanitor.preview.maxFileSizeKb', 1);
+    state.configuration.set('codeJanitor.preview.maxFileSizeKB', 1);
     state.files.set(project.file('Models/Order.cs'), `// ${'x'.repeat(2000)}\n${project.originals.get(project.file('Models/Order.cs'))}`);
     const invalid = project.file('Models/Invalid.cs');
     state.files.set(invalid, 'class A { }\n');
@@ -322,9 +332,9 @@ describe('multi-file cleanup preview: review', () => {
     expect(previewState.diffs).toHaveLength(2);
     expect(previewState.diffs[0].after.toString()).not.toBe(previewState.diffs[1].after.toString());
     // The final text: braces applied (round 2 included IDE0011), blank lines not normalized (round 2 excluded it).
-    expect(state.files.get(order)).toContain('if (price < 0)\n            {');
-    expect(state.files.get(order)).toContain('\n\n\n');
-    expect(state.files.get(order)).not.toMatch(/ +\n/);
+    expect(textOf(order)).toContain('if (price < 0)\n            {');
+    expect(textOf(order)).toContain('\n\n\n');
+    expect(textOf(order)).not.toMatch(/ +\n/);
   });
 
   it('keeps the rules as they were when the rule choice is cancelled', async () => {
@@ -334,7 +344,7 @@ describe('multi-file cleanup preview: review', () => {
 
     await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Models/Order.cs')]);
 
-    expect(state.files.get(project.file('Models/Order.cs'))).toBe((await ordinaryCleanup(project, ['Models/Order.cs']))['Models/Order.cs']);
+    expect(textOf(project.file('Models/Order.cs'))).toBe((await ordinaryCleanup(project, ['Models/Order.cs']))['Models/Order.cs']);
   });
 
   it('labels the rules as Changed, No change and Excluded in the rule choice', async () => {
@@ -360,6 +370,32 @@ describe('multi-file cleanup preview: review', () => {
     expect(second).toContain('Remove trailing whitespace: Excluded');
     expect(second).toContain('Normalize blank lines: Excluded');
     expect(second.find((line) => line.startsWith('IDE0090'))).toContain('Changed (1 change)');
+  });
+
+  it('keeps Choose Rules on a file whose rules were all cleared, so its rules can be brought back', async () => {
+    const project = previewProject();
+    const order = project.file('Models/Order.cs');
+    const tooltips = (picker: FakeQuickPick, label: string) => (picker.find(label).buttons ?? []).map((button) => button.tooltip);
+    let cleared: (string | undefined)[] = [];
+    let clean: (string | undefined)[] = [];
+    user(
+      (picker) => picker.clickButton('Order.cs', 'Choose Rules...'),
+      (picker) => {
+        cleared = tooltips(picker, 'Order.cs');
+        clean = tooltips(picker, 'Pricing.cs');
+        picker.clickButton('Order.cs', 'Choose Rules...');
+      },
+      accept
+    );
+    // Round 1 clears every rule, so the file has no change left; round 2 brings them back.
+    state.quickPickSelections = [[], ['Remove trailing whitespace', 'Normalize blank lines', 'IDE0090', 'IDE0011']];
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Models/Order.cs'), project.uri('Services/Pricing.cs')]);
+
+    // Nothing to diff while no rule is left, but the rules can be chosen again; a file that never changed offers neither.
+    expect(cleared).toEqual(['Choose Rules...']);
+    expect(clean).toEqual([]);
+    expect(textOf(order)).toBe((await ordinaryCleanup(project, ['Models/Order.cs']))['Models/Order.cs']);
   });
 });
 
@@ -437,8 +473,8 @@ describe('multi-file cleanup preview: applying', () => {
     ]);
 
     expect(order.getText()).toBe(`${project.originals.get(orderPath)}// edited after the plan\n`);
-    expect(state.files.get(project.file('Models/Customer.cs'))).toBe(`// changed on disk\n${project.originals.get(project.file('Models/Customer.cs'))}`);
-    expect(state.files.get(project.file('Program.cs'))).toContain('= new();');
+    expect(textOf(project.file('Models/Customer.cs'))).toBe(`// changed on disk\n${project.originals.get(project.file('Models/Customer.cs'))}`);
+    expect(textOf(project.file('Program.cs'))).toContain('= new();');
     expect(state.warningMessages.at(-1)).toMatch(/applied to 1 file\(s\), not to 2\..*changed since the preview.*Models\/Order\.cs, Models\/Customer\.cs/);
   });
 
@@ -472,9 +508,92 @@ describe('multi-file cleanup preview: applying', () => {
 
     await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Models/Order.cs'), project.uri('Program.cs')]);
 
-    expect(state.files.get(project.file('Program.cs'))).toContain('= new();');
-    expect(state.files.get(project.file('Models/Order.cs'))).toBe(project.originals.get(project.file('Models/Order.cs')));
+    expect(textOf(project.file('Program.cs'))).toContain('= new();');
+    expect(textOf(project.file('Models/Order.cs'))).toBe(project.originals.get(project.file('Models/Order.cs')));
     expect(state.warningMessages.at(-1)).toContain('Models/Order.cs: VS Code did not apply the edit');
+  });
+
+  it('checks each file again before the one-by-one apply, refusing one edited after VS Code rejected the combined edit', async () => {
+    const project = previewProject();
+    const orderPath = project.file('Models/Order.cs');
+    const order = new TextDocument(Uri.file(orderPath), project.originals.get(orderPath)!, 'csharp');
+    state.documents.push(order);
+    const applyEdit = workspace.applyEdit.bind(workspace);
+    let combined = true;
+    vi.spyOn(workspace, 'applyEdit').mockImplementation((edit) => {
+      if (!combined) {
+        return applyEdit(edit);
+      }
+
+      // VS Code rejects the combined edit because the buffer changed meanwhile (typing, another extension).
+      combined = false;
+      order.setText(`// typed meanwhile\n${order.getText()}`);
+
+      return Promise.resolve(false);
+    });
+    user(accept);
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Models/Order.cs'), project.uri('Program.cs')]);
+
+    expect(order.getText()).toBe(`// typed meanwhile\n${project.originals.get(orderPath)}`);
+    expect(textOf(project.file('Program.cs'))).toContain('= new();');
+    expect(state.warningMessages.at(-1)).toMatch(/applied to 1 file\(s\), not to 1\..*changed since the preview.*Models\/Order\.cs/);
+  });
+
+  it('does not claim one undo step when the files were applied one by one', async () => {
+    const project = previewProject();
+    const applyEdit = workspace.applyEdit.bind(workspace);
+    let combined = true;
+    vi.spyOn(workspace, 'applyEdit').mockImplementation((edit) => {
+      const reject = combined;
+      combined = false;
+
+      return reject ? Promise.resolve(false) : applyEdit(edit);
+    });
+    user(accept);
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Models/Order.cs'), project.uri('Program.cs')]);
+
+    expect(textOf(project.file('Program.cs'))).toContain('= new();');
+    expect(textOf(project.file('Models/Order.cs'))).not.toBe(project.originals.get(project.file('Models/Order.cs')));
+    expect(state.informationMessages.at(-1)).toBe('Code Janitor: cleanup preview applied to 2 file(s). No files were saved; each file is undone on its own.');
+  });
+
+  it('refuses a closed file that changes on disk while the apply opens the other files', async () => {
+    const project = previewProject();
+    const customerPath = project.file('Models/Customer.cs');
+    const changed = `${project.originals.get(customerPath)}// appended by a generator\n`;
+    let applying = false;
+    /** The disk change; VS Code reloads an open document that has no unsaved changes. */
+    const changeCustomerOnDisk = (uri: unknown) => {
+      if (applying && (uri as Uri).fsPath === project.file('Program.cs')) {
+        applying = false;
+        state.files.set(customerPath, changed);
+        state.documents.find((document) => document.uri.fsPath === customerPath)?.setText(changed);
+      }
+    };
+    const readFile = workspace.fs.readFile.bind(workspace.fs);
+    vi.spyOn(workspace.fs, 'readFile').mockImplementation((uri) => {
+      changeCustomerOnDisk(uri);
+
+      return readFile(uri);
+    });
+    const openTextDocument = workspace.openTextDocument.bind(workspace);
+    vi.spyOn(workspace, 'openTextDocument').mockImplementation((target) => {
+      changeCustomerOnDisk(target);
+
+      return openTextDocument(target);
+    });
+    user((picker) => {
+      applying = true;
+      picker.accept();
+    });
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Models/Customer.cs'), project.uri('Program.cs')]);
+
+    expect(textOf(customerPath)).toBe(changed);
+    expect(textOf(project.file('Program.cs'))).toContain('= new();');
+    expect(state.warningMessages.at(-1)).toMatch(/applied to 1 file\(s\), not to 1\..*changed since the preview.*Models\/Customer\.cs/);
   });
 
   it('keeps CRLF files intact', async () => {
@@ -483,7 +602,7 @@ describe('multi-file cleanup preview: applying', () => {
 
     await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Services/Legacy.cs')]);
 
-    const text = state.files.get(project.file('Services/Legacy.cs'))!;
+    const text = textOf(project.file('Services/Legacy.cs'))!;
     expect(text).not.toMatch(/[^\r]\n/);
     expect(text).toBe((await ordinaryCleanup(project, ['Services/Legacy.cs']))['Services/Legacy.cs']);
   });
@@ -512,7 +631,7 @@ describe('multi-file cleanup preview: scopes', () => {
 
     const files = ['Models/Customer.cs', 'Models/Order.cs'];
     expect(snapshot(project, files)).toEqual(await ordinaryCleanup(project, files));
-    expect(state.files.get(project.file('Models/Customer.cs'))).not.toBe(project.originals.get(project.file('Models/Customer.cs')));
+    expect(textOf(project.file('Models/Customer.cs'))).not.toBe(project.originals.get(project.file('Models/Customer.cs')));
   });
 
   it('warns when nothing is selected', async () => {
@@ -606,7 +725,8 @@ describe('multi-file cleanup preview: scopes', () => {
 
     await run('codeJanitor.previewCleanupChangedFiles');
 
-    const applied = state.files.get(counter);
+    const applied = textOf(counter);
+    state.documents = [];
     state.files.set(counter, edited);
     await runCleanupOnUris(createContext(), [Uri.file(counter)], { honorOnlyChangedLines: true });
     expect(applied).toBe(state.files.get(counter));

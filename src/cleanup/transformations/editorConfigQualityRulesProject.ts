@@ -4,6 +4,8 @@ import { findAll, parseCSharp } from '../parser';
 import { ProjectInfo } from '../projectInfo';
 import { Token, lex } from '../syntax/lexer';
 import { interpolationHoles } from './interpolation';
+import type { RuleContext } from './editorConfigCodeStyle';
+import { GlobalSuppression, Suppressions, globalSuppressionsOf } from './editorConfigQualityRulesSupport';
 import { collectDisqualifiedTypeNames } from './sealedClass';
 
 /**
@@ -32,6 +34,8 @@ export interface SourceFacts {
   readonly globalUsings: ReadonlySet<string>;
   /** The source applies `[assembly: InternalsVisibleTo(...)]`. */
   readonly internalsVisibleTo: boolean;
+  /** Its `[assembly: SuppressMessage(...)]` and `[module: SuppressMessage(...)]` attributes (`GlobalSuppressions.cs`). */
+  readonly globalSuppressions: readonly GlobalSuppression[];
 }
 
 export interface ProjectFacts {
@@ -59,6 +63,27 @@ const SKIPPED_FOLDERS: Record<string, true> = { bin: true, obj: true, node_modul
 /** More files than this and the project is not scanned (the rules report instead). */
 const MAX_PROJECT_FILES = 20000;
 
+const INTERNALS_VISIBLE_TO = /^InternalsVisibleTo(?:Attribute)?$/;
+
+/**
+ * Whether other assemblies may see the internals: the project exposes them, or `source` (the
+ * current text of the file being cleaned, which the project facts leave out) applies the attribute.
+ */
+export function exposesInternals(project: ProjectFacts | undefined, source: string): boolean {
+  if (project?.internalsVisibleTo) {
+    return true;
+  }
+
+  const tokens = lex(source).tokens;
+
+  return tokens.some((token) => token.type === 'identifier' && INTERNALS_VISIBLE_TO.test(source.slice(token.start, token.end)));
+}
+
+/** The suppressions of `source`, with the global ones of the project's other files (`GlobalSuppressions.cs`). */
+export function suppressionsOf(source: string, context: RuleContext): Suppressions {
+  return new Suppressions(source, context.project ? loadProjectFacts(context.project, context.filePath).others.globalSuppressions : []);
+}
+
 export function computeSourceFacts(source: string): SourceFacts {
   const memberAccessNames = new Set<string>();
   const globalUsings = new Set<string>();
@@ -67,7 +92,7 @@ export function computeSourceFacts(source: string): SourceFacts {
   const text = (index: number): string => source.slice(tokens[index].start, tokens[index].end);
   for (let i = 0; i < tokens.length - 1; i++) {
     const type = tokens[i].type;
-    if (type === 'identifier' && /^InternalsVisibleTo(?:Attribute)?$/.test(text(i))) {
+    if (type === 'identifier' && INTERNALS_VISIBLE_TO.test(text(i))) {
       internalsVisibleTo = true;
     } else if (type === 'identifier' && text(i) === 'global' && tokens[i + 1].type === 'using') {
       let end = i + 2;
@@ -106,6 +131,7 @@ export function computeSourceFacts(source: string): SourceFacts {
       interfaceMemberNames: new Set(interfaceMembers.map((member) => member.childForFieldName('name')?.text.replace(/^@/, '') ?? '').filter(Boolean)),
       globalUsings,
       internalsVisibleTo,
+      globalSuppressions: globalSuppressionsOf(source),
     };
   } finally {
     tree.delete();
@@ -235,8 +261,9 @@ const indexByDirectory = new Map<string, ProjectIndex>();
 function readProjectFacts(directory: string, currentFile: string): ProjectFacts {
   const problems: string[] = [];
   const settings = readProjectSettings(directory, problems);
-  const listing = settings.defaultCompileItems ? listProjectSources(directory, problems) : undefined;
-  const files = new Set([...(listing?.files ?? []), ...settings.compileIncludes]);
+  // Markup default items (Razor components, pages, XAML) follow EnableDefaultItems, not EnableDefaultCompileItems.
+  const listing = settings.defaultItems ? listProjectSources(directory, problems) : undefined;
+  const files = new Set([...(settings.defaultCompileItems ? (listing?.files ?? []) : []), ...settings.compileIncludes]);
   const components = new Set(listing?.markup.filter((file) => RAZOR_COMPONENT.test(file)));
   let index = indexByDirectory.get(directory);
   if (!index) {
@@ -263,11 +290,12 @@ function readProjectFacts(directory: string, currentFile: string): ProjectFacts 
     NAME_KINDS.map((kind): [NameKind, ReadonlySet<string>] => [kind, new OtherFilesNames(index.counts[kind], own?.[kind])])
   ) as Record<NameKind, ReadonlySet<string>>;
   const internalsVisibleTo = index.internalsVisibleToFiles - (own?.internalsVisibleTo ? 1 : 0) > 0;
+  const globalSuppressions = [...index.facts].flatMap(([file, facts]) => (file === currentFile ? [] : facts.globalSuppressions));
 
   return {
     incomplete: problems.length > 0 ? problems.join('; ') : undefined,
     markup: listing?.markup[0] ?? settings.markupItem,
-    others: { ...others, internalsVisibleTo },
+    others: { ...others, internalsVisibleTo, globalSuppressions },
     internalsVisibleTo: settings.internalsVisibleTo || internalsVisibleTo,
     importsSystem: settings.importsSystem || others.globalUsings.has('System'),
     webProject: settings.webProject,
@@ -304,7 +332,10 @@ function updateIndex(index: ProjectIndex, file: string, facts: SourceFacts | und
   if (facts) {
     index.facts.set(file, facts);
   } else {
+    // The file is gone (or unreadable): a file created later at its path must be read, not matched by size and time.
     index.facts.delete(file);
+    factsByFile.delete(file);
+    factsByComponent.delete(file);
   }
 }
 
@@ -374,8 +405,8 @@ function readSourceFacts(file: string, problems: string[]): SourceFacts | undefi
   return facts;
 }
 
-/** Markup the SDK compiles into classes of the assembly (Razor components and pages, XAML), which the facts do not read. */
-const MARKUP_SOURCE = /\.(?:razor|cshtml|xaml)$/i;
+/** Markup the SDK compiles into classes of the assembly (Razor components and pages, XAML, Avalonia XAML), which the facts do not read. */
+const MARKUP_SOURCE = /\.(?:razor|cshtml|xaml|axaml)$/i;
 
 /** A Razor component, compiled into a class named like the file. */
 const RAZOR_COMPONENT = /\.razor$/i;
@@ -395,6 +426,7 @@ function componentFacts(file: string): SourceFacts {
       interfaceMemberNames: none,
       globalUsings: none,
       internalsVisibleTo: false,
+      globalSuppressions: [],
     };
     factsByComponent.set(file, facts);
   }
@@ -481,7 +513,9 @@ function walkProjectSources(root: string): CachedListing {
 }
 
 interface ProjectSettings {
-  /** The .NET SDK adds the `.cs` files under the project folder (SDK-style project, default items on). */
+  /** The .NET SDK adds the files under the project folder as items (SDK-style project, default items on). */
+  readonly defaultItems: boolean;
+  /** The .NET SDK adds the `.cs` files under the project folder (default items and default compile items on). */
   readonly defaultCompileItems: boolean;
   /** Full paths of the `<Compile Include>` items. */
   readonly compileIncludes: readonly string[];
@@ -530,17 +564,19 @@ function readProjectSettings(directory: string, problems: string[]): ProjectSett
   }
 
   // Old-style projects list their markup (`<Page Include="MainWindow.xaml" />`) instead of finding it.
-  const markupItem = /\bInclude\s*=\s*"([^"]*\.(?:razor|cshtml|xaml))"/i.exec(evaluated)?.[1];
+  const markupItem = /\bInclude\s*=\s*"([^"]*\.(?:razor|cshtml|xaml|axaml))"/i.exec(evaluated)?.[1];
 
   const sdkStyle = /<Project\s[^>]*\bSdk\s*=|<Sdk\s+Name\s*=|<Import\s[^>]*\bSdk\s*=/i.test(projectText);
-  const defaultItemsOff = ['EnableDefaultItems', 'EnableDefaultCompileItems'].some((property) => /^false$/i.test(lastValue(evaluated, property) ?? ''));
+  const defaultItems = sdkStyle && !/^false$/i.test(lastValue(evaluated, 'EnableDefaultItems') ?? '');
   const implicitUsings = /^(?:enable|true)$/i.test(lastValue(evaluated, 'ImplicitUsings') ?? '');
   const systemUsing = [...evaluated.matchAll(/<Using\s+(Include|Remove)\s*=\s*"System"/gi)].pop()?.[1];
 
   return {
-    defaultCompileItems: sdkStyle && !defaultItemsOff,
+    defaultItems,
+    defaultCompileItems: defaultItems && !/^false$/i.test(lastValue(evaluated, 'EnableDefaultCompileItems') ?? ''),
     compileIncludes,
-    internalsVisibleTo: /<InternalsVisibleTo\b/i.test(evaluated),
+    // `<InternalsVisibleTo Include="..." />`, or the item the SDK turns into the attribute itself.
+    internalsVisibleTo: /<InternalsVisibleTo\b/i.test(evaluated) || /<AssemblyAttribute\s[^>]*?\bInclude\s*=\s*["'][^"']*\bInternalsVisibleTo(?:Attribute)?["']/i.test(evaluated),
     markupItem,
     importsSystem: systemUsing === undefined ? implicitUsings : /^include$/i.test(systemUsing),
     webProject: /Sdk\s*=\s*"Microsoft\.NET\.Sdk\.Web"/i.test(projectText) || /<Sdk\s+Name\s*=\s*"Microsoft\.NET\.Sdk\.Web"/i.test(projectText),

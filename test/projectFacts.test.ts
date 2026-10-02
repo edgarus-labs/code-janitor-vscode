@@ -105,13 +105,6 @@ describe('targetFrameworksOf', () => {
     expect(targetFrameworksOf(project({ 'A.csproj': SDK, 'B.csproj': SDK }).info)).toBeUndefined();
     expect(targetFrameworksOf({ directory: path.join(os.tmpdir(), 'cj-does-not-exist-xyz') } as ProjectInfo)).toBeUndefined();
   });
-
-  it('answers the same for the same project object', () => {
-    const { info } = project({ 'A.csproj': '<Project><PropertyGroup><TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion></PropertyGroup></Project>' });
-
-    expect(targetFrameworksOf(info)).toEqual(['net461']);
-    expect(targetFrameworksOf(info)).toBe(targetFrameworksOf(info));
-  });
 });
 
 describe('loadProjectFacts', () => {
@@ -131,12 +124,13 @@ describe('loadProjectFacts', () => {
     expect([...facts.others.derivedOrConstrainedNames]).toContain('Shared');
   });
 
-  it('caches per project object and current file', () => {
-    const { directory, info } = project({ 'App.csproj': SDK, 'A.cs': 'class A { }' });
-    const current = path.join(directory, 'A.cs');
+  it('leaves out the current file asked for, also when the same project object is asked for another file', () => {
+    const { directory, info } = project({ 'App.csproj': SDK, 'A.cs': 'class A { }', 'B.cs': 'class B { }' });
 
-    expect(loadProjectFacts(info, current)).toBe(loadProjectFacts(info, current));
-    expect(loadProjectFacts(info, undefined)).not.toBe(loadProjectFacts(info, current));
+    expect([...loadProjectFacts(info, path.join(directory, 'A.cs')).others.typeNames]).toEqual(['B']);
+    expect([...loadProjectFacts(info, path.join(directory, 'B.cs')).others.typeNames]).toEqual(['A']);
+    expect([...loadProjectFacts(info, undefined).others.typeNames].sort()).toEqual(['A', 'B']);
+    expect([...loadProjectFacts(info, path.join(directory, 'A.cs')).others.typeNames]).toEqual(['B']);
   });
 
   it('skips bin, obj, hidden folders and folders of other projects', () => {
@@ -186,6 +180,22 @@ describe('loadProjectFacts', () => {
     expect(load().others.memberAccessNames.has('Shared')).toBe(false);
   });
 
+  it('forgets a removed file, so one recreated with the same size and time is read again', () => {
+    const { directory } = project({ 'App.csproj': SDK, 'A.cs': 'class Aaaa { }' });
+    const file = path.join(directory, 'A.cs');
+    const time = new Date('2020-01-01T00:00:00Z');
+    fs.utimesSync(file, time, time);
+    const load = (): ProjectFacts => loadProjectFacts({ directory } as ProjectInfo, undefined);
+    expect([...load().others.typeNames]).toEqual(['Aaaa']);
+
+    fs.rmSync(file);
+    expect([...load().others.typeNames]).toEqual([]);
+
+    fs.writeFileSync(file, 'class Bbbb { }');
+    fs.utimesSync(file, time, time);
+    expect([...load().others.typeNames]).toEqual(['Bbbb']);
+  });
+
   it('ignores a byte order mark', () => {
     const { info } = project({ 'App.csproj': SDK, 'A.cs': '\uFEFFclass WithBom { }' });
 
@@ -205,6 +215,18 @@ describe('loadProjectFacts', () => {
     expect(loadProjectFacts(usingItem.info, undefined).importsSystem).toBe(true);
     expect(loadProjectFacts({ directory: path.join(inherited.directory, 'src') } as ProjectInfo, undefined).importsSystem).toBe(true);
     expect(loadProjectFacts(project({ 'App.csproj': SDK }).info, undefined)).toMatchObject({ importsSystem: false, internalsVisibleTo: false });
+  });
+
+  it('reads InternalsVisibleTo added as an AssemblyAttribute item', () => {
+    const item = (include: string): ProjectFacts =>
+      loadProjectFacts(
+        project({ 'App.csproj': `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><AssemblyAttribute Include="${include}"><_Parameter1>App.Tests</_Parameter1></AssemblyAttribute></ItemGroup></Project>` }).info,
+        undefined
+      );
+
+    expect(item('System.Runtime.CompilerServices.InternalsVisibleToAttribute').internalsVisibleTo).toBe(true);
+    expect(item('System.Runtime.CompilerServices.InternalsVisibleTo').internalsVisibleTo).toBe(true);
+    expect(item('System.CLSCompliantAttribute').internalsVisibleTo).toBe(false);
   });
 
   it('prefers the project own ImplicitUsings over the inherited one', () => {

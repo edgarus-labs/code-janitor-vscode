@@ -209,6 +209,10 @@ export async function runCleanupOnUris(
       logInfo(`Cleanup: ${unresolved} .editorconfig rule violation(s) were not fixed.`);
     }
 
+    if (finished.notes > 0) {
+      logInfo(`Cleanup: ${finished.notes} note(s) on what the Code Janitor settings left undone (listed above).`);
+    }
+
     if (finished.unsupported > 0) {
       logInfo(`Cleanup: ${finished.unsupported} .editorconfig setting(s) are not supported and were not applied (listed above with the number of files).`);
     }
@@ -675,11 +679,34 @@ async function applyResults(groups: readonly CleanupGroup[], label: string): Pro
 }
 
 /**
- * Writes a file's new content with the new files of its split, all or nothing: the new files
- * first, then the file itself; when a write fails, the new files already written are deleted, so
- * no type is left in two files. Throws the failure.
+ * Writes a file's new content with the new files of its split, all or nothing. For an open file,
+ * one `WorkspaceEdit` creates the new files and edits the file, unsaved, so the disk never holds a
+ * type twice and one undo reverts the whole split. Otherwise the new files are written first, then
+ * the file itself; when a write fails, the new files already written are deleted, so no type is
+ * left in two files. Throws the failure.
  */
 async function writeFileGroup(file: CollectedFile, output: string, newFiles: readonly NewFile[]): Promise<void> {
+  if (file.isOpen && newFiles.length > 0) {
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === file.uri.toString());
+    if (!doc) {
+      throw new Error('the document was closed during cleanup; the file was not changed');
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    for (const newFile of newFiles) {
+      // Fails the whole edit when the file exists: a split never overwrites a file.
+      edit.createFile(newFile.uri);
+      edit.insert(newFile.uri, new vscode.Position(0, 0), newFile.content);
+    }
+
+    edit.replace(file.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), output);
+    if (!(await vscode.workspace.applyEdit(edit))) {
+      throw new Error('VS Code did not apply the edit; the file was not changed and no new file was created');
+    }
+
+    return;
+  }
+
   const written: vscode.Uri[] = [];
   try {
     for (const newFile of newFiles) {

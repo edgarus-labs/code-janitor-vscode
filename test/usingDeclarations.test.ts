@@ -40,6 +40,12 @@ describe('declarations of a file', () => {
     expect(keys(source)).toEqual(['N:N', 'T:N.C']);
   });
 
+  it('reads a file that starts with a byte order mark', () => {
+    expect(keys('\uFEFFnamespace Company { public class Foo { } }')).toEqual(['N:Company', 'T:Company.Foo']);
+    expect(keys('\uFEFFnamespace Company;\n\npublic class Foo { }\n')).toEqual(['N:Company', 'T:Company.Foo']);
+    expect(keys('\uFEFFglobal using Vendor.Tools;\n')).toEqual(['G:Vendor . Tools']);
+  });
+
   it('reads types of the global namespace', () => {
     expect(keys('class Top { }\nenum Kind { }\n')).toEqual(['T:Kind', 'T:Top']);
   });
@@ -61,6 +67,16 @@ describe('declarations of a file', () => {
 }`;
 
     expect(keys(source)).toEqual(['E:N:Generic', 'E:N:Plain', 'N:N', 'T:N.Blocks', 'T:N.E', 'X:N']);
+  });
+
+  it('reads extension methods whose receiver has modifiers or attributes in front of this', () => {
+    const source =
+      'namespace N { static class E { public static void Inc(ref this int x) {} public static void Dec(this ref int x) {} ' +
+      'public static int Len(in this System.Span<int> s) => 0; public static int Peek<T>(ref readonly this T x) => 0; ' +
+      'public static void Fill(scoped ref this System.Span<int> s) {} public static int Count([NotNull] this string s) => 0; ' +
+      'public static int Plain(ref int x) => 0; } }';
+
+    expect(keys(source)).toEqual(['E:N:Count', 'E:N:Dec', 'E:N:Fill', 'E:N:Inc', 'E:N:Len', 'E:N:Peek', 'N:N', 'T:N.E']);
   });
 
   it('reads global using directives', () => {
@@ -158,6 +174,13 @@ describe('layout of a file', () => {
     expect(layout.hasGlobalAttributes).toBe(true);
     expect(layout.otherTopLevel).toBe(true);
     expect(layout.topLevel).toHaveLength(1);
+  });
+
+  it('reads a namespace that directly follows global attributes', () => {
+    const layout = analyzeLayout('using System;\n[assembly: CLSCompliant(true)]\n[module: System.Runtime.CompilerServices.SkipLocalsInit]\nnamespace Demo\n{\n    using System.Text;\n    class C { }\n}\n');
+
+    expect([layout.hasGlobalAttributes, layout.otherTopLevel, layout.ok]).toEqual([true, true, true]);
+    expect(layout.topLevel.map((namespace) => [namespace.fullName, namespace.usings.length])).toEqual([['Demo', 1]]);
   });
 
   it('is not ok when the braces do not balance', () => {

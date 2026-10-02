@@ -1,7 +1,10 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import { unsupportedEditorConfigSettings } from '../src/cleanup/editorConfigRegistry';
-import { ProjectInfo } from '../src/cleanup/projectInfo';
+import { ProjectInfo, findProject } from '../src/cleanup/projectInfo';
 import { createEditorConfigCodeStyleConverter } from '../src/cleanup/transformations/editorConfigCodeStyle';
 
 function lines(...text: string[]): string {
@@ -144,5 +147,26 @@ describe('rules without options', () => {
       expect.stringMatching(/^IDE0072 line 10: .*Blue/),
       expect.stringMatching(/^IDE0070 \(dotnet_prefer_system_hash_code\) line 11: /),
     ]);
+  });
+
+  it('IDE0100 follows a module-level SuppressMessage in another file of the project', () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-simplify-'));
+    try {
+      fs.writeFileSync(path.join(folder, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+      const source = method('if (b == true) { }');
+      const filePath = path.join(folder, 'C.cs');
+      fs.writeFileSync(filePath, source);
+      const clean = (): string => {
+        const props = resolveEditorConfigProperties([{ directory: folder, text: 'root = true\n[*.cs]\ndotnet_diagnostic.IDE0100.severity = warning\n' }], filePath);
+        return createEditorConfigCodeStyleConverter(props, () => undefined, { filePath, fileName: 'C.cs', project: findProject(filePath) }).apply(source);
+      };
+
+      expect(clean()).toBe(method('if (b) { }'));
+
+      fs.writeFileSync(path.join(folder, 'GlobalSuppressions.cs'), '[module: System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0100:Remove redundant equality")]\n');
+      expect(clean()).toBe(source);
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
   });
 });

@@ -2,9 +2,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { placeUsings } from '../src/cleanup/usings/placement';
 import { ProjectContext, clearUsingIndexCache, projectContextOf } from '../src/cleanup/usings/workspaceIndex';
 
 const PLAIN_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>';
+const WINDOWS_FORMS_PROJECT =
+  '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms></PropertyGroup></Project>';
 
 let root: string;
 
@@ -76,6 +79,17 @@ describe('project context of a file', () => {
     expect(context(write('App/Sample.cs', 'class Sample { }')).index.globalUsings()).toEqual(['System . Text']);
   });
 
+  it('does not take the global usings of a referenced project, which apply only there', () => {
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup></Project>');
+    write('App/Globals.cs', 'global using System.Text;\n');
+    write('Lib/Lib.csproj', PLAIN_PROJECT);
+    write('Lib/Globals.cs', 'global using static Company.Lib.Helpers;\nnamespace Company.Lib { public static class Helpers { } }\n');
+    const { index } = context(write('App/Sample.cs', 'class Sample { }'));
+
+    expect(index.globalUsings()).toEqual(['System . Text']);
+    expect(index.hasType('Company.Lib.Helpers')).toBe(true);
+  });
+
   it.each([
     ['a file without a project', () => path.join(os.tmpdir(), 'cj-no-project', 'Lonely.cs'), /not part of a C# project/],
     ['an empty path', () => '', /not part of a C# project/],
@@ -101,6 +115,20 @@ describe('project context of a file', () => {
     write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="../Shared/**/*.cs" /></ItemGroup></Project>');
 
     expect(context(write('App/Sample.cs', 'class Sample { }')).incomplete).toMatch(/adds C# files from outside its folder/);
+  });
+
+  it('marks the index incomplete for a project reference MSBuild has to evaluate', () => {
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="$(SolutionDir)Lib/Lib.csproj" /></ItemGroup></Project>');
+    write('Lib/Lib.csproj', PLAIN_PROJECT);
+    write('Lib/Lib.cs', 'namespace Company.App.Shared { public class Other { } }');
+
+    expect(context(write('App/Sample.cs', 'class Sample { }')).incomplete).toMatch(/\$\(SolutionDir\)Lib\/Lib\.csproj/);
+  });
+
+  it('marks the index incomplete for a referenced project that does not exist', () => {
+    write('App/App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup></Project>');
+
+    expect(context(write('App/Sample.cs', 'class Sample { }')).incomplete).toMatch(/Lib\.csproj/);
   });
 
   it('notices a declaration added to the project after the first look', () => {
@@ -245,6 +273,8 @@ describe('references outside the framework', () => {
     ['an assembly Reference', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Reference Include="Vendor"><HintPath>v.dll</HintPath></Reference></ItemGroup></Project>', undefined, true],
     ['a web SDK', '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>', undefined, true],
     ['a package added by Directory.Build.props', PLAIN_PROJECT, '<Project><ItemGroup><PackageReference Include="X" Version="1" /></ItemGroup></Project>', true],
+    ['Windows Forms', WINDOWS_FORMS_PROJECT, undefined, true],
+    ['WPF turned on by Directory.Build.props', PLAIN_PROJECT, '<Project><PropertyGroup><UseWPF>true</UseWPF></PropertyGroup></Project>', true],
   ])('%s', (_name, project, props, expected) => {
     write('App/App.csproj', project);
     if (props) {
@@ -252,5 +282,33 @@ describe('references outside the framework', () => {
     }
 
     expect(context(write('App/Sample.cs', 'class Sample { }')).externalReferences).toBe(expected);
+  });
+});
+
+describe('frameworks the index does not list', () => {
+  const library = 'namespace Company { public class Font { } }';
+  const sample = 'namespace Company.App\n{\n    using System.Drawing;\n\n    public class C { public float M(Font f) => f.Size; }\n}\n';
+
+  it.each([
+    ['Windows Forms', WINDOWS_FORMS_PROJECT],
+    ['WPF', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF></PropertyGroup></Project>'],
+    ['a Windows Desktop FrameworkReference', '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><FrameworkReference Include="Microsoft.WindowsDesktop.App" /></ItemGroup></Project>'],
+  ])('do not take the types of a framework namespace as all known with %s', (_name, project) => {
+    // Windows Forms adds System.Drawing.Font, which wins over Company.Font only while the directive is inside the namespace.
+    write('App/App.csproj', project);
+    write('App/Lib.cs', library);
+
+    expect(placeUsings(sample, 'outside', { ...context(write('App/C.cs', sample)), indent: '    ' })).toEqual({
+      status: 'skipped',
+      reason: "moving 'using System.Drawing;' would change what 'Font' refers to: it is searched after Company, which declares Company.Font",
+      at: sample.indexOf('using'),
+    });
+  });
+
+  it('takes the types of a framework namespace as all known in a plain project', () => {
+    write('App/App.csproj', PLAIN_PROJECT);
+    write('App/Lib.cs', library);
+
+    expect(placeUsings(sample, 'outside', { ...context(write('App/C.cs', sample)), indent: '    ' }).status).toBe('moved');
   });
 });

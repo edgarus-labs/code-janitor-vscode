@@ -138,9 +138,11 @@ class FieldPlanner {
       const indent = firstMember
         ? /[ \t]*$/.exec(this.view.source.slice(0, firstMember.startIndex))?.[0] ?? this.context.indent
         : `${/^[ \t]*/.exec(this.view.source.slice(this.view.source.lastIndexOf('\n', type.startIndex) + 1))?.[0] ?? ''}${this.context.indent}`;
-      const lines = declarations.map((declaration) => `\n${indent}${declaration}`).join('');
-      // Blank-line padding separates members other than single-line fields; keep that layout.
-      const blank = firstMember && (firstMember.type !== 'field_declaration' || firstMember.text.includes('\n')) ? '\n' : '';
+      // Blank-line padding separates multi-line fields and members other than single-line fields from
+      // what follows them; give the added fields that layout too, so a later cleanup has nothing to add.
+      const lines = declarations.map((declaration, index) => `${index > 0 && declarations[index - 1].includes('\n') ? '\n' : ''}\n${indent}${declaration}`).join('');
+      const lastIsMultiLine = declarations[declarations.length - 1].includes('\n');
+      const blank = firstMember && (lastIsMultiLine || firstMember.type !== 'field_declaration' || firstMember.text.includes('\n')) ? '\n' : '';
       edits.push({ start: brace.endIndex, end: brace.endIndex, text: `${lines}${blank}` });
     }
 
@@ -342,7 +344,10 @@ function serializerUse(view: FileView, creation: Node): { argument: Node; declar
     const invocation = argument?.parent?.parent;
     const call = invocation ? callOf(invocation) : undefined;
 
-    return argument?.type === 'argument' && argument.namedChildren.length === 1 && call !== undefined && SERIALIZER_METHODS.test(call.name) && isBclType(view, call.receiver, 'JsonSerializer', 'System.Text.Json');
+    // `JsonSerializer.Deserialize<T>(...)` names the method with a generic_name: match its identifier.
+    const method = call?.name.replace(/\s*<[\s\S]*$/, '');
+
+    return argument?.type === 'argument' && argument.namedChildren.length === 1 && call !== undefined && SERIALIZER_METHODS.test(method ?? '') && isBclType(view, call.receiver, 'JsonSerializer', 'System.Text.Json');
   };
 
   if (isSerializerArgument(creation)) {
@@ -390,6 +395,8 @@ interface TokenOverload {
   readonly api?: FrameworkApi;
   /** The API needed only for calls with this many arguments. */
   readonly apiForCount?: { readonly count: number; readonly api: FrameworkApi };
+  /** The token overload returns a ValueTask where the current one returns a Task: only an awaited result keeps its meaning. */
+  readonly returnsValueTask?: boolean;
 }
 
 const STREAM_TYPES = new Set(['Stream', 'FileStream', 'MemoryStream', 'BufferedStream', 'NetworkStream', 'GZipStream', 'DeflateStream', 'BrotliStream', 'CryptoStream', 'SslStream', 'PipeStream']);
@@ -433,8 +440,9 @@ function instanceTokenOverload(type: string, method: string): TokenOverload | un
       GetByteArrayAsync: { counts: [1], api: 'net5' },
       GetStreamAsync: { counts: [1], api: 'net5' },
     },
-    StreamReader: { ReadLineAsync: { counts: [0], api: 'net7' }, ReadToEndAsync: { counts: [0], api: 'net7' } },
-    TextReader: { ReadLineAsync: { counts: [0], api: 'net7' }, ReadToEndAsync: { counts: [0], api: 'net7' } },
+    // ReadLineAsync(CancellationToken) returns ValueTask<string?>, ReadLineAsync() a Task<string?>.
+    StreamReader: { ReadLineAsync: { counts: [0], api: 'net7', returnsValueTask: true }, ReadToEndAsync: { counts: [0], api: 'net7' } },
+    TextReader: { ReadLineAsync: { counts: [0], api: 'net7', returnsValueTask: true }, ReadToEndAsync: { counts: [0], api: 'net7' } },
   };
 
   return table[type]?.[method];
@@ -462,6 +470,23 @@ function tokenParameter(node: Node): Node | undefined {
   const tokens = parameters.filter((parameter) => /^(?:System\.Threading\.)?CancellationToken$/.test(normalizeType(parameter.childForFieldName('type')?.text ?? '')));
 
   return last && tokens.length === 1 && tokens[0] === last && !last.text.includes('?') && /CancellationToken$/.test(type) ? last : undefined;
+}
+
+/** Whether `invocation` is awaited right away (optionally through `.ConfigureAwait(...)`), so a ValueTask result means the same. */
+function isAwaitedDirectly(invocation: Node): boolean {
+  let operand = invocation;
+  const access = operand.parent;
+  if (access?.type === 'member_access_expression' && access.childForFieldName('expression') === operand && access.childForFieldName('name')?.text === 'ConfigureAwait' && access.parent?.type === 'invocation_expression') {
+    operand = access.parent;
+  }
+
+  for (let parent = operand.parent; parent; operand = parent, parent = parent.parent) {
+    if (parent.type !== 'parenthesized_expression') {
+      return parent.type === 'await_expression';
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -527,6 +552,11 @@ export function applyForwardCancellationToken(source: string, context: RuleConte
 
     if (support === undefined) {
       view.report('CA2016', invocation, `${invocation.text} could take ${tokenName.text}, but the project's target framework is unknown, so that overload may not exist; it was kept.`);
+      continue;
+    }
+
+    if (overload.returnsValueTask && !isAwaitedDirectly(invocation)) {
+      view.report('CA2016', invocation, `${invocation.text} could take ${tokenName.text}, but that overload returns a ValueTask and the Task result is not awaited directly; it was kept.`);
       continue;
     }
 

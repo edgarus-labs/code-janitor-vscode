@@ -75,6 +75,12 @@ describe('removeBlankLinesAfterAttributes', () => {
 
     expect(removeBlankLinesAfterAttributes(input)).toBe('[Obsolete]\r\nvoid M() {}\r\n');
   });
+
+  it('keeps the blank line after an assembly or module attribute, which belongs to no declaration', () => {
+    const input = '[assembly: Defaults(\n    Mode.All)]\n\nnamespace N\n{\n    [ module : Marker]\n\n    class C { }\n}\n';
+
+    expect(removeBlankLinesAfterAttributes(input)).toBe(input);
+  });
 });
 
 describe('removeBlankLinesAfterOpeningBrace', () => {

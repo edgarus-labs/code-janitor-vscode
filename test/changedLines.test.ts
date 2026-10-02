@@ -57,16 +57,18 @@ describe('changedLinesSince', () => {
 });
 
 describe('runCleanupOnChangedLines', () => {
-  const run = (editorConfig: string[], current: string) => {
+  const run = (editorConfig: string[], current: string, settings = createDefaultSettings()) => {
     fs.writeFileSync(path.join(root, '.editorconfig'), ['root = true', '', '[*.cs]', ...editorConfig, ''].join('\n'));
     // The project tells that file-scoped namespaces compile.
     fs.writeFileSync(path.join(root, 'Counter.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>');
     const issues: EditorConfigIssue[] = [];
-    const outcome = runCleanupOnChangedLines(current, path.join(root, 'Counter.cs'), createDefaultSettings(), changedLinesSince(BASE, current), undefined, (issue) =>
+    const outcome = runCleanupOnChangedLines(current, path.join(root, 'Counter.cs'), settings, changedLinesSince(BASE, current), undefined, (issue) =>
       issues.push(issue)
     );
 
-    return { ...outcome, issues: issues.filter((issue) => issue.kind === 'unresolved').map((issue) => issue.detail) };
+    const details = (kind: EditorConfigIssue['kind']) => issues.filter((issue) => issue.kind === kind).map((issue) => issue.detail);
+
+    return { ...outcome, issues: details('unresolved'), notes: details('note') };
   };
 
   const withNewMethod = BASE.replace(
@@ -110,6 +112,17 @@ describe('runCleanupOnChangedLines', () => {
     expect(output).toBe(current);
     expect(issues).toEqual([
       "IDE1006 (naming rule 'private_fields', warning) line 6: field 'count' should be named '_count'; not renamed because renames are not made when only changed lines are cleaned.",
+    ]);
+  });
+
+  it('notes an enabled Code Style rule the engine does not implement, as the full cleanup does', () => {
+    const settings = { ...createDefaultSettings(), codeStyleRules: { dotnet_style_predefined_type_for_locals_parameters_members: 'false' } };
+
+    const { issues, notes } = run([], withNewMethod, settings);
+
+    expect(issues).toEqual([]);
+    expect(notes).toEqual([
+      'Code Style rule dotnet_style_predefined_type_for_locals_parameters_members = false (IDE0049) is not implemented by Code Janitor for VS Code, so it was not applied.',
     ]);
   });
 });

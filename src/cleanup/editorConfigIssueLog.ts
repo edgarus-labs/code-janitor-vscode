@@ -8,13 +8,15 @@ export interface ReportedConfigurations {
 }
 
 /**
- * Logs the `.editorconfig` issues of one cleanup run. Violations cleanup could not fix are logged
- * per file as they come. Unsupported settings are logged when the run finishes, once each, with
- * the number of files they affect. With `session`, the unsupported settings of a configuration
- * already reported in the session are left out (single-file cleanup, cleanup on save, preview).
+ * Logs the `.editorconfig` issues of one cleanup run. Violations cleanup could not fix, and the notes
+ * of the Code Janitor settings (what they left undone), are logged per file as they come. Unsupported
+ * settings are logged when the run finishes, once each, with the number of files they affect. With
+ * `session`, the unsupported settings of a configuration already reported in the session are left
+ * out (single-file cleanup, cleanup on save, preview).
  */
 export class EditorConfigIssueLog {
   private unresolved = 0;
+  private notes = 0;
   private readonly filesBySetting = new Map<string, Set<string>>();
 
   constructor(
@@ -30,13 +32,20 @@ export class EditorConfigIssueLog {
       return;
     }
 
+    if (issue.kind === 'note') {
+      this.notes++;
+      this.log(`Cleanup note: ${issue.filePath}: ${issue.detail}`);
+
+      return;
+    }
+
     const files = this.filesBySetting.get(issue.detail) ?? new Set<string>();
     files.add(issue.filePath);
     this.filesBySetting.set(issue.detail, files);
   };
 
-  /** Logs the unsupported settings; the counts are of violations and of distinct settings logged. */
-  finish(): { unresolved: number; unsupported: number } {
+  /** Logs the unsupported settings; the counts are of violations, of notes and of distinct settings logged. */
+  finish(): { unresolved: number; notes: number; unsupported: number } {
     const reported = new Set<string>();
     let unsupported = 0;
 
@@ -62,7 +71,7 @@ export class EditorConfigIssueLog {
     reported.forEach((signature) => this.session?.seen.add(signature));
     this.filesBySetting.clear();
 
-    return { unresolved: this.unresolved, unsupported };
+    return { unresolved: this.unresolved, notes: this.notes, unsupported };
   }
 }
 

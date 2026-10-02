@@ -25,7 +25,11 @@ export interface CheckReport {
  */
 export async function checkPaths(paths: readonly string[], root: string): Promise<CheckReport> {
   const files = [...new Set(paths.flatMap((target) => csharpFiles(path.resolve(target))))].sort();
-  const sources = new Map(await Promise.all(files.map(async (file) => [file, await fs.promises.readFile(file, 'utf8')] as const)));
+  // One file at a time: reading them all at once holds a descriptor per file and fails with EMFILE on large solutions.
+  const sources = new Map<string, string>();
+  for (const file of files) {
+    sources.set(file, await fs.promises.readFile(file, 'utf8'));
+  }
   const disqualifiedTypeNames = discoverDisqualifiedTypeNames(sources.values());
 
   const lines: string[] = [];
@@ -56,11 +60,11 @@ function describe(finding: CleanupFinding): string {
   return `${finding.rule}${finding.severity ? ` (${finding.severity})` : ''}: ${finding.message}`;
 }
 
-/** `target` itself when it is a file, or the `.cs` files under it outside build and tool folders. */
+/** `target` itself when it is a `.cs` file, or the `.cs` files under it outside build and tool folders. */
 function csharpFiles(target: string): string[] {
   const stat = fs.statSync(target);
   if (!stat.isDirectory()) {
-    return [target];
+    return target.toLowerCase().endsWith('.cs') ? [target] : [];
   }
 
   return fs.readdirSync(target, { withFileTypes: true }).flatMap((entry) => {

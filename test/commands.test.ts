@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  ConfigurationTarget,
   Position,
   Selection,
   TextDocument,
@@ -14,6 +15,7 @@ import {
   resetMock,
   state,
   window,
+  workspace,
 } from './helpers/vscodeMock';
 import { activate } from '../src/extension';
 import { registerCleanupCommands } from '../src/commands/cleanupCommands';
@@ -44,10 +46,37 @@ function tempRoot(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * A `codeJanitor` configuration with separate User and Workspace values (keys relative to the section).
+ * As in VS Code, `get` merges an object value across the scopes and any other value is overridden.
+ */
+function scopedConfiguration(user: Record<string, unknown>, workspaceValues: Record<string, unknown>): { user: Record<string, unknown>; workspace: Record<string, unknown> } {
+  const isObject = (value: unknown): value is object => typeof value === 'object' && value !== null && !Array.isArray(value);
+  vi.spyOn(workspace, 'getConfiguration').mockImplementation(
+    () =>
+      ({
+        get: (key: string, defaultValue?: unknown) => {
+          const [userValue, workspaceValue] = [user[key], workspaceValues[key]];
+
+          return (isObject(userValue) && isObject(workspaceValue) ? { ...userValue, ...workspaceValue } : workspaceValue ?? userValue) ?? defaultValue;
+        },
+        inspect: (key: string) => ({ globalValue: user[key], workspaceValue: workspaceValues[key] }),
+        update: (key: string, value: unknown, target: unknown) => {
+          (target === ConfigurationTarget.Global ? user : workspaceValues)[key] = value;
+
+          return Promise.resolve();
+        },
+      }) as never
+  );
+
+  return { user, workspace: workspaceValues };
+}
 
 function run(command: string, ...args: unknown[]): Promise<unknown> {
   const handler = state.commands.get(command);
@@ -313,18 +342,18 @@ describe('repository settings commands', () => {
     expect(state.configuration.get('codeJanitor.cleanup.codeStyleRules')).toEqual({ csharp_prefer_braces: 'when_multiline' });
   });
 
-  it('imports the codeStyle section over the current rules: a value enables or changes a rule, null disables it', async () => {
+  it('imports the codeStyle section over the Workspace rules: a value enables or changes a rule, null disables it', async () => {
     const root = tempRoot();
     fs.writeFileSync(
       path.join(root, '.codejanitor'),
       JSON.stringify({ cleanup: { codeStyle: { csharp_prefer_braces: 'false', dotnet_style_null_propagation: null, csharp_style_throw_expression: 'true', unknown_rule: 'true' } } })
     );
-    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { csharp_prefer_braces: 'true', dotnet_style_null_propagation: 'true' });
+    const scopes = scopedConfiguration({}, { 'cleanup.codeStyleRules': { csharp_prefer_braces: 'true', dotnet_style_null_propagation: 'true' } });
 
     await importRepositorySettings(root);
 
-    expect(state.configuration.get('codeJanitor.cleanup.codeStyleRules')).toEqual({ csharp_prefer_braces: 'false', csharp_style_throw_expression: 'true' });
-    expect(state.informationMessages).toContain('Code Janitor: imported 3 repository setting(s) into workspace settings.');
+    expect(scopes.workspace['cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'false', csharp_style_throw_expression: 'true' });
+    expect(state.informationMessages).toEqual(['Code Janitor: imported 3 repository setting(s) into workspace settings.']);
   });
 
   it('does not touch the Code Style setting when the file has no codeStyle section', async () => {
@@ -335,6 +364,69 @@ describe('repository settings commands', () => {
     await importRepositorySettings(root);
 
     expect(state.configuration.get('codeJanitor.cleanup.codeStyleRules')).toEqual({ csharp_prefer_braces: 'true' });
+  });
+
+  it('exports only the settings set in VS Code, so the others keep following each user setting', async () => {
+    const root = tempRoot();
+    state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+    state.configuration.set('codeJanitor.cleanup.insertBlankLinePadding', false);
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({ removeRegions: false, insertBlankLinePadding: false, codeStyle: {} });
+  });
+
+  it('keeps what the overwritten file lists for the settings not set in VS Code', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({
+        cleanup: {
+          removeRegions: true,
+          organizeUsings: false,
+          fileHeaderPosition: 'afterUsings',
+          insertBlankLinePaddingBeforeFieldsSingleLine: true,
+          insertExplicitAccessModifiers: false,
+          insertBlankLinePaddingBeforeClasses: false,
+        },
+      })
+    );
+    state.modalChoice = 'Overwrite';
+    state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({
+      removeRegions: false,
+      organizeUsings: false,
+      fileHeaderPosition: 'afterUsings',
+      insertBlankLinePaddingBeforeFieldsSingleLine: true,
+      insertExplicitAccessModifiers: false,
+      insertBlankLinePaddingBeforeClasses: false,
+      codeStyle: {},
+    });
+  });
+
+  it('imports the codeStyle section over the Workspace rules only, writing null for a rule the file turns off and User settings enable', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { codeStyle: { csharp_prefer_braces: null, dotnet_style_null_propagation: null, csharp_prefer_simple_using_statement: 'true' } } })
+    );
+    const scopes = scopedConfiguration(
+      { 'cleanup.codeStyleRules': { csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' } },
+      { 'cleanup.codeStyleRules': { dotnet_style_null_propagation: 'true' } }
+    );
+
+    await importRepositorySettings(root);
+
+    // The User rules are not copied into the (often committed) workspace settings; the one the file
+    // turns off gets null, which wins when VS Code merges the scopes.
+    expect(scopes.workspace['cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: null, csharp_prefer_simple_using_statement: 'true' });
+    expect(scopes.user['cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' });
+    expect(state.informationMessages).toEqual(['Code Janitor: imported 3 repository setting(s) into workspace settings.']);
   });
 
   it('registers export and import commands', () => {
@@ -704,6 +796,22 @@ describe('runCleanupOnUris', () => {
     expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 0 });
     expect(state.files.get('/w/Widget.cs')).toBe('internal sealed class Widget\n{\n}\n');
   });
+
+  it('logs what the settings left undone as notes, neither logged nor counted as .editorconfig violations', async () => {
+    createOutputChannel(createContext());
+    state.configuration.set('codeJanitor.cleanup.convertToFileScopedNamespace', true);
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { dotnet_style_predefined_type_for_locals_parameters_members: 'false' });
+    state.files.set('/w/a.cs', 'namespace N\n{\n    internal class C\n    {\n    }\n}\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.cs')]);
+
+    expect(result.unresolved).toBe(0);
+    expect(state.outputChannelLines.filter((line) => line.includes('rule not fixed') || line.includes('violation'))).toEqual([]);
+    expect(state.outputChannelLines.filter((line) => line.includes('Cleanup note: /w/a.cs: '))).toEqual([
+      expect.stringContaining('Cleanup note: /w/a.cs: Code Style rule dotnet_style_predefined_type_for_locals_parameters_members = false (IDE0049) is not implemented'),
+      expect.stringContaining('Cleanup note: /w/a.cs: Line 1: namespace not converted'),
+    ]);
+  });
 });
 
 describe('cleanup commands', () => {
@@ -958,6 +1066,28 @@ describe('cleanup commands', () => {
     expect(state.files.has(path.join(root, 'Bar.cs'))).toBe(false);
   });
 
+  it('splits an open file in one edit with its new files, so the disk never holds a type twice before the user saves', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+    const filePath = path.join(root, 'Foo.cs');
+    const barPath = path.join(root, 'Bar.cs');
+    const source = 'namespace Demo;\n\ninternal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n';
+    state.files.set(filePath, source);
+    const document = new TextDocument(Uri.file(filePath), source, 'csharp');
+    state.documents.push(document);
+    const applyEdit = vi.spyOn(workspace, 'applyEdit');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)]);
+
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 1 });
+    // One edit: undoing it removes the type from the new file and puts it back in the original.
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    expect(document.getText()).toBe('namespace Demo;\n\ninternal class Foo\n{\n}\n');
+    expect(state.documents.find((candidate) => candidate.uri.fsPath === barPath)?.getText()).toBe('namespace Demo;\n\ninternal class Bar\n{\n}\n');
+    // On disk: the original still has Bar, the new file is empty until saved.
+    expect([state.files.get(filePath), state.files.get(barPath)]).toEqual([source, '']);
+  });
+
   it('counts an open file whose edit VS Code rejects as failed, not changed', async () => {
     const document = new TextDocument(Uri.file('/w/C.cs'), UNCLEAN, 'csharp');
     state.documents.push(document);
@@ -1179,7 +1309,9 @@ describe('cleanup commands', () => {
 
     expect(document.getText()).toContain('class Foo');
     expect(document.getText()).not.toContain('class Bar');
-    expect(state.files.get(path.join('/w', 'Bar.cs'))).toContain('class Bar');
+    // Not on disk until the user saves: the new file is created unsaved, in the same edit as the original.
+    expect(state.files.get(path.join('/w', 'Bar.cs'))).toBe('');
+    expect(state.documents.find((candidate) => candidate.uri.fsPath === path.join('/w', 'Bar.cs'))?.getText()).toContain('class Bar');
   });
 
   it('reports a missing active editor for splitting top-level types', async () => {

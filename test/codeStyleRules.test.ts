@@ -100,4 +100,14 @@ describe('Code Style setting', () => {
     expect(declared![1].additionalProperties).toBe(false);
     expect(declared![1].properties).toEqual(JSON.parse(JSON.stringify(codeStyleSettingProperties())));
   });
+
+  it('accepts null per rule, so a Workspace value can turn off a rule the User settings enable', () => {
+    for (const property of Object.values(codeStyleSettingProperties())) {
+      expect(property.type).toEqual(['string', 'null']);
+      // A JSON Schema enum admits only what it lists, whatever `type` says.
+      expect(property.enum === undefined || property.enum.includes(null)).toBe(true);
+    }
+    // VS Code merges the object across scopes: the Workspace null wins over the User value and reads as off.
+    expect(parseCodeStyleSetting({ ...{ csharp_prefer_braces: 'true' }, ...{ csharp_prefer_braces: null } })).toEqual({});
+  });
 });

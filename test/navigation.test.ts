@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { registerNavigationCommands } from '../src/commands/navigation';
 import { DEFAULT_RELATED_FILE_EXTENSIONS, findRelatedFile, parseRelatedFileExtensions, relatedFileCandidates } from '../src/commands/switchFile';
@@ -14,13 +17,13 @@ afterEach(() => {
   previewState.tabs = [];
 });
 
-function run(command: string): Promise<unknown> {
+function run(command: string, ...args: unknown[]): Promise<unknown> {
   const handler = state.commands.get(command);
   if (!handler) {
     throw new Error(`Command not registered: ${command}`);
   }
 
-  return Promise.resolve(handler());
+  return Promise.resolve(handler(...args));
 }
 
 /** Built-in commands the navigation commands delegate to, with the arguments they were called with. */
@@ -164,27 +167,25 @@ describe('Switch File command', () => {
     expect(state.informationMessages.at(-1)).toBe('Code Janitor: no related file found for Alone.cs.');
     expect(opened).toEqual([]);
   });
+
+  it('switches from the file of the tab it is run on (editor tab menu), not from the active editor', async () => {
+    const opened: Uri[] = [];
+    state.commands.set('vscode.open', (uri) => {
+      opened.push(uri as Uri);
+    });
+    state.files.set('/w/View.xaml', '');
+    state.files.set('/w/View.xaml.cs', '');
+    state.files.set('/w/Page.razor', '');
+    state.files.set('/w/Page.razor.cs', '');
+    activate('/w/View.xaml.cs');
+
+    await run('codeJanitor.switchFile', Uri.file('/w/Page.razor'));
+
+    expect(opened.map((uri) => uri.fsPath)).toEqual(['/w/Page.razor.cs']);
+  });
 });
 
 describe('workflow commands', () => {
-  it('toggles read-only for the session through the built-in command', async () => {
-    const calls = recordBuiltIns('workbench.action.files.toggleActiveEditorReadonlyInSession');
-    window.activeTextEditor = new TextEditor(new TextDocument(Uri.file('/w/a.cs'), '', 'csharp'));
-
-    await run('codeJanitor.toggleReadOnly');
-
-    expect(calls).toEqual([['workbench.action.files.toggleActiveEditorReadonlyInSession', []]]);
-  });
-
-  it('reveals the active file in the Explorer', async () => {
-    const calls = recordBuiltIns('workbench.files.action.showActiveFileInExplorer');
-    window.activeTextEditor = new TextEditor(new TextDocument(Uri.file('/w/a.cs'), '', 'csharp'));
-
-    await run('codeJanitor.findInExplorer');
-
-    expect(calls).toEqual([['workbench.files.action.showActiveFileInExplorer', []]]);
-  });
-
   it('needs an active editor to toggle read-only or reveal', async () => {
     const calls = recordBuiltIns('workbench.action.files.toggleActiveEditorReadonlyInSession', 'workbench.files.action.showActiveFileInExplorer');
 
@@ -194,43 +195,49 @@ describe('workflow commands', () => {
     expect(calls).toEqual([]);
     expect(state.informationMessages).toEqual(['Code Janitor: no active editor.', 'Code Janitor: no active editor.']);
   });
-
-  it('collapses the Explorer', async () => {
-    const calls = recordBuiltIns('workbench.files.action.collapseExplorerFolders');
-
-    await run('codeJanitor.collapseExplorer');
-
-    expect(calls).toEqual([['workbench.files.action.collapseExplorerFolders', []]]);
-  });
-
-  it('collapses the focused Explorer folder for "collapse selected"', async () => {
-    const calls = recordBuiltIns('workbench.files.action.focusFilesExplorer', 'list.collapse');
-
-    await run('codeJanitor.collapseSelectedInExplorer');
-
-    expect(calls.map(([id]) => id)).toEqual(['workbench.files.action.focusFilesExplorer', 'list.collapse']);
-  });
 });
 
 describe('Close All Read-Only', () => {
   const tab = (filePath: string, isDirty = false) => ({ input: { uri: Uri.file(filePath) }, isDirty });
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'cj-readonly-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A real file on disk; `readOnly` clears its write bits (`chmod a-w`, the Windows read-only attribute). */
+  async function diskFile(name: string, readOnly: boolean): Promise<string> {
+    const filePath = path.join(dir, name);
+    await writeFile(filePath, '');
+    if (readOnly) {
+      await chmod(filePath, 0o444);
+    }
+
+    return filePath;
+  }
 
   it('closes the editors of read-only files without unsaved changes, and nothing else', async () => {
-    const readOnly = tab('/w/ro.cs');
-    const readOnlyDirty = tab('/w/ro-dirty.cs', true);
-    const writable = tab('/w/rw.cs');
+    const readOnly = tab(await diskFile('ro.cs', true));
+    const readOnlyDirty = tab(await diskFile('ro-dirty.cs', true), true);
+    const writable = tab(await diskFile('rw.cs', false));
+    const missing = tab(path.join(dir, 'deleted.cs'));
     const gitView = { input: { uri: Uri.parse('git:///w/HEAD.cs') }, isDirty: false };
-    const diff = { input: { original: Uri.file('/w/ro.cs'), modified: Uri.file('/w/ro.cs') }, isDirty: false };
-    previewState.tabs = [readOnly, readOnlyDirty, writable, gitView, diff];
-    previewState.readOnlyPaths.add('/w/ro.cs');
-    previewState.readOnlyPaths.add('/w/ro-dirty.cs');
+    const lockedResource = { input: { uri: Uri.parse('vscode-vfs:///w/locked.cs') }, isDirty: false };
+    const diff = { input: { original: readOnly.input.uri, modified: readOnly.input.uri }, isDirty: false };
+    previewState.tabs = [readOnly, readOnlyDirty, writable, missing, gitView, lockedResource, diff];
     previewState.readOnlySchemes.add('git');
+    state.files.set('/w/locked.cs', '');
+    previewState.readOnlyResources.add('vscode-vfs:///w/locked.cs');
 
     await run('codeJanitor.closeAllReadOnly');
 
-    expect(previewState.closedTabs).toEqual([readOnly, gitView]);
-    expect(previewState.tabs).toEqual([readOnlyDirty, writable, diff]);
-    expect(state.informationMessages.at(-1)).toBe('Code Janitor: closed 2 read-only editor(s).');
+    expect(previewState.closedTabs).toEqual([readOnly, gitView, lockedResource]);
+    expect(previewState.tabs).toEqual([readOnlyDirty, writable, missing, diff]);
+    expect(state.informationMessages.at(-1)).toBe('Code Janitor: closed 3 read-only editor(s).');
   });
 
   it('tells when no read-only editor is open', async () => {

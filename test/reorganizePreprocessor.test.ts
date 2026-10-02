@@ -53,6 +53,14 @@ describe('reorganize: preprocessor conditionals', () => {
     expect(reorganize(source, { performWhenPreprocessorConditionals: 'yes' })).toBe(source);
   });
 
+  it('never moves a #if block holding a #nullable or #pragma, which changes the context of the members after it', () => {
+    const nullable = 'class C\n{\n    string z;\n#if DEBUG\n#nullable enable\n    string a = "";\n#endif\n}\n';
+    const pragma = 'class C\n{\n    int _z;\n#if DEBUG\n#pragma warning disable CS0169\n    int _a;\n#endif\n}\n';
+
+    expect(reorganize(nullable, { performWhenPreprocessorConditionals: 'yes' })).toBe(nullable);
+    expect(reorganize(pragma, { performWhenPreprocessorConditionals: 'yes' })).toBe(pragma);
+  });
+
   it('sorts the members between two pragmas', () => {
     const source = '#pragma warning disable CS1591\nclass C\n{\n#pragma warning disable CS0169\n    void B() { }\n    int _a;\n#pragma warning restore CS0169\n}\n';
 
@@ -74,7 +82,7 @@ describe('reorganize: preprocessor conditionals', () => {
     const result = reorganizeSourceDetailed(source, reorganizeSettings({ performWhenPreprocessorConditionals: 'yes' }), withoutPadding());
 
     expect(result.output).toBe(source);
-    expect(result.skipped).toContainEqual(expect.stringContaining('C (line 1): skipped because of it has syntax the parser does not understand'));
+    expect(result.skipped).toContainEqual('C (line 1): skipped because of syntax the parser does not understand');
   });
 
   it('keeps #if directives inside a member body where they are', () => {

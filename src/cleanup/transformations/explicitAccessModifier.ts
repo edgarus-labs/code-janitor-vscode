@@ -43,7 +43,8 @@ export function createExplicitAccessModifierConverter(settings: AccessSettings):
         const edits: TextEdit[] = [];
 
         // In a body the parser could not fully read, members can be misread (the modifier would
-        // land inside a type or name), so none of them is changed.
+        // land inside a type or name), so none of them is changed. The `file` remnant in front of a
+        // file-local type is the one recovered node that misreads nothing.
         const unreadableBodies = new Map<number, boolean>();
         const unreadable = (body: Node | null): boolean => {
           if (!body) {
@@ -52,7 +53,7 @@ export function createExplicitAccessModifierConverter(settings: AccessSettings):
 
           let result = unreadableBodies.get(body.startIndex);
           if (result === undefined) {
-            result = body.namedChildren.some(isRecoveredNode);
+            result = body.namedChildren.some((child) => isRecoveredNode(child) && !isFileModifierRemnant(child));
             unreadableBodies.set(body.startIndex, result);
           }
 
@@ -239,17 +240,22 @@ function defaultAccessFor(node: Node): string {
   return owner.type === 'interface_declaration' ? 'public' : 'private';
 }
 
-/**
- * `file class C` (C# 11) has no access modifier and must not get one. The parser does not know the
- * `file` modifier and leaves it behind as an unterminated field declaration in front of the type.
- */
+/** `file class C` (C# 11) has no access modifier and must not get one. */
 function isFileLocalType(node: Node): boolean {
   const previous = node.previousNamedSibling;
 
+  return TYPE_DECLARATIONS.has(node.type) && previous !== null && isFileModifierRemnant(previous);
+}
+
+/**
+ * The parser does not know the `file` modifier and leaves it behind as an unterminated field
+ * declaration holding just `file`, directly in front of the type declaration it belongs to.
+ */
+function isFileModifierRemnant(node: Node): boolean {
   return (
-    TYPE_DECLARATIONS.has(node.type) &&
-    previous?.type === 'field_declaration' &&
-    /^file\b/.test(previous.text) &&
-    !previous.text.trimEnd().endsWith(';')
+    node.type === 'field_declaration' &&
+    node.text === 'file' &&
+    node.nextNamedSibling !== null &&
+    TYPE_DECLARATIONS.has(node.nextNamedSibling.type)
   );
 }

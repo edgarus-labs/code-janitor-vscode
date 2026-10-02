@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { EditorConfigIssueListener } from '../cleanup/runCleanup';
-import { planWorkspaceRenames } from '../cleanup/naming/workspaceRenamer';
+import { planWorkspaceRenames, SourceText, workspaceRenameInputs } from '../cleanup/naming/workspaceRenamer';
 import { discoverProjects } from '../cleanup/naming/workspaceScope';
 import { logInfo } from '../logging';
 
@@ -28,27 +28,35 @@ export async function renameSymbolsAcrossWorkspace(
     return;
   }
 
-  // Every C# file of the workspace's projects and every target, as the editor has it: the open
-  // document, else the file on disk without its byte order mark (VS Code keeps the BOM as the encoding,
-  // never in the text, so an edit must not contain it).
+  // The C# files the plan may need (not the other projects of the workspace), as the editor has them:
+  // the open document, else the file on disk decoded as UTF-8 (VS Code keeps a byte order mark as the
+  // encoding, never in the text, and the decoder drops it). A file that is not UTF-8 is decoded lossily
+  // for the analysis and marked so: the rename never rewrites it.
   const open = new Map(vscode.workspace.textDocuments.map((document) => [document.uri.fsPath, document]));
   const projects = discoverProjects(roots);
-  const texts = new Map<string, string>();
-  for (const filePath of new Set([...projects.flatMap((project) => project.csharpFiles), ...files])) {
+  const texts = new Map<string, SourceText>();
+  for (const filePath of workspaceRenameInputs(projects, files)) {
     const document = open.get(filePath);
-    texts.set(
-      filePath,
-      document ? document.getText() : Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(filePath))).toString('utf8').replace(/^\uFEFF/, '')
-    );
-  }
-
-  const read = (filePath: string): string => {
-    const text = texts.get(filePath);
-    if (text === undefined) {
-      throw new Error(`${filePath} is neither a cleaned file nor a file of a project of the workspace.`);
+    if (document) {
+      texts.set(filePath, { text: document.getText(), utf8: true });
+      continue;
     }
 
-    return text;
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+    try {
+      texts.set(filePath, { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), utf8: true });
+    } catch {
+      texts.set(filePath, { text: new TextDecoder('utf-8').decode(bytes), utf8: false });
+    }
+  }
+
+  const read = (filePath: string): SourceText => {
+    const source = texts.get(filePath);
+    if (source === undefined) {
+      throw new Error(`${filePath} is neither a cleaned file nor a file the workspace-wide rename reads.`);
+    }
+
+    return source;
   };
   const plan = planWorkspaceRenames({ projects, targets: files, read });
   for (const issue of plan.issues) {
@@ -60,10 +68,11 @@ export async function renameSymbolsAcrossWorkspace(
     return;
   }
 
-  const lines = plan.renames.map(
-    (rename) =>
-      `${rename.oldName} → ${rename.newName} (${rename.kind} in ${path.basename(rename.declaredIn)} line ${rename.line}, ${rename.files.length} file(s))`
-  );
+  const lines = plan.renames.map((rename) => {
+    const [first] = rename.declarations;
+
+    return `${rename.oldName} → ${rename.newName} (${rename.kind} in ${path.basename(first.filePath)} line ${first.line}, ${rename.files.length} file(s))`;
+  });
   const choice = await vscode.window.showWarningMessage(
     `Code Janitor: rename ${plan.renames.length} symbol(s) in ${plan.contents.size} file(s) of the workspace to follow the .editorconfig naming rules?`,
     { modal: true, detail: lines.join('\n') },
@@ -71,12 +80,14 @@ export async function renameSymbolsAcrossWorkspace(
   );
   const reportNotRenamed = (outcome: string) => {
     for (const rename of plan.renames) {
-      report({
-        kind: 'unresolved',
-        filePath: rename.declaredIn,
-        detail: `IDE1006 line ${rename.line}: ${rename.kind} '${rename.oldName}' should be named '${rename.newName}'; ${outcome}.`,
-      });
-      account(rename.declaredIn, rename.oldName);
+      for (const declaration of rename.declarations) {
+        report({
+          kind: 'unresolved',
+          filePath: declaration.filePath,
+          detail: `IDE1006 line ${declaration.line}: ${rename.kind} '${rename.oldName}' should be named '${rename.newName}'; ${outcome}.`,
+        });
+        account(declaration.filePath, rename.oldName);
+      }
     }
   };
   if (choice !== 'Rename') {
@@ -87,7 +98,7 @@ export async function renameSymbolsAcrossWorkspace(
 
   const edit = new vscode.WorkspaceEdit();
   for (const [filePath, content] of plan.contents) {
-    edit.replace(vscode.Uri.file(filePath), wholeText(read(filePath)), content);
+    edit.replace(vscode.Uri.file(filePath), wholeText(read(filePath).text), content);
   }
 
   if (!(await vscode.workspace.applyEdit(edit))) {

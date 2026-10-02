@@ -67,6 +67,18 @@ describe('IDE0047 / IDE0048 dotnet_style_parentheses_in_*', () => {
     );
   });
 
+  it('removes only the redundant layer of doubled parentheses around an operator', () => {
+    const rules = [
+      'dotnet_style_parentheses_in_other_binary_operators = never_if_unnecessary:warning',
+      'dotnet_style_parentheses_in_arithmetic_binary_operators = never_if_unnecessary:warning',
+      'dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning',
+    ].join('\n');
+
+    expect(codeStyle(method('var g = ((b || c)) && b;', 'var f = ((i + 1)) * 2;', 'var h = ((i));'), rules)).toBe(
+      method('var g = (b || c) && b;', 'var f = (i + 1) * 2;', 'var h = i;')
+    );
+  });
+
   it('keeps a keyword separated from the operand when it removes parentheses', () => {
     const source = lines('class Sample', '{', '    int F(int x) { return(x); }', '    int G(int x) { return(x + 1); }', '    void H(System.Exception e) { throw(e); }', '}');
     const after = lines('class Sample', '{', '    int F(int x) { return x; }', '    int G(int x) { return x + 1; }', '    void H(System.Exception e) { throw e; }', '}');
@@ -90,6 +102,12 @@ describe('IDE0054 dotnet_style_prefer_compound_assignment', () => {
       method('i += 1;', '_name ??= s;', 'this._name += s;', 'i = 1 + i;', 'i = i - 1 - 2;', 'i *= (i + 1);', 'Use(_name ??= s);')
     );
   });
+
+  it('keeps x = x ?? throw ..., as ??= does not accept a throw expression (CS8115)', () => {
+    const source = method('s = s ?? throw new ArgumentNullException(nameof(s));');
+
+    expect(codeStyle(source, 'dotnet_style_prefer_compound_assignment = true:warning')).toBe(source);
+  });
 });
 
 describe('IDE0075 dotnet_style_prefer_simplified_boolean_expressions', () => {
@@ -108,6 +126,14 @@ describe('IDE0029 / IDE0030 dotnet_style_coalesce_expression', () => {
       'dotnet_style_coalesce_expression = true',
       method('var a = s != null ? s : "x";', 'var d = _name == null ? s : _name;', 'var e = n.HasValue ? n.Value : 0;', 'var f = uri != null ? uri : null;', 'var g = o is null ? s : o;', 'var h = other != null ? other : this;'),
       method('var a = s ?? "x";', 'var d = _name ?? s;', 'var e = n ?? 0;', 'var f = uri != null ? uri : null;', 'var g = o ?? s;', 'var h = other ?? this;')
+    );
+  });
+
+  it('keeps a throw expression fallback unparenthesized (CS8115)', () => {
+    expectRewrite(
+      'dotnet_style_coalesce_expression = true',
+      method('_name = s == null ? throw new ArgumentNullException(nameof(s)) : s;', 'var e = n.HasValue ? n.Value : throw new InvalidOperationException();'),
+      method('_name = s ?? throw new ArgumentNullException(nameof(s));', 'var e = n ?? throw new InvalidOperationException();')
     );
   });
 
@@ -151,18 +177,29 @@ describe('IDE0031 dotnet_style_null_propagation', () => {
     );
   });
 
-  it('uses ?. for a Value member of a named reference type that cannot be Nullable<T>', () => {
-    expect(
-      codeStyle(
-        method('XElement e = Get();', 'var a = e is not null ? e.Value : null;', 'Lazy<string> l = Get();', 'var b = l is not null ? l.Value : null;'),
-        'dotnet_style_null_propagation = true:warning'
-      )
-    ).toBe(method('XElement e = Get();', 'var a = e?.Value;', 'Lazy<string> l = Get();', 'var b = l?.Value;'));
+  it('uses ?. for a Value member of a type proven not to be Nullable<T>', () => {
+    const source = lines(
+      'using System;',
+      '',
+      'class Box',
+      '{',
+      '    public string Value = "";',
+      '',
+      '    string M(Box b) => b is not null ? b.Value : null;',
+      '    string L(Lazy<string> l) => l is not null ? l.Value : null;',
+      '}'
+    );
+
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(
+      lines('using System;', '', 'class Box', '{', '    public string Value = "";', '', '    string M(Box b) => b?.Value;', '    string L(Lazy<string> l) => l?.Value;', '}')
+    );
   });
 
-  it('leaves Nullable<T> members alone on a type named through a using alias', () => {
-    const source = lines('using N = System.Nullable<int>;', '', 'class Sample', '{', '    int? M(N g) => g is not null ? g.Value : null;', '}');
-
+  it.each([
+    ['a using alias of this file', lines('using N = System.Nullable<int>;', '', 'class Sample', '{', '    int? M(N g) => g is not null ? g.Value : null;', '}')],
+    // `global using N = System.Nullable<int>;` (or a project `<Using Alias>`) may declare it in another file.
+    ['a plain name declared elsewhere', lines('class Sample', '{', '    int? M(N g) => g is not null ? g.Value : null;', '}')],
+  ])('leaves Nullable<T> members alone on %s', (_name, source) => {
     expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
   });
 });
@@ -323,6 +360,47 @@ describe('IDE0200 csharp_style_prefer_method_group_conversion', () => {
     );
     expect(issuesOf(source, 'csharp_style_prefer_method_group_conversion = true:warning')).toEqual([
       expect.stringMatching(/^IDE0200 .* line 10: the lambda was not replaced by 'Log'/),
+    ]);
+  });
+
+  it('keeps async and static lambdas, whose method group would change exception flow or the returned task', () => {
+    const modified = lines(
+      'class Sample',
+      '{',
+      '    static void Log(string text) { }',
+      '',
+      '    void M()',
+      '    {',
+      '        Action<string> a = async x => Log(x);',
+      '        Action<string> b = static x => Log(x);',
+      '        Action<string> c = static async x => Log(x);',
+      '    }',
+      '}'
+    );
+
+    expect(codeStyle(modified, 'csharp_style_prefer_method_group_conversion = true:warning')).toBe(modified);
+  });
+
+  it('reports instead of converting a lambda whose target may be an expression tree', () => {
+    const tree = lines(
+      'class Sample',
+      '{',
+      '    static void Log(int value) { }',
+      '    static void Run(Expression<Action<int>> e) { }',
+      '',
+      '    void M()',
+      '    {',
+      '        Run((int x) => Log(x));',
+      '        Expression<Action<int>> e = (int x) => Log(x);',
+      '        var v = (int x) => Log(x);',
+      '    }',
+      '}'
+    );
+
+    expect(codeStyle(tree, 'csharp_style_prefer_method_group_conversion = true:warning')).toBe(tree.replace('v = (int x) => Log(x);', 'v = Log;'));
+    expect(issuesOf(tree, 'csharp_style_prefer_method_group_conversion = true:warning')).toEqual([
+      expect.stringMatching(/^IDE0200 .* line 8: the lambda was not replaced by 'Log'/),
+      expect.stringMatching(/^IDE0200 .* line 9: the lambda was not replaced by 'Log'/),
     ]);
   });
 });

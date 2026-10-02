@@ -219,6 +219,19 @@ describe('severity helpers', () => {
     expect(resolveDiagnosticSeverity(props(''), 'IDE1006')).toBeUndefined();
   });
 
+  it('lets bulk severities enable CA1852 (bulk-configurable) but not CA1307/CA1867 (disabled by default), as the SDK does', () => {
+    const bulk = props('dotnet_analyzer_diagnostic.category-Performance.severity = warning\ndotnet_analyzer_diagnostic.category-Globalization.severity = warning\n');
+    const all = props('dotnet_analyzer_diagnostic.severity = warning\n');
+
+    expect(resolveDiagnosticSeverity(bulk, 'CA1852', undefined, 'Performance', false)).toBe('warning');
+    expect(resolveDiagnosticSeverity(all, 'CA1852', undefined, 'Performance', false)).toBe('warning');
+    for (const [id, category] of [['CA1307', 'Globalization'], ['CA1867', 'Performance']]) {
+      expect(resolveDiagnosticSeverity(bulk, id, undefined, category, false), id).toBeUndefined();
+      expect(resolveDiagnosticSeverity(all, id, undefined, category, false), id).toBeUndefined();
+      expect(resolveDiagnosticSeverity(props(`dotnet_diagnostic.${id}.severity = warning\n`), id, undefined, category, false), id).toBe('warning');
+    }
+  });
+
   it('enforces only suggestion, warning and error', () => {
     expect(['none', 'silent', 'suggestion', 'warning', 'error', undefined].map((s) => isEnforced(s as never))).toEqual([
       false,

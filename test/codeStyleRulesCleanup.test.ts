@@ -173,7 +173,7 @@ describe('Code Style rules applied through the opt-in layer', () => {
 
     expect(issues).toEqual([
       expect.objectContaining({
-        kind: 'unresolved',
+        kind: 'note',
         detail: 'Code Style rule dotnet_style_predefined_type_for_locals_parameters_members = false (IDE0049) is not implemented by Code Janitor for VS Code, so it was not applied.',
       }),
     ]);
@@ -227,6 +227,16 @@ describe('precedence of the Code Style rules', () => {
     const { output } = clean('C.cs', onlyRules({ csharp_prefer_braces: 'true' }), braces);
 
     expect(output.includes(bracesAdded)).toBe(bracesApplied);
+  });
+
+  it('applies the .editorconfig value of an enabled rule whose option has no severity suffix', () => {
+    editorConfig('csharp_prefer_braces = true');
+
+    // `when_multiline` alone leaves the one-line statement below `if` braceless: the braces come from .editorconfig.
+    const { output, issues } = clean('C.cs', onlyRules({ csharp_prefer_braces: 'when_multiline' }), braces);
+
+    expect(output).toContain(bracesAdded);
+    expect(issues).toEqual([]);
   });
 
   it('applies an opt-in rule over a silenced .editorconfig entry, and a rule .editorconfig enforces keeps applying next to it', () => {

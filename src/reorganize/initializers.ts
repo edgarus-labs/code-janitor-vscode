@@ -15,6 +15,8 @@ export interface InitInfo {
   staticOpaque: boolean;
   /** An instance initializer that runs code. */
   instanceOpaque: boolean;
+  /** An instance initializer that reads a field of this type (static state an instance initializer running code may change). */
+  instanceReadsState: boolean;
   /** Names of the members declared with an initializer. */
   declares: ReadonlySet<string>;
   /** Names of members of the same type the initializers read. */
@@ -26,6 +28,7 @@ export const NO_INIT: InitInfo = {
   instanceInit: false,
   staticOpaque: false,
   instanceOpaque: false,
+  instanceReadsState: false,
   declares: new Set<string>(),
   refs: new Set<string>(),
 };
@@ -97,7 +100,6 @@ const PURE_CONTAINERS = new Set([
   'range_expression',
   'pattern',
   'anonymous_object_creation_expression',
-  'postfix_unary_expression',
   'conditional_access_expression',
   'switch_expression',
   'switch_expression_arm',
@@ -132,16 +134,21 @@ const TYPE_DECLARATIONS = new Set([
 interface Scan {
   refs: Set<string>;
   opaque: boolean;
+  /** Reads a field or auto-property of this type, with or without initializer. */
+  readsState: boolean;
 }
 
 /** What the initializers of one member declaration (field, event field or property) need. */
 export function analyzeInitializers(declaration: Node, isStatic: boolean, context: InitContext): InitInfo {
   const declares = new Set<string>();
-  const scan: Scan = { refs: new Set<string>(), opaque: false };
+  const scan: Scan = { refs: new Set<string>(), opaque: false, readsState: false };
 
   for (const { name, value, typeName } of initializersOf(declaration)) {
     declares.add(name);
     scanExpression(value, context, typeName, scan);
+    if (mayRunUserConversion(value, typeName, declaration)) {
+      scan.opaque = true;
+    }
   }
 
   if (declares.size === 0) {
@@ -158,6 +165,7 @@ export function analyzeInitializers(declaration: Node, isStatic: boolean, contex
     instanceInit: !isStatic,
     staticOpaque: isStatic && scan.opaque,
     instanceOpaque: !isStatic && scan.opaque,
+    instanceReadsState: !isStatic && scan.readsState,
     declares,
     refs: scan.refs,
   };
@@ -174,6 +182,7 @@ export function mergeInitInfo(infos: readonly InitInfo[]): InitInfo {
     instanceInit: nonEmpty.some((info) => info.instanceInit),
     staticOpaque: nonEmpty.some((info) => info.staticOpaque),
     instanceOpaque: nonEmpty.some((info) => info.instanceOpaque),
+    instanceReadsState: nonEmpty.some((info) => info.instanceReadsState),
     declares: new Set(nonEmpty.flatMap((info) => [...info.declares])),
     refs: new Set(nonEmpty.flatMap((info) => [...info.refs])),
   };
@@ -189,7 +198,11 @@ export function mustKeepOrder(first: InitInfo, second: InitInfo): boolean {
     return true;
   }
 
-  if (first.instanceOpaque && second.instanceOpaque) {
+  // An instance initializer cannot touch `this`, but one that runs code may change static state that
+  // another instance initializer reads or that its code observes.
+  const firstObserves = first.instanceOpaque || first.instanceReadsState;
+  const secondObserves = second.instanceOpaque || second.instanceReadsState;
+  if ((first.instanceOpaque && secondObserves) || (second.instanceOpaque && firstObserves)) {
     return true;
   }
 
@@ -204,6 +217,33 @@ function intersects(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   }
 
   return false;
+}
+
+/** Predefined types: they declare no user-defined conversion operator. */
+const PREDEFINED_TYPES = new Set([
+  'bool', 'byte', 'sbyte', 'char', 'decimal', 'double', 'float', 'int', 'uint', 'nint', 'nuint', 'long', 'ulong', 'short', 'ushort',
+  'object', 'string', 'dynamic', 'var',
+]);
+
+/**
+ * Whether storing `value` in a member of type `typeName` may run a user-defined conversion operator, which
+ * the syntax does not show (`static Meters M = 2;` calls `implicit operator Meters(int)`) and which may read
+ * this type's statics. Predefined types, the known library types and enums declare none; a `null` or
+ * `default` literal, a lambda and a creation of the declared type itself convert nothing.
+ */
+function mayRunUserConversion(value: Node, typeName: string, declaration: Node): boolean {
+  if (DEFERRED.has(value.type) || value.type === 'null_literal' || value.type === 'implicit_object_creation_expression' || (value.type === 'default_expression' && value.namedChildren.length === 0)) {
+    return false;
+  }
+
+  if (value.type === 'object_creation_expression' && value.childForFieldName('type')?.text === typeName) {
+    return false;
+  }
+
+  // `Meters?` and `Meters[]` convert their values (or elements) to `Meters`.
+  const name = lastIdentifier(typeName.replace(/(?:\s*(?:\?|\[[\s,]*\]))+$/, ''));
+
+  return !(PREDEFINED_TYPES.has(name) || PURE_CONSTRUCTED_TYPES.has(name) || PURE_STATIC_TYPES.has(name) || LIBRARY_ENUMS.has(name) || isDeclaredEnum(declaration, name));
 }
 
 interface Initializer {
@@ -304,6 +344,8 @@ function scanExpression(node: Node, context: InitContext, declaredType: string, 
     }
 
     case 'prefix_unary_expression':
+    case 'postfix_unary_expression':
+      // `++x`, `x--` change what they read; `x!` (null-forgiving) and `-x` only compute from it.
       if (node.children.some((child) => child.type === '++' || child.type === '--')) {
         scan.opaque = true;
 
@@ -336,6 +378,14 @@ function readName(name: string, context: InitContext, scan: Scan): void {
   switch (context.names.get(name)) {
     case 'initialized':
       scan.refs.add(name);
+      scan.readsState = true;
+
+      return;
+
+    case 'plain':
+      // A field or auto-property without initializer: no dependency on another initializer, but state
+      // that an initializer running code may change.
+      scan.readsState = true;
 
       return;
 
@@ -353,7 +403,7 @@ function readName(name: string, context: InitContext, scan: Scan): void {
       return;
 
     default:
-      // A constant, a method group (not called) or a field without initializer.
+      // A constant or a method group (not called).
   }
 }
 
@@ -368,16 +418,19 @@ function scanMemberAccess(node: Node, context: InitContext, declaredType: string
     return;
   }
 
-  if (target.type === 'this_expression' || (target.type === 'identifier' && target.text === context.typeName)) {
+  // `C<T>.Member` names this type like `C.Member`, and `G<int>.Member` another type like `Other.Member`.
+  const typeName = target.type === 'generic_name' ? target.namedChildren[0]?.text : target.type === 'identifier' ? target.text : undefined;
+
+  if (target.type === 'this_expression' || typeName === context.typeName) {
     readName(member.text, context, scan);
 
     return;
   }
 
-  if (target.type === 'identifier' && !context.names.has(target.text)) {
+  if (typeName !== undefined && (target.type === 'generic_name' || !context.names.has(typeName))) {
     // `Other.Member`: a known library type or an enum value is pure; any other may be a member declared
     // elsewhere, or a type whose static constructor and accessors run code.
-    if (!PURE_STATIC_TYPES.has(target.text) && !PURE_CONSTRUCTED_TYPES.has(target.text) && !LIBRARY_ENUMS.has(target.text) && !isDeclaredEnum(node, target.text)) {
+    if (!PURE_STATIC_TYPES.has(typeName) && !PURE_CONSTRUCTED_TYPES.has(typeName) && !LIBRARY_ENUMS.has(typeName) && !isDeclaredEnum(node, typeName)) {
       scan.opaque = true;
     }
 

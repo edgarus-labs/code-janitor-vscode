@@ -2,7 +2,7 @@ import { SourceModel, buildSourceModel } from '../naming/sourceModel';
 import { Node, TextEdit, applyEdits, parseCSharp, walk } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
 import { hasModifier, hasParseErrors } from './editorConfigSupport';
-import { loadProjectFacts, targetFrameworksOf } from './editorConfigQualityRulesProject';
+import { loadProjectFacts, suppressionsOf, targetFrameworksOf } from './editorConfigQualityRulesProject';
 import {
   DeclaredTypes,
   Suppressions,
@@ -49,7 +49,7 @@ export function viewOf(source: string, context: RuleContext): FileView {
     source,
     model,
     types: new DeclaredTypes(model, project?.others.typeNames),
-    suppressions: new Suppressions(source),
+    suppressions: suppressionsOf(source, context),
     edits: [],
     report: (diagnosticId, node, message) => context.report(describeDiagnostic(diagnosticId, source, node.startIndex, message)),
   };
@@ -486,7 +486,16 @@ export function applyCountPreferences(source: string, context: RuleContext): str
     if ((name === 'Count' || name === 'LongCount') && args.length <= 1) {
       const kind = collectionKind(view, receiver);
       const comparison = countComparison(invocation);
-      const predicate = args.length === 1;
+      // Only a lambda or anonymous method is certainly LINQ's predicate: `s.Count(',')` may bind MemoryExtensions.Count(span, item).
+      const predicate = args.length === 1 && /^(?:lambda_expression|anonymous_method_expression)$/.test(unwrapParentheses(args[0]).type);
+      if (comparison && args.length === 1 && !predicate) {
+        if (check('CA1827')) {
+          view.report('CA1827', invocation, `${invocation.text} is compared with a constant where Any() would do, but its argument may not be a predicate (Any has no overload taking an item); it was kept.`);
+        }
+
+        continue;
+      }
+
       if (comparison && (predicate || (kind && !kind.property))) {
         if (!check('CA1827')) {
           continue;
@@ -499,13 +508,13 @@ export function applyCountPreferences(source: string, context: RuleContext): str
         } else {
           view.edits.push({ start: comparison.comparison.startIndex, end: comparison.comparison.endIndex, text: `${comparison.empty ? '!' : ''}${receiver.text}.Any(${argumentText})` });
         }
-      } else if (kind?.property && !predicate && (name === 'Count' || comparison) && check('CA1829')) {
+      } else if (kind?.property && args.length === 0 && (name === 'Count' || comparison) && check('CA1829')) {
         if (lambda) {
           view.report('CA1829', invocation, `${invocation.text} could use the ${kind.property} property, but it is inside a lambda that may be an expression tree; it was kept.`);
         } else {
           view.edits.push({ start: invocation.startIndex, end: invocation.endIndex, text: `${receiver.text}.${kind.property}` });
         }
-      } else if (comparison && !kind && !predicate && check('CA1827')) {
+      } else if (comparison && !kind && args.length === 0 && check('CA1827')) {
         view.report('CA1827', invocation, `${receiver.text}.${name}() is compared with a constant where Any() would do, but the type of ${receiver.text} cannot be determined syntactically; it was kept.`);
       }
     } else if (name === 'Any' && args.length === 0 && check('CA1860')) {
@@ -554,7 +563,7 @@ export function applyNameOf(source: string, context: RuleContext): string {
 
   const tree = parseCSharp(source);
   try {
-    const suppressions = new Suppressions(source);
+    const suppressions = suppressionsOf(source, context);
     const edits: TextEdit[] = [];
     for (const argument of walk(tree.rootNode)) {
       const literal = argument.type === 'argument' ? argument.namedChildren[argument.namedChildren.length - 1] : undefined;
@@ -785,6 +794,9 @@ export function applyStringCharOverloads(source: string, context: RuleContext): 
 
       if (support === undefined) {
         view.report('CA1865', invocation, `${invocation.text} passes a single-character string, ${frameworkMessage}`);
+      } else if (name === 'LastIndexOf' && overload.integers.length > 0) {
+        // LastIndexOf(string, startIndex) accepts startIndex == Length; LastIndexOf(char, startIndex) throws for it.
+        view.report('CA1865', invocation, `${invocation.text} passes a single-character string, but the char overload throws when the start index equals the string length, which this one accepts; it was kept.`);
       } else {
         const argumentList = invocation.childForFieldName('arguments');
         const kept = overload.integers.map((integer) => `, ${integer.text}`).join('');
@@ -1016,7 +1028,7 @@ export function applyUnnecessaryUsings(source: string, context: RuleContext): st
   const tree = parseCSharp(source);
   try {
     const root = tree.rootNode;
-    const suppressions = new Suppressions(source);
+    const suppressions = suppressionsOf(source, context);
     const containers = [root, ...root.namedChildren.filter((child) => /namespace_declaration$/.test(child.type)).map((namespace) => namespace.childForFieldName('body') ?? namespace)];
     const namespaces = root.namedChildren.filter((child) => /namespace_declaration$/.test(child.type));
     const firstNamespace = namespaces[0];

@@ -265,7 +265,7 @@ export interface PlanOptions {
   /** Cleanup Changed Files: with `codeJanitor.cleanup.onlyChangedLines`, only the lines changed since HEAD. */
   readonly honorOnlyChangedLines?: boolean;
   /** Files of a larger size (in KiB) are skipped. */
-  readonly maxFileSizeKb?: number;
+  readonly maxFileSizeKB?: number;
   readonly isCancelled?: () => boolean;
   /** Called after each file with the number of files prepared so far. */
   readonly onProgress?: (done: number, total: number) => void;
@@ -327,7 +327,7 @@ async function readSource(uri: vscode.Uri, maxBytes: number): Promise<Source> {
 export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], options: PlanOptions = {}): Promise<CleanupPreviewPlan> {
   const unique = [...new Map(uris.map((uri) => [uri.toString(), uri])).values()];
   const maxBytes =
-    Math.max(1, options.maxFileSizeKb ?? vscode.workspace.getConfiguration('codeJanitor').get<number>('preview.maxFileSizeKb', DEFAULT_MAX_FILE_SIZE_KB)) * 1024;
+    Math.max(1, options.maxFileSizeKB ?? vscode.workspace.getConfiguration('codeJanitor').get<number>('preview.maxFileSizeKB', DEFAULT_MAX_FILE_SIZE_KB)) * 1024;
 
   const entries: { readonly uri: vscode.Uri; readonly label: string; readonly source?: Source; readonly file?: PreviewFile }[] = [];
   const pending: { readonly uri: vscode.Uri; readonly label: string; readonly text: string }[] = [];
@@ -522,78 +522,78 @@ export interface ApplyOutcome {
   /** Files whose text changed since the plan: left as they are. */
   readonly stale: PreviewFile[];
   readonly failed: { readonly file: PreviewFile; readonly reason: string }[];
+  /** VS Code rejected the combined edit, so the files were applied one by one: each is its own undo step. */
+  readonly appliedSeparately: boolean;
 }
 
-function endPosition(text: string): vscode.Position {
-  const lines = text.split(/\r\n|\r|\n/);
+/** The document of a target: its open buffer, or the file opened from disk without showing an editor. */
+async function openTarget(file: PreviewFile): Promise<vscode.TextDocument | undefined> {
+  try {
+    return await vscode.workspace.openTextDocument(file.uri);
+  } catch (err) {
+    logInfo(`Cleanup preview: ${file.uri.fsPath} could not be opened (${(err as Error).message}).`);
 
-  return new vscode.Position(lines.length - 1, lines[lines.length - 1].length);
+    return undefined;
+  }
 }
 
-function openDocument(uri: vscode.Uri): vscode.TextDocument | undefined {
-  return vscode.workspace.textDocuments.find((doc) => !doc.isClosed && doc.uri.toString() === uri.toString());
+/**
+ * Adds the result of `file` to `edit` when `document` still holds the text the plan was made from;
+ * the range is taken from that same text, so VS Code applies it only to that version of the document.
+ */
+function addWhenUnchanged(file: PreviewFile, document: vscode.TextDocument | undefined, edit: vscode.WorkspaceEdit): boolean {
+  if (!document || document.isClosed) {
+    return false;
+  }
+
+  const current = document.getText();
+  const range = new vscode.Range(document.positionAt(0), document.positionAt(current.length));
+
+  return file.tryApply(current, (updated) => edit.replace(file.uri, range, updated));
 }
 
 /**
  * Applies the included files of the plan without saving anything. A file is applied only when its
- * text - the editor buffer or the file on disk - is still the text the plan was made from;
- * otherwise it is refused. All files go into one `WorkspaceEdit`, so one undo reverts the
- * operation; when VS Code rejects that edit, the files are applied one by one to tell which fail.
+ * document - the editor buffer, or the file opened from disk - still holds the text the plan was
+ * made from; otherwise it is refused. All files go into one `WorkspaceEdit`, so one undo reverts the
+ * operation; when VS Code rejects that edit, each file is checked again and applied on its own.
  */
 export async function applyCleanupPreviewPlan(plan: CleanupPreviewPlan): Promise<ApplyOutcome> {
   const targets = plan.selected;
   const applied: PreviewFile[] = [];
   const stale: PreviewFile[] = [];
   const failed: { file: PreviewFile; reason: string }[] = [];
+  const refuse = (file: PreviewFile) => {
+    stale.push(file);
+    logInfo(`Cleanup preview: ${file.uri.fsPath} changed since the preview and was not modified.`);
+  };
 
-  // Closed files are read first (asynchronously); the buffers of open ones are compared as late as possible.
-  const closed = new Map<PreviewFile, string | undefined>();
+  // All documents are opened first (asynchronously); their texts are compared as late as possible.
+  const documents = new Map<PreviewFile, vscode.TextDocument | undefined>();
   for (const file of targets) {
-    if (!openDocument(file.uri)) {
-      const source = await readSource(file.uri, Number.MAX_SAFE_INTEGER);
-      closed.set(file, 'text' in source ? source.text : undefined);
-    }
+    documents.set(file, await openTarget(file));
   }
 
   const edit = new vscode.WorkspaceEdit();
   const planned: PreviewFile[] = [];
-  const single = new Map<PreviewFile, vscode.WorkspaceEdit>();
   for (const file of targets) {
-    const document = openDocument(file.uri);
-    const current = document ? document.getText() : closed.get(file);
-    const range = document
-      ? new vscode.Range(document.positionAt(0), document.positionAt(current?.length ?? 0))
-      : current === undefined
-        ? undefined
-        : new vscode.Range(new vscode.Position(0, 0), endPosition(current));
-    const replace = (updated: string) => {
-      if (range) {
-        edit.replace(file.uri, range, updated);
-        const own = new vscode.WorkspaceEdit();
-        own.replace(file.uri, range, updated);
-        single.set(file, own);
-      }
-    };
-
-    if (current !== undefined && file.tryApply(current, replace)) {
+    if (addWhenUnchanged(file, documents.get(file), edit)) {
       planned.push(file);
     } else {
-      stale.push(file);
-      logInfo(`Cleanup preview: ${file.uri.fsPath} changed since the preview and was not modified.`);
+      refuse(file);
     }
   }
 
-  if (planned.length === 0) {
-    return { applied, stale, failed };
-  }
-
-  if (await tryApplyEdit(edit)) {
+  const appliedSeparately = planned.length > 0 && !(await tryApplyEdit(edit));
+  if (!appliedSeparately) {
     applied.push(...planned);
   } else {
+    // A file may have changed since the combined edit was built: each one is checked again against its document.
     for (const file of planned) {
-      const own = single.get(file);
-      const ok = own ? await tryApplyEdit(own) : false;
-      if (ok) {
+      const own = new vscode.WorkspaceEdit();
+      if (!addWhenUnchanged(file, await openTarget(file), own)) {
+        refuse(file);
+      } else if (await tryApplyEdit(own)) {
         applied.push(file);
       } else {
         failed.push({ file, reason: 'VS Code did not apply the edit (the file may be read-only)' });
@@ -603,7 +603,7 @@ export async function applyCleanupPreviewPlan(plan: CleanupPreviewPlan): Promise
 
   logInfo(`Cleanup preview: applied to ${applied.length} file(s), ${stale.length} changed since the preview, ${failed.length} failed.`);
 
-  return { applied, stale, failed };
+  return { applied, stale, failed, appliedSeparately };
 }
 
 async function tryApplyEdit(edit: vscode.WorkspaceEdit): Promise<boolean> {

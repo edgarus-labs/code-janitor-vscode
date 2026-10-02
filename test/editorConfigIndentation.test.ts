@@ -130,6 +130,42 @@ describe('editorconfig formatting: indentation', () => {
     );
   });
 
+  it('keeps the lines from an #if whose branches each open a brace to the end of the file, and reports them', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    void M()',
+      '    {',
+      '      Use(0);',
+      '#if NET8_0_OR_GREATER',
+      '        foreach (var item in Span())',
+      '        {',
+      '#else',
+      '        foreach (var item in Array())',
+      '        {',
+      '#endif',
+      '            Use(item);',
+      '        }',
+      '    }',
+      '',
+      '    void Other() { }',
+      '}'
+    );
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n\n[*.cs]\ndotnet_diagnostic.IDE0055.severity = warning\n' }], '/repo/Sample.cs');
+    const issues: string[] = [];
+
+    const output = createEditorConfigFormattingConverter(props, (issue) => issues.push(issue)).apply(source);
+
+    expect(output).toBe(source.replace('      Use(0);', '        Use(0);'));
+    expect(issues).toEqual([expect.stringMatching(/^IDE0055 \(indentation\) line 6: /)]);
+  });
+
+  it('still indents the branches of an #if whose branches are each balanced', () => {
+    const source = lines('class C', '{', '    void M()', '    {', '#if DEBUG', '      if (A()) { B(); }', '#else', '          C();', '#endif', '      D();', '    }', '}');
+
+    expect(format(source)).toBe(lines('class C', '{', '    void M()', '    {', '#if DEBUG', '        if (A()) { B(); }', '#else', '        C();', '#endif', '        D();', '    }', '}'));
+  });
+
   it('indents switch labels, case contents and case blocks per the csharp_indent_* options', () => {
     const source = lines(
       'class C',

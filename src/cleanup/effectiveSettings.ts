@@ -23,9 +23,6 @@ import { CleanupSettings } from './types';
  * resolves the Code Janitor Code Style rules (`codeStyleRules.ts`).
  */
 
-export type NamespaceDeclarationPreference = 'unchanged' | 'fileScoped' | 'blockScoped';
-export type UsingDirectivePlacementPreference = 'unchanged' | 'outsideNamespace' | 'insideNamespace';
-
 export interface EffectiveCleanupSettings {
   /** The settings with every key `.editorconfig` decides for the file replaced by its value. */
   readonly settings: CleanupSettings;
@@ -40,8 +37,9 @@ export interface EffectiveCleanupSettings {
    */
   readonly editorConfigKeys: ReadonlyMap<string, string>;
   /**
-   * The enabled Code Style rules that apply to this file because `.editorconfig` does not enforce them,
-   * keyed by option name, with the value from the repository policy or the user setting.
+   * The enabled Code Style rules layered for this file, keyed by option name: the rules `.editorconfig` does not
+   * enforce, with the value from the repository policy or the user setting, and the rules it sets without a
+   * severity suffix, with its value (see {@link resolveCodeStyleRules}).
    */
   readonly codeStyleValues: ReadonlyMap<string, string>;
   /** The Code Style rules `.editorconfig` enforces for this file, each mapped to the entry that enforces it. */
@@ -53,13 +51,10 @@ export interface EffectiveCleanupSettings {
    * unless `.editorconfig` enforces it, silenced with `none`.
    */
   readonly analyzerConfigOverrides: ReadonlyMap<string, string>;
-  /** The namespace declaration style to enforce (`csharp_style_namespace_declarations`, else the setting). */
-  readonly namespaceDeclarations: NamespaceDeclarationPreference;
-  /** The using directive placement to enforce (`csharp_using_directive_placement`, else the setting). */
-  readonly usingDirectivePlacement: UsingDirectivePlacementPreference;
   /**
-   * One message per enabled Code Style rule whose value the rule engine has no implementation for (for example
-   * framework type names instead of keywords): it is never silently ignored.
+   * One message per enabled Code Style rule that is not applied: its value has no implementation in the rule
+   * engine (for example framework type names instead of keywords), or the project's `NoWarn` suppresses it. It
+   * is never silently ignored.
    */
   readonly unresolvedRules: readonly string[];
 }
@@ -110,6 +105,10 @@ const parseAccessibilityModifiersPreference = (value: string): boolean | undefin
       return undefined;
   }
 };
+const parseNamespaceDeclarationsPreference = (value: string): boolean | undefined =>
+  value.toLowerCase() === 'file_scoped' ? true : value.toLowerCase() === 'block_scoped' ? false : undefined;
+const parseUsingDirectivePlacementPreference = (value: string): boolean | undefined =>
+  value.toLowerCase() === 'outside_namespace' ? true : value.toLowerCase() === 'inside_namespace' ? false : undefined;
 
 const link = (
   settings: readonly (keyof CleanupSettings)[],
@@ -157,6 +156,9 @@ const RULE_LINKS: readonly RuleLink[] = [
     parseInvertedBoolean,
     false
   ),
+  // IDE0160 reports block_scoped, IDE0161 file_scoped; Roslyn's default is block_scoped.
+  link(['convertToFileScopedNamespace'], 'csharp_style_namespace_declarations', ['IDE0160', 'IDE0161'], parseNamespaceDeclarationsPreference, false, 'block_scoped'),
+  link(['moveUsingsOutsideNamespace'], 'csharp_using_directive_placement', ['IDE0065'], parseUsingDirectivePlacementPreference, true),
 ];
 
 /** The two rules that decide `convertToPatternMatchingNullChecks` together (both default to true). */
@@ -343,9 +345,7 @@ export function resolveEffectiveCleanupSettings(
   resolveNullChecks(base, decide);
   resolveFileHeader(base, filePath, decide);
 
-  const namespaceDeclarations = resolveNamespaceDeclarations(base, resolved, decide);
-  const usingDirectivePlacement = resolveUsingDirectivePlacement(base, resolved, decide);
-  resolved.organizeUsings = resolveOrganizeUsings(base, settings.organizeUsings);
+  resolved.organizeUsings = resolveOrganizeUsings(base, settings.organizeUsings, decide);
 
   const codeStyle = resolveCodeStyleRules(base, settings.codeStyleRules ?? {});
   resolved.codeStyleRules = Object.fromEntries(codeStyle.values);
@@ -359,11 +359,12 @@ export function resolveEffectiveCleanupSettings(
     codeStyleValues: codeStyle.values,
     codeStyleEditorConfigKeys: codeStyle.editorConfigKeys,
     analyzerConfigOverrides: codeStyle.overrides,
-    namespaceDeclarations,
-    usingDirectivePlacement,
-    unresolvedRules: [...codeStyle.values]
-      .filter(([key]) => effectiveEditorConfigValue(properties, key) === undefined)
-      .map(([key, value]) => `Code Style rule ${key} = ${value} (${getCodeStyleRule(key)?.diagnosticIds.join('/')}) is not implemented by Code Janitor for VS Code, so it was not applied.`),
+    unresolvedRules: [
+      ...[...codeStyle.values]
+        .filter(([key]) => effectiveEditorConfigValue(properties, key) === undefined)
+        .map(([key, value]) => `Code Style rule ${key} = ${value} (${getCodeStyleRule(key)?.diagnosticIds.join('/')}) is not implemented by Code Janitor for VS Code, so it was not applied.`),
+      ...codeStyle.suppressed,
+    ],
   };
 }
 
@@ -424,79 +425,65 @@ function resolveFileHeader(props: EditorConfigProperties, filePath: string, deci
 }
 
 /**
- * The namespace declaration style: `.editorconfig` wins when it enforces `csharp_style_namespace_declarations`
- * (IDE0160 for `block_scoped`, IDE0161 for `file_scoped`), with Roslyn's default `block_scoped` when IDE0160 is
- * enforced by severity only; otherwise the file-scoped conversion setting decides.
- */
-function resolveNamespaceDeclarations(props: EditorConfigProperties, settings: CleanupSettings, decide: Decide): NamespaceDeclarationPreference {
-  const parse = (value: string): NamespaceDeclarationPreference | undefined =>
-    value.toLowerCase() === 'file_scoped' ? 'fileScoped' : value.toLowerCase() === 'block_scoped' ? 'blockScoped' : undefined;
-  const rule = readRule(props, 'csharp_style_namespace_declarations', ['IDE0160', 'IDE0161'], (value) => parse(value) !== undefined, 'block_scoped');
-  if (rule) {
-    const preference = rule.value === undefined ? 'blockScoped' : parse(rule.value)!;
-    decide('convertToFileScopedNamespace', rule.decidingKey, preference === 'fileScoped');
-
-    return preference;
-  }
-
-  return settings.convertToFileScopedNamespace ? 'fileScoped' : 'unchanged';
-}
-
-/**
- * The using directive placement: `.editorconfig` wins when it enforces `csharp_using_directive_placement`
- * (IDE0065), with Roslyn's default `outside_namespace` when enforced by severity only; otherwise the
- * move-outside setting decides.
- */
-function resolveUsingDirectivePlacement(props: EditorConfigProperties, settings: CleanupSettings, decide: Decide): UsingDirectivePlacementPreference {
-  const parse = (value: string): UsingDirectivePlacementPreference | undefined =>
-    value.toLowerCase() === 'outside_namespace' ? 'outsideNamespace' : value.toLowerCase() === 'inside_namespace' ? 'insideNamespace' : undefined;
-  const rule = readRule(props, 'csharp_using_directive_placement', ['IDE0065'], (value) => parse(value) !== undefined);
-  if (rule) {
-    const preference = rule.value === undefined ? 'outsideNamespace' : parse(rule.value)!;
-    decide('moveUsingsOutsideNamespace', rule.decidingKey, preference === 'outsideNamespace');
-
-    return preference;
-  }
-
-  return settings.moveUsingsOutsideNamespace ? 'outsideNamespace' : 'unchanged';
-}
-
-/**
  * Whether using directives are organized. `.editorconfig` turns it off when it contradicts the organizer
- * (System directives not first, or groups separated) and on when System directives first is enforced;
- * otherwise the policy or user setting decides.
+ * (System directives not first, or groups separated) and on when System directives first is enforced,
+ * recording the deciding option; otherwise the policy or user setting decides.
  */
-function resolveOrganizeUsings(props: EditorConfigProperties, configured: boolean): boolean {
-  const sortSystemFirst = readPlainOption(props, 'dotnet_sort_system_directives_first', parseBoolean);
-  const separateGroups = readPlainOption(props, 'dotnet_separate_import_directive_groups', parseBoolean);
-  if ((sortSystemFirst !== undefined && sortSystemFirst !== true) || (separateGroups !== undefined && separateGroups !== false)) {
-    return false;
+function resolveOrganizeUsings(props: EditorConfigProperties, configured: boolean, decide: Decide): boolean {
+  const sortKey = 'dotnet_sort_system_directives_first';
+  const separateKey = 'dotnet_separate_import_directive_groups';
+  const sortSystemFirst = readPlainOption(props, sortKey, parseBoolean);
+  const separateGroups = readPlainOption(props, separateKey, parseBoolean);
+  const decidingKey = sortSystemFirst === false ? sortKey : separateGroups === true ? separateKey : sortSystemFirst === true ? sortKey : undefined;
+  if (decidingKey === undefined) {
+    return configured;
   }
 
-  return sortSystemFirst === true || configured;
+  const organize = decidingKey === sortKey && sortSystemFirst === true;
+  decide('organizeUsings', decidingKey, organize);
+
+  return organize;
 }
 
 interface CodeStyleResolution {
   readonly values: ReadonlyMap<string, string>;
   readonly editorConfigKeys: ReadonlyMap<string, string>;
   readonly overrides: ReadonlyMap<string, string>;
+  /** One message per enabled rule that is not layered because the project's `NoWarn` suppresses its diagnostics. */
+  readonly suppressed: readonly string[];
 }
 
 /**
  * Resolves every Code Style rule: `.editorconfig` wins when it enforces the rule (see {@link readRule});
  * otherwise an enabled rule (`rules`: repository policy, else the user setting) applies with its value.
+ * An enabled rule whose `.editorconfig` option has no severity suffix applies with that option's value:
+ * `readRule` counts such an option as enforcing, but the rule engine applies only an option it reports.
+ * An enabled rule whose diagnostics the project's `NoWarn` suppresses is not applied (the rule engine
+ * never reports them) and is reported as suppressed.
  * The overrides are the analyzer configuration entries the rule engine applies on top of `.editorconfig`.
  */
 function resolveCodeStyleRules(props: EditorConfigProperties, rules: Readonly<Record<string, string>>): CodeStyleResolution {
   const values = new Map<string, string>();
   const editorConfigKeys = new Map<string, string>();
+  const suppressed: string[] = [];
 
   for (const rule of CODE_STYLE_RULES) {
+    const enabled = rule.key in rules && rule.isValidValue(rules[rule.key]);
     const enforced = readRule(props, rule.key, rule.diagnosticIds, rule.isValidValue, rule.defaultValue);
     if (enforced) {
       editorConfigKeys.set(rule.key, enforced.decidingKey);
-    } else if (rule.key in rules && rule.isValidValue(rules[rule.key])) {
-      values.set(rule.key, rule.normalize(rules[rule.key]));
+      if (enabled && enforced.value !== undefined && readRawOption(props, rule.key)?.severity === undefined && effectiveEditorConfigValue(props, rule.key) === undefined) {
+        values.set(rule.key, rule.normalize(enforced.value));
+      }
+    } else if (enabled) {
+      const value = rule.normalize(rules[rule.key]);
+      const selected = diagnosticIdSelectedBy(rule.key, value);
+      const diagnosticIds = selected === undefined ? rule.diagnosticIds : [selected];
+      if (diagnosticIds.every((id) => props.analysis?.isSuppressed(id))) {
+        suppressed.push(`Code Style rule ${rule.key} = ${value} (${diagnosticIds.join('/')}) is suppressed by the project's NoWarn, so it was not applied.`);
+      } else {
+        values.set(rule.key, value);
+      }
     }
   }
 
@@ -523,5 +510,5 @@ function resolveCodeStyleRules(props: EditorConfigProperties, rules: Readonly<Re
     overrides.set(rule.key, `${value}:none`);
   }
 
-  return { values, editorConfigKeys, overrides };
+  return { values, editorConfigKeys, overrides, suppressed };
 }

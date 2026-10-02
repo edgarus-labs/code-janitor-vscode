@@ -208,6 +208,14 @@ describe('stringInterpolationConverter keeps the behavior of string.Format', () 
     expect(apply(body)).toContain(expected);
   });
 
+  it.each([
+    ['an escaped backslash of a regular format', 'string.Format("{0:hh\\\\:mm}", n)', '$"{n:hh\\\\:mm}"'],
+    ['a backslash of a verbatim format', 'string.Format(@"{0:hh\\:mm}", n)', '$"{n:hh\\\\:mm}"'],
+    ['a quote of a verbatim format', 'string.Format(@"{0:""#""0}", n)', '$"{n:\\"#\\"0}"'],
+  ])('escapes %s again in the format specifier', (_name, body, expected) => {
+    expect(apply(body)).toBe(`class C { string M(bool f, int n) => ${expected}; int A() => 1; int B() => 2; }`);
+  });
+
   it('does not take a number between escaped braces for a placeholder', () => {
     expect(apply('string.Format("{{0}} {0}", n)')).toContain('$"{{0}} {n}"');
     expect(apply('string.Format("{{{0}}}", n)')).toContain('$"{{{n}}}"');

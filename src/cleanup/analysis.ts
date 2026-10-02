@@ -50,7 +50,7 @@ export interface CleanupAnalysis {
   readonly findings: readonly CleanupFinding[];
   /** The `.editorconfig` settings cleanup does not apply. */
   readonly unsupported: readonly string[];
-  /** What the steps of Code Janitor settings left undone and why: notes, not `.editorconfig` violations. */
+  /** What the Code Janitor settings (their steps, the enabled Code Style rules) leave undone and why: notes, not `.editorconfig` violations. */
   readonly notes: readonly string[];
 }
 
@@ -71,6 +71,8 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
   const pipeline = getCleanupPipeline(source, filePath, settings, options.disqualifiedTypeNames, (issue) => {
     if (issue.kind === 'unsupported') {
       unsupported.push(issue.detail);
+    } else if (issue.kind === 'note') {
+      notes.push(issue.detail);
     } else if (collecting) {
       issues.push(issue.detail);
     }
@@ -101,19 +103,15 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
           findings.push(...changeFindings(current, ruleOutput, rule.id, diagnosticSeverity(props, rule.id), at));
         }
       } else if (step.diagnosticId === NAMING_DIAGNOSTIC_ID) {
-        findings.push(...namingFindings(current, props, stepIssues, at));
+        findings.push(...namingFindings(source, current, props, stepIssues, at));
       } else {
         const severity = step.diagnosticId ? diagnosticSeverity(props, step.diagnosticId) : undefined;
         findings.push(...changeFindings(current, output, step.diagnosticId, severity, at, step.name));
       }
     }
 
-    // Only the `.editorconfig` steps (one diagnostic, or rules) enforce rules; other steps are Code Janitor settings.
-    if (step.diagnosticId || step.applyRules) {
-      findings.push(...stepIssues.map((detail) => issueFinding(detail, props, at)));
-    } else {
-      notes.push(...stepIssues);
-    }
+    // `unresolved` issues come from the `.editorconfig` steps; the Code Janitor settings report notes.
+    findings.push(...stepIssues.map((detail) => issueFinding(detail, props, at)));
 
     current = output;
   }
@@ -257,8 +255,12 @@ function changeFindings(
   });
 }
 
-/** IDE1006: the violations the naming step renames, at the declared name; the others are reported as issues. */
-function namingFindings(before: string, props: EditorConfigProperties, stepIssues: readonly string[], at: Locate): CleanupFinding[] {
+/**
+ * IDE1006: the violations the naming step renames in `before` (the text an earlier step may have
+ * rewritten), at the declared name in `source`; the others are reported as issues. A name with no
+ * counterpart in `source` (an earlier step introduced it) is located by its lines alone.
+ */
+function namingFindings(source: string, before: string, props: EditorConfigProperties, stepIssues: readonly string[], at: Locate): CleanupFinding[] {
   const unresolved = new Set(
     stepIssues.flatMap((detail) => {
       const match = / line (\d+): .*?'([^']+)' should be named/.exec(detail);
@@ -267,21 +269,38 @@ function namingFindings(before: string, props: EditorConfigProperties, stepIssue
     })
   );
 
-  return findNamingViolations(buildSourceModel(before), parseNamingRules(props), props).flatMap((violation): CleanupFinding[] => {
+  const rules = parseNamingRules(props);
+  const violations = findNamingViolations(buildSourceModel(before), rules, props);
+  // The same violation in `source`, paired in order: the n-th `count` field to rename with the n-th one.
+  const identity = (violation: (typeof violations)[number]) => `${violation.symbol.kind}:${violation.symbol.name}:${violation.newName}`;
+  const inSource = new Map<string, (typeof violations)[number][]>();
+  for (const violation of before === source ? violations : findNamingViolations(buildSourceModel(source), rules, props)) {
+    inSource.set(identity(violation), [...(inSource.get(identity(violation)) ?? []), violation]);
+  }
+
+  return violations.flatMap((violation): CleanupFinding[] => {
     const { symbol, newName, severity, rule } = violation;
+    const counterpart = inSource.get(identity(violation))?.shift();
     const start = symbol.nameNode.startPosition;
     if (unresolved.has(`${start.row}:${symbol.name}`)) {
       return [];
     }
+
+    const sourceName = counterpart?.symbol.nameNode;
 
     return [
       {
         ruleId: NAMING_DIAGNOSTIC_ID,
         rule: NAMING_DIAGNOSTIC_ID,
         severity,
-        ...at(start.row, start.row),
-        startCharacter: start.column,
-        endCharacter: symbol.nameNode.endPosition.column,
+        ...(sourceName
+          ? {
+              startLine: sourceName.startPosition.row,
+              endLine: sourceName.startPosition.row,
+              startCharacter: sourceName.startPosition.column,
+              endCharacter: sourceName.endPosition.column,
+            }
+          : at(start.row, start.row)),
         message: `${symbol.kind.replace('_', ' ')} '${symbol.name}' should be named '${newName}' (naming rule '${rule.title}').`,
         wouldChange: true,
         fixable: true,

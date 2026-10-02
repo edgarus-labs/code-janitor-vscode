@@ -1,9 +1,8 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
 import { hasModifier, hasParseErrors } from './editorConfigSupport';
-import { loadProjectFacts } from './editorConfigQualityRulesProject';
+import { exposesInternals, loadProjectFacts, suppressionsOf } from './editorConfigQualityRulesProject';
 import {
-  Suppressions,
   addModifierEdit,
   attributeSimpleName,
   attributesOf,
@@ -31,7 +30,8 @@ export function applySealInternalTypes(source: string, context: RuleContext): st
     const project = context.project ? loadProjectFacts(context.project, context.filePath) : undefined;
     const derived = new Set([...collectDisqualifiedTypeNames(tree.rootNode), ...(project?.others.derivedOrConstrainedNames ?? [])]);
     const ignoreInternalsVisibleTo = readCodeQualityOption(context.props, 'CA1852', 'ignore_internalsvisibleto') === 'true';
-    const suppressions = new Suppressions(source);
+    const internalsVisibleTo = exposesInternals(project, source);
+    const suppressions = suppressionsOf(source, context);
     const edits: TextEdit[] = [];
     for (const declaration of findAll(tree.rootNode, ['class_declaration', 'record_declaration'])) {
       const name = declaration.childForFieldName('name')?.text;
@@ -48,11 +48,11 @@ export function applySealInternalTypes(source: string, context: RuleContext): st
         continue;
       }
 
-      if (project?.internalsVisibleTo && !ignoreInternalsVisibleTo) {
+      if (internalsVisibleTo && !ignoreInternalsVisibleTo) {
         continue;
       }
 
-      const reason = blockerOf(declaration, project === undefined, project?.incomplete, project?.markup, project?.internalsVisibleTo === true);
+      const reason = blockerOf(declaration, project === undefined, project?.incomplete, project?.markup, internalsVisibleTo);
       if (reason) {
         context.report(describeDiagnostic('CA1852', source, declaration.startIndex, `'${name}' is not visible outside the assembly and could be sealed, but ${reason}; it was left unsealed.`));
         continue;
@@ -89,7 +89,9 @@ function blockerOf(declaration: Node, noProject: boolean, incomplete: string | u
     return `the project's files could not all be checked (${incomplete})`;
   }
 
-  if (markup && resultantVisibility(declaration) !== 'private') {
+  // Markup cannot see a private type, unless a containing type is partial: Razor `@code` and XAML
+  // `x:Code` are other parts of that type.
+  if (markup && (resultantVisibility(declaration) !== 'private' || hasPartialContainer(declaration))) {
     return `markup of the project the cleanup does not read may derive from it (${markup})`;
   }
 
@@ -98,4 +100,14 @@ function blockerOf(declaration: Node, noProject: boolean, incomplete: string | u
   }
 
   return undefined;
+}
+
+function hasPartialContainer(declaration: Node): boolean {
+  for (let current = declaration.parent; current; current = current.parent) {
+    if (/^(?:class|struct|record|interface)_declaration$/.test(current.type) && hasModifier(current, 'partial')) {
+      return true;
+    }
+  }
+
+  return false;
 }

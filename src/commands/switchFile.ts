@@ -74,19 +74,22 @@ export async function findRelatedFile(filePath: string, groups: readonly (readon
   return undefined;
 }
 
-/** Switch File: opens the file related to the active one (code-behind, designer, header, template, style). */
-export async function switchFile(): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.uri.scheme !== 'file') {
+/**
+ * Switch File: opens the file related to `uri` (the right-clicked tab, from the editor tab menu) or,
+ * without one, to the active editor's file (code-behind, designer, header, template, style).
+ */
+export async function switchFile(uri?: vscode.Uri): Promise<void> {
+  const source = uri ?? vscode.window.activeTextEditor?.document.uri;
+  if (!source || source.scheme !== 'file') {
     void vscode.window.showInformationMessage('Code Janitor: no active file to switch from.');
 
     return;
   }
 
   const expression = vscode.workspace.getConfiguration('codeJanitor').get<string>('switching.relatedFileExtensions', DEFAULT_RELATED_FILE_EXTENSIONS);
-  const target = await findRelatedFile(editor.document.uri.fsPath, parseRelatedFileExtensions(expression));
+  const target = await findRelatedFile(source.fsPath, parseRelatedFileExtensions(expression));
   if (target === undefined) {
-    void vscode.window.showInformationMessage(`Code Janitor: no related file found for ${path.basename(editor.document.uri.fsPath)}.`);
+    void vscode.window.showInformationMessage(`Code Janitor: no related file found for ${path.basename(source.fsPath)}.`);
 
     return;
   }

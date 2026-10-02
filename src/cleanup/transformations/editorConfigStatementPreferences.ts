@@ -3,7 +3,7 @@ import { effectiveEditorConfigValue, enforcedOptionValue } from '../editorConfig
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { RELATIONAL, UNARY, nullTest, operatorOf, precedenceOf, unparenthesized, withParentheses } from './editorConfigPrecedence';
 import { hasParseErrors, lineEndAt, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
-import { isPlainNullComparison } from './typeFacts';
+import { isPlainNullComparison, isPlainReferenceType } from './typeFacts';
 import { delegateParameterTypes, subjectTypeText } from './editorConfigExpressionPreferences';
 import { interpolationIdentifiers, interpolationWritesName } from './interpolation';
 
@@ -17,6 +17,8 @@ interface StatementContext {
   readonly props: EditorConfigProperties;
   /** One indentation level for code the rule creates. */
   readonly indent: string;
+  /** The project's C# language version, when known. */
+  readonly languageVersion?: number;
 }
 
 /** Collects the edits for the statements of one block. */
@@ -45,7 +47,7 @@ export const STATEMENT_PREFERENCES: readonly PreferenceRule[] = [
 const MAX_REWRITES = 16;
 
 /** Applies one preference when its option is `true` and enforced, again while it changes the code. */
-export function applyStatementPreference(rule: PreferenceRule, source: string, props: EditorConfigProperties, indent: string): string {
+export function applyStatementPreference(rule: PreferenceRule, source: string, props: EditorConfigProperties, indent: string, languageVersion?: number): string {
   if (effectiveEditorConfigValue(props, rule.option) !== 'true') {
     return source;
   }
@@ -58,7 +60,7 @@ export function applyStatementPreference(rule: PreferenceRule, source: string, p
       edits = [];
       for (const block of findAll(tree.rootNode, 'block')) {
         const statements = block.namedChildren.filter((child) => child.type !== 'comment' && !child.type.startsWith('preproc'));
-        rule.apply(current, block, statements, edits, { props, indent });
+        rule.apply(current, block, statements, edits, { props, indent, languageVersion });
       }
     } finally {
       tree.delete();
@@ -443,6 +445,42 @@ export function enclosingMember(node: Node): Node {
  */
 const CONDITIONAL_TARGET_TYPES = /^(?:bool|Boolean|int|Int32|long|Int64|decimal|Decimal|string|String)\??$/;
 
+/** An integer literal without suffix that fits in `int`, optionally negated: its natural type is `int`. */
+function isIntLiteral(node: Node): boolean {
+  const value = unparenthesized(node);
+  const operand = value.type === 'prefix_unary_expression' && value.child(0)?.type === '-' ? value.namedChildren[0] : value;
+  if (operand?.type !== 'integer_literal' || /[uUlL]$/.test(operand.text)) {
+    return false;
+  }
+
+  const digits = operand.text.replace(/_/g, '');
+
+  return Number(/^0[bB]/.test(digits) ? parseInt(digits.slice(2), 2) : digits) <= 2147483647;
+}
+
+/**
+ * Whether `c ? a : b` for `targetType` may need target-typed conditionals (C# 9) the project
+ * lacks: before C# 9 one branch has to convert to the other. Without the branch types this is
+ * only certain for a `bool`/`string` target with a non-null branch, or for a numeric target with
+ * an `int` literal branch (it converts to, or from, every other value the target takes).
+ */
+function needsTargetTyping(languageVersion: number | undefined, targetType: string, whenTrue: Node, whenFalse: Node): boolean {
+  if (languageVersion === undefined || languageVersion >= 9) {
+    return false;
+  }
+
+  const nullish = (node: Node): boolean => /^(?:null_literal|default_expression)$/.test(unparenthesized(node).type);
+  if (targetType.endsWith('?')) {
+    return true;
+  }
+
+  if (/^(?:bool|Boolean|string|String)$/.test(targetType)) {
+    return nullish(whenTrue) && nullish(whenFalse);
+  }
+
+  return !((isIntLiteral(whenTrue) && !nullish(whenFalse)) || (isIntLiteral(whenFalse) && !nullish(whenTrue)));
+}
+
 /** The only statement of `node`: the statement itself or the single statement of a block. */
 function soleStatement(node: Node | undefined): Node | undefined {
   return node?.type === 'block' ? (node.namedChildCount === 1 ? node.namedChildren[0] : undefined) : node;
@@ -500,7 +538,7 @@ function conditionalText(condition: Node, whenTrue: Node, whenFalse: Node, targe
  * `if (c) x = a; else x = b;` becomes `x = c ? a : b;`, and `T x; if (c) x = a; else x = b;`
  * becomes `T x = c ? a : b;`, when the type of `x` is one the conditional cannot change.
  */
-function conditionalAssignments(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+function conditionalAssignments(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { languageVersion }: StatementContext): void {
   statements.forEach((statement, index) => {
     const parts = ifElse(statement);
     const first = simpleAssignment(parts?.whenTrue);
@@ -517,8 +555,10 @@ function conditionalAssignments(source: string, _block: Node, statements: readon
       text === undefined ||
       text.includes('\n') ||
       !CONDITIONAL_TARGET_TYPES.test(type) ||
+      needsTargetTyping(languageVersion, type, first.right, second.right) ||
       hasParseErrors(statement) ||
-      hasComment(source, statement.startIndex, statement.endIndex)
+      // A declaration folded into the conditional also takes everything between it and the `if`.
+      hasComment(source, declares ? declaration.declarator.endIndex : statement.startIndex, statement.endIndex)
     ) {
       return;
     }
@@ -557,14 +597,14 @@ function returnedValue(statement: Node | undefined): Node | undefined {
  * `if (c) return a; else return b;` and `if (c) return a; return b;` become `return c ? a : b;`
  * when the return type is one the conditional cannot change.
  */
-function conditionalReturns(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+function conditionalReturns(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { languageVersion }: StatementContext): void {
   for (let i = 0; i < statements.length; i++) {
     const parts = ifElse(statements[i]);
     const first = returnedValue(parts?.whenTrue);
     const next = parts && !parts.whenFalse ? statements[i + 1] : undefined;
     const second = returnedValue(parts?.whenFalse ?? next);
     const type = parts ? returnType(statements[i]) ?? '' : '';
-    if (!parts || !first || !second || !CONDITIONAL_TARGET_TYPES.test(type)) {
+    if (!parts || !first || !second || !CONDITIONAL_TARGET_TYPES.test(type) || needsTargetTyping(languageVersion, type, first, second)) {
       continue;
     }
 
@@ -674,10 +714,7 @@ const COLLECTION_TYPES: Record<string, 1 | 2> = {
  * would take a collection expression instead.
  */
 function collectionInitializers(source: string, block: Node, statements: readonly Node[], edits: TextEdit[], { props, indent }: StatementContext): void {
-  let fileRoot: Node = block;
-  while (fileRoot.parent) {
-    fileRoot = fileRoot.parent;
-  }
+  const fileRoot = fileRootOf(block);
 
   const collectionExpressions = enforcedOptionValue(props, 'dotnet_style_prefer_collection_expression');
   const explicitTypeAllowed = collectionExpressions === undefined || collectionExpressions === 'false' || collectionExpressions === 'never';
@@ -866,6 +903,7 @@ function switchExpressions(source: string, _block: Node, statements: readonly No
     if (
       !(CONDITIONAL_TARGET_TYPES.test(type.replace(/\s+/g, '')) || isEnumOfFile(type, statement)) ||
       armTexts.some((text) => text.includes('\n')) ||
+      (declares && hasComment(source, declaration.declarator.endIndex, statement.startIndex)) ||
       (consumed !== statement && (hasParseErrors(consumed) || hasComment(source, statement.endIndex, consumed.endIndex)))
     ) {
       continue;
@@ -960,12 +998,15 @@ function asWithNullCheckPatterns(source: string, block: Node, statements: readon
     const member = enclosingMember(block);
     const usedOutside =
       statements.slice(i + 2).some((later) => occurrences(later, local.name).length > 0) || (alternative !== undefined && occurrences(alternative, local.name).length > 0);
+    // `s != null` may call a user-defined operator (a destroyed Unity object equals null); `is` never does.
+    const plainCheck = check.byPattern || isPlainReferenceType(type.text, fileRootOf(block));
     if (
       check.subject.type !== 'identifier' ||
       check.subject.text !== local.name ||
       (local.type.type !== 'implicit_type' && local.type.text.replace(/\s+/g, '') !== type.text.replace(/\s+/g, '')) ||
       type.text.trim().endsWith('?') ||
       usedOutside ||
+      !plainCheck ||
       isAssignedIn(statement, local.name) ||
       !declaredOnlyBy(member, local.name, 1) ||
       hasParseErrors(statements[i]) ||
@@ -1004,6 +1045,8 @@ function isWithCastPatterns(source: string, block: Node, statements: readonly No
       (local.type.type !== 'implicit_type' && local.type.text.replace(/\s+/g, '') !== castType) ||
       isAssignedIn(then, local.name) ||
       !declaredOnlyBy(enclosingMember(block), local.name, 1) ||
+      // The pattern variable is in scope in the whole block, where the name may mean a field or property.
+      occurrences(block, local.name).some((use) => !isNameOfMemberAccess(use) && (use.startIndex < then.startIndex || use.endIndex > then.endIndex)) ||
       hasParseErrors(statement) ||
       hasComment(source, test!.startIndex, local.declarator.endIndex)
     ) {
@@ -1018,4 +1061,13 @@ function isWithCastPatterns(source: string, block: Node, statements: readonly No
     edits.push({ start: pattern.endIndex, end: pattern.endIndex, text: ` ${local.name}` });
     edits.push({ start: removeStart, end: removeEnd, text: '' });
   }
+}
+
+function fileRootOf(node: Node): Node {
+  let root = node;
+  while (root.parent) {
+    root = root.parent;
+  }
+
+  return root;
 }

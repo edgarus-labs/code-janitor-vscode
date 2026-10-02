@@ -161,6 +161,25 @@ describe('inward move: writing the directives', () => {
     );
   });
 
+  it('keeps a moved directive that reads like one in the namespace but imports another namespace', () => {
+    // In Company.App, the kept 'using Shared;' imports Company.App.Shared; the file-level one imports the global Shared.
+    expect(moved('using Shared;\n\nnamespace Company.App\n{\n    using Shared;\n\n    class C { Util u; Other o; }\n}\n')).toBe(
+      'namespace Company.App\n{\n    using global::Shared;\n    using Shared;\n\n    class C { Util u; Other o; }\n}\n'
+    );
+  });
+
+  it('moves a comment written in front of the first directive of the file with it', () => {
+    expect(moved('/* keep me */ using System;\n\nnamespace N\n{\n    class C { String s; }\n}\n')).toBe(
+      'namespace N\n{\n    /* keep me */ using System;\n\n    class C { String s; }\n}\n'
+    );
+  });
+
+  it('keeps the file header but moves the comment on the line of the first directive', () => {
+    expect(moved('// Header\n/* keep me */ using System;\n\nnamespace N\n{\n    class C { String s; }\n}\n')).toBe(
+      '// Header\nnamespace N\n{\n    /* keep me */ using System;\n\n    class C { String s; }\n}\n'
+    );
+  });
+
   it('reports nothing to move when only global usings are at file level', () => {
     expect(inward('global using System;\r\n\r\nnamespace Company.App\r\n{\r\n    class C { Action a; }\r\n}\r\n')).toEqual({ status: 'unchanged' });
   });
@@ -333,6 +352,20 @@ describe('inward move: skipped with a reason', () => {
 
   it("skips a directive that names a moved alias before '::': directives of one scope do not see each other", () => {
     expect(skipped('using T = System.Text;\n\nnamespace N\n{\n    using B = T::StringBuilder;\n\n    class C { B b; }\n}\n')).toMatch(/'T'/);
+  });
+
+  it('skips when an alias in the namespace and a moved alias of the same name mean different types', () => {
+    // The kept alias names Company.App.Models.Bar, the moved one the global Models.Bar: both cannot stand in one scope.
+    const input = 'using X = Models.Bar;\n\nnamespace Company.App\n{\n    using X = Models.Bar;\n\n    class C { X x; }\n}\n';
+
+    expect(skipped(input, 'namespace Company.App.Models { public class Bar { } }\n')).toMatch(/alias 'X' twice/);
+  });
+
+  it('skips a using static that would share a scope with a namespace import holding a used type of the same name', () => {
+    const library = 'namespace Company { public static class Util { public class Bar { } } }\n';
+    const input = 'using static Company.Util;\n\nnamespace App\n{\n    using Models;\n\n    class C { Bar b; }\n}\n';
+
+    expect(skipped(input, library)).toMatch(/'Bar' ambiguous/);
   });
 
   it.each([

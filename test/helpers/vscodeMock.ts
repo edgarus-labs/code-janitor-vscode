@@ -242,6 +242,8 @@ interface RecordedEdit {
 
 export class WorkspaceEdit {
   readonly edits = new Map<string, RecordedEdit[]>();
+  /** Files the edit creates, in order, as `WorkspaceEdit.createFile` records them. */
+  readonly createdFiles: { uri: Uri; options: { overwrite?: boolean; ignoreIfExists?: boolean } }[] = [];
 
   replace(uri: Uri, range: Range, text: string): void {
     const key = uri.toString();
@@ -250,8 +252,16 @@ export class WorkspaceEdit {
     this.edits.set(key, list);
   }
 
+  insert(uri: Uri, position: Position, text: string): void {
+    this.replace(uri, new Range(position, position), text);
+  }
+
+  createFile(uri: Uri, options: { overwrite?: boolean; ignoreIfExists?: boolean } = {}): void {
+    this.createdFiles.push({ uri, options });
+  }
+
   get size(): number {
-    return this.edits.size;
+    return this.edits.size + this.createdFiles.length;
   }
 }
 
@@ -371,6 +381,8 @@ export const state = {
   codeActionProviders: [] as MockCodeActionProvider[],
   /** Handlers of `workspace.onDid(Open|Change|Close|Save)TextDocument`. */
   documentListeners: { open: [], change: [], close: [], save: [] } as Record<'open' | 'change' | 'close' | 'save', ((argument: unknown) => void)[]>,
+  /** Handlers of the `workspace.createFileSystemWatcher` watchers: a file created, changed or deleted on disk. */
+  diskListeners: [] as ((uri: Uri) => void)[],
 };
 
 export function resetMock(): void {
@@ -404,6 +416,7 @@ export function resetMock(): void {
   state.diagnostics = new Map();
   state.codeActionProviders = [];
   state.documentListeners = { open: [], change: [], close: [], save: [] };
+  state.diskListeners = [];
   window.activeTextEditor = undefined;
 }
 
@@ -579,15 +592,48 @@ export const workspace = {
     return Promise.resolve(state.foundFiles);
   },
 
-  openTextDocument(options: { content: string; language: string }): Thenable<TextDocument> {
-    state.openedDocuments.push(options);
+  openTextDocument(target: Uri | { content: string; language: string }): Thenable<TextDocument> {
+    if (target instanceof Uri) {
+      // As in VS Code: the open document of the file, otherwise the file loaded from disk, unsaved and without an editor.
+      const open = state.documents.find((candidate) => !candidate.isClosed && candidate.uri.toString() === target.toString());
+      if (open) {
+        return Promise.resolve(open);
+      }
 
-    return Promise.resolve(new TextDocument(Uri.file('/untitled'), options.content, options.language));
+      const content = state.files.get(target.fsPath);
+      if (content === undefined) {
+        return Promise.reject(new Error(`cannot open ${target.toString()}. Detail: Unable to read file '${target.fsPath}'`));
+      }
+
+      const loaded = new TextDocument(target, content, 'csharp');
+      state.documents.push(loaded);
+      state.documentListeners.open.forEach((listener) => listener(loaded));
+
+      return Promise.resolve(loaded);
+    }
+
+    state.openedDocuments.push(target);
+
+    return Promise.resolve(new TextDocument(Uri.file('/untitled'), target.content, target.language));
   },
 
   applyEdit(edit: WorkspaceEdit): Thenable<boolean> {
     if (!state.applyEditResult) {
       return Promise.resolve(false);
+    }
+
+    // As in VS Code: creating a file that exists, without `overwrite` or `ignoreIfExists`, fails the whole edit.
+    if (edit.createdFiles.some(({ uri, options }) => state.files.has(uri.fsPath) && !options.overwrite && !options.ignoreIfExists)) {
+      return Promise.resolve(false);
+    }
+
+    // A created file is empty on disk; its text edits go to its document, unsaved, as in VS Code.
+    for (const { uri, options } of edit.createdFiles) {
+      if (!state.files.has(uri.fsPath) || options.overwrite) {
+        state.files.set(uri.fsPath, '');
+        state.documents = state.documents.filter((candidate) => candidate.uri.toString() !== uri.toString());
+        state.documents.push(new TextDocument(uri, '', 'csharp'));
+      }
     }
 
     for (const [key, edits] of edit.edits) {
@@ -638,6 +684,21 @@ export const workspace = {
     state.willSaveHandlers.push(handler);
 
     return { dispose: () => undefined };
+  },
+
+  createFileSystemWatcher(_glob: string): {
+    onDidCreate(handler: (uri: Uri) => void): { dispose(): void };
+    onDidChange(handler: (uri: Uri) => void): { dispose(): void };
+    onDidDelete(handler: (uri: Uri) => void): { dispose(): void };
+    dispose(): void;
+  } {
+    const listen = (handler: (uri: Uri) => void) => {
+      state.diskListeners.push(handler);
+
+      return { dispose: () => undefined };
+    };
+
+    return { onDidCreate: listen, onDidChange: listen, onDidDelete: listen, dispose: () => undefined };
   },
 
   onDidChangeConfiguration(_handler: (event: { affectsConfiguration(section: string): boolean }) => void): { dispose(): void } {

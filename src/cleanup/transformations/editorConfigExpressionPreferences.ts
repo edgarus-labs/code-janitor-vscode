@@ -135,8 +135,9 @@ function plainArguments(list: Node | null): Node[] | undefined {
 
 /**
  * The declared type of `identifier` when the enclosing member (or, failing that, the enclosing type)
- * declares that name exactly once, with an explicit type. Any other kind of declaration (pattern,
- * lambda parameter, query variable, `var`) makes the type unknown.
+ * declares that name exactly once, with an explicit type or as `var x = (T)value`, whose type is
+ * exactly `T`. Any other kind of declaration (pattern, lambda parameter, query variable, other `var`)
+ * makes the type unknown.
  */
 export function declaredTypeText(identifier: Node, name = identifier.text): string | undefined {
   return declaredTypeNode(identifier, name)?.text.replace(/\s+/g, '');
@@ -172,8 +173,11 @@ export function declaredTypeNode(from: Node, name = from.text): Node | undefined
 
         const declared =
           node.type === 'variable_declarator' ? node.parent?.childForFieldName('type') : node.childForFieldName('type');
+        const castType = declared?.type === 'implicit_type' && node.type === 'variable_declarator' ? initializerCastType(node) : undefined;
         if (declared && declared.type !== 'implicit_type') {
           typed.push(declared);
+        } else if (castType) {
+          typed.push(castType);
         } else {
           untyped++;
         }
@@ -217,6 +221,16 @@ export function declaredTypeNode(from: Node, name = from.text): Node | undefined
   }
 
   return type;
+}
+
+/** `T` of `var x = (T)value`: the variable then has exactly that type. */
+function initializerCastType(declarator: Node): Node | undefined {
+  let value = declarator.namedChildren.find((child) => child.type === 'equals_value_clause')?.namedChildren[0];
+  while (value?.type === 'parenthesized_expression') {
+    value = value.namedChildren[0];
+  }
+
+  return value?.type === 'cast_expression' ? (value.childForFieldName('type') ?? undefined) : undefined;
 }
 
 /** The declared type of `x` or `this.x`, when the file declares it exactly once with a type. */

@@ -54,15 +54,26 @@ export class NamingStyle {
   }
 
   /**
-   * The name Roslyn's naming code fix offers first (`MakeCompliant`): strip common `m_`/`s_`/`t_`/`_`
-   * prefixes, reuse a partial required prefix/suffix, then re-apply capitalization per word.
+   * The name Roslyn's naming code fix offers (`MakeCompliant`). Its first candidate strips common
+   * `m_`/`s_`/`t_`/`_` prefixes, reuses a partial required prefix/suffix, then re-applies capitalization
+   * per word; when that is not compliant, its second candidate (`CreateCompliantNameDirectly`) strips
+   * the required prefix before the common prefixes (`k_max` becomes `kMax` for prefix `k`).
    */
   makeCompliant(name: string): string {
     let fixedName = stripCommonPrefixes(name).name;
     fixedName = this.ensurePrefix(fixedName);
     fixedName = this.ensureSuffix(fixedName);
+    const first = this.finishFixingName(fixedName);
+    if (this.isCompliant(first)) {
+      return first;
+    }
 
-    return this.finishFixingName(fixedName);
+    let direct = stripCommonPrefixes(name.startsWith(this.prefix) ? name.slice(this.prefix.length) : name).name;
+    direct = direct.startsWith(this.prefix) ? direct : this.prefix + direct;
+    direct = direct.endsWith(this.suffix) ? direct : direct + this.suffix;
+    const second = this.finishFixingName(direct);
+
+    return this.isCompliant(second) ? second : first;
   }
 
   private ensurePrefix(name: string): string {

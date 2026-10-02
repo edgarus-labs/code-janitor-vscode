@@ -171,6 +171,14 @@ describe('explicitAccessModifierConverter', () => {
     expect(apply(source)).toBe(source);
   });
 
+  it.each([
+    ['top level', 'file class A { }\nclass B { void M() { } }', 'file class A { }\ninternal class B { private void M() { } }'],
+    ['in a namespace', 'namespace N { file class A { } class B { } }', 'namespace N { file class A { } internal class B { } }'],
+    ['with another modifier', 'file sealed class A { void M() { } } struct S { }', 'file sealed class A { private void M() { } } internal struct S { }'],
+  ])('still adds access modifiers next to a file-local type (%s)', (_name, source, expected) => {
+    expect(apply(source)).toBe(expected);
+  });
+
   it('is named', () => {
     expect(converter().name).toBe('Explicit Access Modifiers');
   });

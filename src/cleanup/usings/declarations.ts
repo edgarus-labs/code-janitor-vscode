@@ -29,7 +29,9 @@ interface Scope {
 
 export const summarizeDeclarations: (source: string) => FileSummary = memoizeBySource(scanDeclarations, 4);
 
-function scanDeclarations(source: string): FileSummary {
+function scanDeclarations(file: string): FileSummary {
+  // Visual Studio saves C# files with a byte order mark, which the lexer would read as part of the first word.
+  const source = file.replace(/^\uFEFF/, '');
   const tokens = lex(source).tokens;
   const keys = new Set<string>();
   const scopes: Scope[] = [];
@@ -142,10 +144,10 @@ function scanDeclarations(source: string): FileSummary {
     if (scope?.kind === 'type' && token.type === 'identifier' && tokens[i + 1]?.type === '(') {
       if (text(token) === 'extension' && tokens[i - 1]?.type !== '.') {
         keys.add(`X:${enclosingNamespace()}`);
-      } else if (tokens[i + 2]?.type === 'this') {
+      } else if (receiverIsThis(tokens, i + 1, text)) {
         keys.add(`E:${enclosingNamespace()}:${text(token)}`);
       }
-    } else if (scope?.kind === 'type' && token.type === '>' && tokens[i + 1]?.type === '(' && tokens[i + 2]?.type === 'this') {
+    } else if (scope?.kind === 'type' && token.type === '>' && tokens[i + 1]?.type === '(' && receiverIsThis(tokens, i + 1, text)) {
       const name = genericMethodName(tokens, i, text);
       if (name) {
         keys.add(`E:${enclosingNamespace()}:${name}`);
@@ -154,6 +156,29 @@ function scanDeclarations(source: string): FileSummary {
   }
 
   return { keys };
+}
+
+const PARAMETER_MODIFIERS = new Set(['ref', 'in', 'readonly']);
+
+/** Whether the parameter list opened at `tokens[open]` starts with `this`, past attributes and `ref`/`in`/`readonly`/`scoped`. */
+function receiverIsThis(tokens: readonly Token[], open: number, text: (token: Token) => string): boolean {
+  let j = open + 1;
+  for (;;) {
+    const token = tokens[j];
+    if (token?.type === '[') {
+      for (let brackets = 0; j < tokens.length; j++) {
+        if (tokens[j].type === '[') {
+          brackets++;
+        } else if (tokens[j].type === ']' && --brackets === 0) {
+          break;
+        }
+      }
+    } else if (!token || !(PARAMETER_MODIFIERS.has(token.type) || (token.type === 'identifier' && text(token) === 'scoped'))) {
+      return token?.type === 'this';
+    }
+
+    j++;
+  }
 }
 
 interface DeclaredType {
@@ -374,7 +399,9 @@ export class DeclarationIndex {
     private readonly counts: ReadonlyMap<string, number>,
     private readonly tables: Tables = emptyTables(),
     private readonly removed: ReadonlySet<string> = EMPTY,
-    private readonly added: ReadonlySet<string> = EMPTY
+    private readonly added: ReadonlySet<string> = EMPTY,
+    /** The project uses a framework the index does not list (Windows Desktop), which adds to the namespaces of the listed ones. */
+    private readonly frameworkNamespacesOpen = false
   ) {
     this.addedTables = emptyTables();
     addToTables(this.addedTables, added);
@@ -443,8 +470,12 @@ export class DeclarationIndex {
     return result;
   }
 
-  /** The type names declared directly in the namespace `full`. */
-  typesOf(full: string): Set<string> {
+  /** The type names declared directly in the namespace `full`; `null` when a framework the index does not list may add more to it. */
+  typesOf(full: string): Set<string> | null {
+    if (this.frameworkNamespacesOpen && bcl().namespaces.has(full)) {
+      return null;
+    }
+
     const result = new Set<string>();
     for (const [name, kind] of this.membersOf(full)) {
       if (kind !== 'namespace') {
@@ -455,9 +486,9 @@ export class DeclarationIndex {
     return result;
   }
 
-  /** The names of the extension methods declared in the namespace `full`, or `undefined` when C# 14 extension blocks may add unknown ones. */
+  /** The names of the extension methods declared in the namespace `full`, or `undefined` when C# 14 extension blocks or a framework the index does not list may add unknown ones. */
   extensionMethodsOf(full: string): Set<string> | undefined {
-    if (this.has(`X:${full}`)) {
+    if (this.has(`X:${full}`) || (this.frameworkNamespacesOpen && bcl().namespaces.has(full))) {
       return undefined;
     }
 
@@ -496,8 +527,8 @@ export class DeclarationAggregate {
     addToTables(this.tables, summary.keys);
   }
 
-  view(removed?: FileSummary, added?: FileSummary): DeclarationIndex {
-    return new DeclarationIndex(this.counts, this.tables, removed?.keys, added?.keys);
+  view(removed?: FileSummary, added?: FileSummary, frameworkNamespacesOpen = false): DeclarationIndex {
+    return new DeclarationIndex(this.counts, this.tables, removed?.keys, added?.keys, frameworkNamespacesOpen);
   }
 }
 

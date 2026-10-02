@@ -11,7 +11,8 @@ export interface LineSelection {
   endCharacter: number;
 }
 
-const comparer = new Intl.Collator();
+// Pinned like the member comparer: the process locale (LANG) would otherwise decide whether `A` sorts before `a`.
+const comparer = new Intl.Collator('en-US');
 
 /**
  * The lines a selection sorts: with nothing selected the line of the cursor and the next one;

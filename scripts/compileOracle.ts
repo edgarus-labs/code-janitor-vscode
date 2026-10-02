@@ -15,9 +15,9 @@ export interface CompilerError {
   readonly message: string;
 }
 
-const ERROR_LINE = /^(?:(.+?)\((\d+),\d+\)|[^:]+?)\s*:\s*error (CS\d+)\s*:\s*(.*?)(?:\s+\[[^\]]+\])?$/;
+const ERROR_LINE = /^(?:(.+?)\((\d+),\d+\)|[^:]+?)\s*:\s*error ((?:CS|RZ)\d+)\s*:\s*(.*?)(?:\s+\[[^\]]+\])?$/;
 
-/** The C# compiler errors (`CSxxxx`) of a build, each once; warnings and analyzer diagnostics are not errors here. */
+/** The C# and Razor compiler errors (`CSxxxx`, `RZxxxx`) of a build, each once; warnings and analyzer diagnostics are not errors here. */
 export function compilerErrors(output: string, root: string): CompilerError[] {
   const seen = new Set<string>();
   const errors: CompilerError[] = [];
@@ -50,6 +50,29 @@ export function newCompilerErrors(before: readonly CompilerError[], after: reado
 
     return count <= 0;
   });
+}
+
+/** One `dotnet build` of the copy: its output, its compiler errors and whether it succeeded. */
+export interface BuildResult {
+  readonly output: string;
+  readonly errors: readonly CompilerError[];
+  readonly ok: boolean;
+}
+
+/**
+ * The errors cleanup added to the build: the new compiler errors, or, when a build that succeeded
+ * before cleanup fails after it without any (an MSBuild, SDK or generator error), one `BUILD` error
+ * with the end of the build output.
+ */
+export function cleanupBuildErrors(baseline: BuildResult, after: BuildResult): CompilerError[] {
+  const added = newCompilerErrors(baseline.errors, after.errors);
+  if (added.length > 0 || !baseline.ok || after.ok) {
+    return added;
+  }
+
+  const tail = after.output.trim().split(/\r?\n/).slice(-8).join('\n');
+
+  return [{ code: 'BUILD', file: '', line: 0, message: `the build failed after cleanup without a compiler error:\n${tail}` }];
 }
 
 /**
