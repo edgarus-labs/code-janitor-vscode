@@ -164,3 +164,29 @@ describe('IDE0025 / IDE0026 / IDE0027 properties, indexers and accessors', () =>
     );
   });
 });
+
+describe('a line comment between a member header and its body', () => {
+  it('keeps the comment and puts the new body on the next line', () => {
+    const method = lines('class Sample', '{', '    int M() // note', '    {', '        return 1;', '    }', '}');
+    const methodArrow = lines('class Sample', '{', '    int M() // note', '        => 1;', '}');
+    const indexer = lines('class Sample', '{', '    int this[int i] // note', '    {', '        get { return i; }', '    }', '}');
+    const setter = lines('class Sample', '{', '    int P', '    {', '        get => _p;', '        set // note', '        {', '            _p = value;', '        }', '    }', '}');
+    const getterArrow = lines('class Sample', '{', '    int P', '    {', '        get // note', '            => _p;', '        set { _p = value; }', '    }', '}');
+
+    expectRewrite('csharp_style_expression_bodied_methods = true', method, methodArrow);
+    expect(codeStyle(methodArrow, 'csharp_style_expression_bodied_methods = false:warning\ncsharp_new_line_before_open_brace = none')).toBe(
+      lines('class Sample', '{', '    int M() // note', '    {', '        return 1;', '    }', '}')
+    );
+    expectRewrite('csharp_style_expression_bodied_indexers = true', indexer, lines('class Sample', '{', '    int this[int i] // note', '        => i;', '}'));
+    expectRewrite(
+      'csharp_style_expression_bodied_accessors = true',
+      setter,
+      lines('class Sample', '{', '    int P', '    {', '        get => _p;', '        set // note', '            => _p = value;', '    }', '}')
+    );
+    expectRewrite(
+      'csharp_style_expression_bodied_accessors = false',
+      getterArrow,
+      lines('class Sample', '{', '    int P', '    {', '        get // note', '            { return _p; }', '        set { _p = value; }', '    }', '}')
+    );
+  });
+});

@@ -46,6 +46,14 @@ describe('changedLinesSince', () => {
     expect([...changedLinesSince(BASE.replace(/\n/g, '\r\n'), current)]).toEqual([5]);
     expect(changedLinesSince(undefined, 'a\nb\n').size).toBe(3);
   });
+
+  it('does not count a UTF-8 byte order mark of either text as a change of the first line', () => {
+    const current = BASE.replace('        private int total;\n', '        private int total;\n        private int count;\n');
+
+    expect([...changedLinesSince(`\uFEFF${BASE}`, current)]).toEqual([5]);
+    expect([...changedLinesSince(BASE, `\uFEFF${current}`)]).toEqual([5]);
+    expect([...changedLinesSince('\uFEFFusing System;\r\nclass A {}\r\n', 'using System;\nclass A {}\n')]).toEqual([]);
+  });
 });
 
 describe('runCleanupOnChangedLines', () => {

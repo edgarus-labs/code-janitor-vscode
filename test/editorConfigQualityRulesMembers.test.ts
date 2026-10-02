@@ -283,6 +283,118 @@ describe('CA1822 mark members as static', () => {
     expect(noProject.issues).toEqual([expect.stringMatching(/^CA1822 line 3: 'Square' .*project/)]);
   });
 
+  it('keeps an internal member another file uses inside an interpolated string or a property pattern', () => {
+    const helper = lines('internal class Helper', '{', '    public string Format() => "x";', '}');
+    const interpolated = project({ 'Helper.cs': helper, 'Use.cs': 'internal static class Use { public static string M(Helper h) => $"{h.Format()}"; }\n' }, 'Helper.cs');
+    const result = cleanup(helper, warning, interpolated);
+    expect(result.output).toBe(helper);
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1822 line 3: 'Format' .*another file/)]);
+
+    const shape = lines('internal class Shape', '{', '    public string Kind => "square";', '}');
+    const pattern = project({ 'Shape.cs': shape, 'Use.cs': 'internal static class Use { public static bool M(object o) => o is Shape { Kind: "square" }; }\n' }, 'Shape.cs');
+    const patternResult = cleanup(shape, warning, pattern);
+    expect(patternResult.output).toBe(shape);
+    expect(patternResult.issues).toEqual([expect.stringMatching(/^CA1822 line 3: 'Kind' .*another file/)]);
+
+    const box = lines('internal class Box', '{', '    public Box Inner => new Box();', '}');
+    const extended = project({ 'Box.cs': box, 'Use.cs': 'internal static class Use { public static bool M(object o) => o is Box { Inner.Inner: not null }; }\n' }, 'Box.cs');
+    expect(cleanup(box, warning, extended).output).toBe(box);
+  });
+
+  it('reports a public member of a derivable type that a derived type may use to implement an interface', () => {
+    const source = lines(
+      'internal class Base',
+      '{',
+      '    public string Name() => "x";',
+      '}',
+      'internal interface INamed { string Name(); }',
+      'internal sealed class D : Base, INamed { }',
+      'internal class Other',
+      '{',
+      '    public string Label() => "y";',
+      '}',
+      'internal sealed class E : Other, IExternal { }'
+    );
+    const result = cleanup(source, warning, project({ 'Base.cs': source }, 'Base.cs'));
+
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([
+      expect.stringMatching(/^CA1822 line 3: 'Name' .*derived type/),
+      expect.stringMatching(/^CA1822 line 9: 'Label' .*IExternal/),
+    ]);
+  });
+
+  it('reports members the compiler binds to through a pattern (foreach, deconstruction, fixed)', () => {
+    const source = lines(
+      'using System.Collections.Generic;',
+      'public static class Use',
+      '{',
+      '    private sealed class Bag',
+      '    {',
+      '        public IEnumerator<int> GetEnumerator() { yield return 1; }',
+      '        internal void Deconstruct(out int a, out int b) { a = 1; b = 2; }',
+      '    }',
+      '    public static int M()',
+      '    {',
+      '        var s = 0;',
+      '        foreach (var x in new Bag()) { s += x; }',
+      '        var (a, b) = new Bag();',
+      '        return s + a + b;',
+      '    }',
+      '}'
+    );
+    const result = cleanup(source, warning);
+
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([
+      expect.stringMatching(/^CA1822 line 6: 'GetEnumerator' .*pattern/),
+      expect.stringMatching(/^CA1822 line 7: 'Deconstruct' .*pattern/),
+    ]);
+  });
+
+  it('reports query pattern members (Select, Where, ...) where a query expression may bind to them, and fixes them elsewhere', () => {
+    const query = lines(
+      'using System;',
+      'class Q',
+      '{',
+      '    private Q Select(Func<int, int> f) => null;',
+      '    public object M() => from x in this select x * 2;',
+      '}'
+    );
+    const result = cleanup(query, warning);
+
+    expect(result.output).toBe(query);
+    expect(result.issues).toEqual([expect.stringMatching(/^CA1822 line 4: 'Select' .*pattern/)]);
+
+    const helper = lines('class J', '{', '    private string Join(string a, string b) => a + b;', '    public string M() => Join("a", "b");', '}');
+    expect(cleanup(helper, warning).output).toContain('private static string Join(');
+  });
+
+  it('reports Length and Count of a type that may inherit an indexer, and fixes them when no indexer can apply', () => {
+    const inherited = lines(
+      'class B { public int this[int i] => i; }',
+      'class D : B',
+      '{',
+      '    private int Length => 3;',
+      '    public int U() => this[^1];',
+      '}',
+      'class E : Unknown',
+      '{',
+      '    private int Count => 3;',
+      '}'
+    );
+    const result = cleanup(inherited, warning);
+
+    expect(result.output).toBe(inherited);
+    expect(result.issues).toEqual([
+      expect.stringMatching(/^CA1822 line 4: 'Length' .*pattern/),
+      expect.stringMatching(/^CA1822 line 9: 'Count' .*pattern/),
+    ]);
+
+    const plain = lines('class B { }', 'class D : B, System.IDisposable', '{', '    private int Count => 3;', '    public void Dispose() { }', '}');
+    expect(cleanup(plain, warning).output).toContain('private static int Count');
+  });
+
   it('applies only while CA1822 is enforced, including through its category', () => {
     const source = lines('class C', '{', '    private int One() => 1;', '}');
 
@@ -437,6 +549,16 @@ describe('CA1852 seal internal types', () => {
       expect(cleanup(source, rules, options)).toEqual({ output: source, issues: [] });
     }
   });
+
+  it('reports instead of sealing when the project compiles Razor or XAML markup it does not read', () => {
+    const source = lines('internal class PageBase { }');
+
+    for (const markup of ['Pages/Index.razor', 'Views/Home.cshtml', 'MainWindow.xaml']) {
+      const result = cleanup(source, warning, project({ 'PageBase.cs': source, [markup]: '@inherits PageBase\n' }, 'PageBase.cs'));
+      expect(result.output).toBe(source);
+      expect(result.issues).toEqual([expect.stringMatching(/^CA1852 line 1: 'PageBase' .*markup/)]);
+    }
+  });
 });
 
 describe('IDE0051 remove unused private members', () => {
@@ -499,6 +621,37 @@ describe('IDE0051 remove unused private members', () => {
     const source = ['class C', '{', '    private int _used;', '', '    private int _unused;', '', '    public int Value => _used;', '}', ''].join('\r\n');
 
     expect(cleanup(source, warning).output).toBe(['class C', '{', '    private int _used;', '', '    public int Value => _used;', '}', ''].join('\r\n'));
+  });
+
+  it('keeps a private member the compiler binds to through a pattern (deconstruction)', () => {
+    const source = lines(
+      'class Pair',
+      '{',
+      '    private void Deconstruct(out int a, out int b) { a = 1; b = 2; }',
+      '    public int Sum() { var (a, b) = this; return a + b; }',
+      '}'
+    );
+    const result = cleanup(source, warning);
+
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([expect.stringMatching(/^IDE0051 line 3: 'Deconstruct' .*pattern/)]);
+  });
+
+  it('keeps a private member a query expression binds to (Where), and removes one no query can use', () => {
+    const source = lines(
+      'using System;',
+      'class Q',
+      '{',
+      '    private Q Where(Func<int, bool> f) => this;',
+      '    public object M() => from x in this where x > 0 select x;',
+      '}'
+    );
+    const result = cleanup(source, warning);
+
+    expect(result.output).toBe(source);
+    expect(result.issues).toEqual([expect.stringMatching(/^IDE0051 line 4: 'Where' .*pattern/)]);
+
+    expect(cleanup(lines('class P', '{', '    private int Select() => 1;', '}'), warning).output).toBe(lines('class P', '{', '}'));
   });
 
   it('applies only while IDE0051 is enforced', () => {

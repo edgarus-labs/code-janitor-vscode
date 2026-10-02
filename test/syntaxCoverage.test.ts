@@ -820,6 +820,64 @@ describe('parseCSharpSource - broad coverage', () => {
     expect(root.descendantsOfType('field_declaration').length).toBeGreaterThan(0);
   });
 
+  it('parses a comparison with a parenthesized operand as a conditional, not a generic name', () => {
+    const root = parse('class C { void M() { var ok = x < (y) ? a > b : c; } }');
+
+    expect(root.descendantsOfType('generic_name')).toHaveLength(0);
+    expect(root.descendantsOfType('labeled_statement')).toHaveLength(0);
+    expect(root.descendantsOfType('local_declaration_statement')).toHaveLength(1);
+    const conditional = root.descendantsOfType('conditional_expression');
+
+    expect(conditional).toHaveLength(1);
+    expect(conditional[0].namedChildren.map((n) => n.text)).toEqual(['x < (y)', 'a > b', 'c']);
+  });
+
+  it('parses comparisons with cast operands as two arguments, not a generic name', () => {
+    const root = parse('class C { void M() { Check(a < (int)b, c > (int)d); } }');
+
+    expect(root.descendantsOfType('generic_name')).toHaveLength(0);
+    expect(root.descendantsOfType('argument').map((n) => n.text)).toEqual(['a < (int)b', 'c > (int)d']);
+  });
+
+  it('parses comparisons with generic cast operands as two arguments, not a generic name', () => {
+    const root = parse('class C { void M() { F(a < (G<b, c>)d, e > (f)); } }');
+
+    expect(root.descendantsOfType('generic_name').map((n) => n.text)).toEqual(['G<b, c>']);
+    expect(root.descendantsOfType('cast_expression').map((n) => n.text)).toEqual(['(G<b, c>)d']);
+    expect(root.descendantsOfType('argument').map((n) => n.text)).toEqual(['a < (G<b, c>)d', 'e > (f)']);
+  });
+
+  it.each([
+    ['var r = ((Action)a)(b);', '(Action)a'],
+    ['((Action<int>)handler)(5);', '(Action<int>)handler'],
+  ])('parses a delegate invoked through a parenthesized cast: %s', (statement, cast) => {
+    const root = parse(`class C { void M() { ${statement} } }`);
+    const body = root.descendantsOfType('block')[0];
+
+    expect(body.namedChildren.map((n) => n.text)).toEqual([statement]);
+    expect(root.descendantsOfType('cast_expression').map((n) => n.text)).toEqual([cast]);
+    expect(root.descendantsOfType('tuple_type')).toHaveLength(0);
+  });
+
+  it.each(['var r = (GetHandler(e))(sender);', 'var r = (x.Get(y))(z);'])(
+    'parses a parenthesized invocation that is itself invoked, not a cast: %s',
+    (statement) => {
+      const root = parse(`class C { void M() { ${statement} } }`);
+      const body = root.descendantsOfType('block')[0];
+
+      expect(body.namedChildren.map((n) => n.text)).toEqual([statement]);
+      expect(root.descendantsOfType('local_declaration_statement')).toHaveLength(1);
+      expect(root.descendantsOfType('cast_expression')).toHaveLength(0);
+    }
+  );
+
+  it('still parses a tuple type argument as a generic name', () => {
+    const root = parse('class C { void M() { var l = new List<(string Id, int Count)>(); } }');
+    const generic = root.descendantsOfType('generic_name');
+
+    expect(generic.map((n) => n.text)).toEqual(['List<(string Id, int Count)>']);
+  });
+
   it('parses function pointer type', () => {
     const root = parse('class C { delegate*<void> ptr; }');
 

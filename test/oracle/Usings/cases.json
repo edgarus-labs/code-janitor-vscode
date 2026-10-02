@@ -104,6 +104,10 @@
     },
     "Outward/OutStaticPair.cs": {
       "skipped": "cannot be compared"
+    },
+    "Outward/OutAliasImport.cs": {
+      "skipped": "what 'X' refers to",
+      "control": true
     }
   },
   "inward": {
@@ -164,6 +168,18 @@
     "Inward/InNullable.cs": {
       "skipped": "preprocessor directives"
     },
+    "Inward/InHiddenBinding.cs": {
+      "skipped": "finds 'Math' through 'using System;'",
+      "control": true
+    },
+    "Inward/InHiddenNestedType.cs": {
+      "skipped": "finds 'Inner' through 'using static Company.App.Models.Holder;'",
+      "control": true
+    },
+    "Inward/InAliasConflict.cs": {
+      "skipped": "alias 'Widget'",
+      "control": true
+    },
     "Inward/InAssemblyAttribute.cs": {},
     "Inward/InNoNamespace.cs": {},
     "Inward/InTwoNamespaces.cs": {},
@@ -190,6 +206,10 @@
     "Outward/OutAliasVisible.cs": {},
     "Outward/OutStaticPair.cs": {
       "skipped": "cannot be compared"
+    },
+    "Outward/OutAliasImport.cs": {
+      "skipped": "what 'X' refers to",
+      "control": true
     }
   }
 }

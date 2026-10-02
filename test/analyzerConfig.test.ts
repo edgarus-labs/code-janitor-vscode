@@ -69,6 +69,22 @@ describe('severity from .globalconfig files', () => {
 
     expect(severities(root, 'CA1805', 'CA1852')).toEqual({ CA1805: 'none', CA1852: undefined });
   });
+
+  it('resolves relative <GlobalAnalyzerConfigFiles> items of Directory.Build.props against the project, as MSBuild does', () => {
+    const root = fixture({
+      '.editorconfig': EDITORCONFIG_ROOT,
+      'Directory.Build.props':
+        '<Project><ItemGroup><GlobalAnalyzerConfigFiles Include="rules.globalconfig" /><GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)shared.globalconfig" /></ItemGroup></Project>',
+      'rules.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1805.severity = error\n',
+      'shared.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1825.severity = warning\n',
+      'App/App.csproj': sdkProject('', '', 'net472'),
+      'App/Sample.cs': '',
+    });
+    expect(severities(root, 'CA1805', 'CA1825')).toEqual({ CA1805: undefined, CA1825: 'warning' });
+
+    fs.writeFileSync(path.join(root, 'App', 'rules.globalconfig'), 'is_global = true\ndotnet_diagnostic.CA1805.severity = suggestion\n');
+    expect(severities(root, 'CA1805')).toEqual({ CA1805: 'suggestion' });
+  });
 });
 
 describe('severity from the project (MSBuild)', () => {

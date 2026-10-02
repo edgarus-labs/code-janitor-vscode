@@ -54,16 +54,67 @@ const METHOD_DECLARATIONS = [
 /** Symbolic binary operators `csharp_space_around_binary_operators` spaces (keywords always keep theirs). */
 const SYMBOLIC_BINARY = /^(?:\|\||&&|\||\^|&|==|!=|<|>|<=|>=|<<|\+|-|\*|\/|%|\?\?|=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|<<=|\?\?=)$/;
 
+/**
+ * Character pairs that lex as one token when written without a gap: the first two characters of
+ * every multi-character C# token, plus the comment openers.
+ */
+const FUSING_PAIRS: Record<string, true> = {
+  '++': true, '--': true, '&&': true, '||': true, '??': true, '?.': true, '->': true, '==': true, '!=': true,
+  '<=': true, '>=': true, '<<': true, '>>': true, '+=': true, '-=': true, '*=': true, '/=': true, '%=': true,
+  '&=': true, '|=': true, '^=': true, '=>': true, '::': true, '..': true, '//': true, '/*': true,
+};
+
+/** Tokens that, following a `>`, make it close a type argument list (C# spec, grammar ambiguities). */
+const GENERIC_FOLLOWERS: Record<string, true> = {
+  '(': true, ')': true, ']': true, '}': true, ':': true, ';': true, ',': true, '.': true, '?': true,
+  '==': true, '!=': true, '|': true, '^': true, '&&': true, '||': true, '&': true, '[': true,
+};
+
+/**
+ * Runs of adjacent tokens that form one source token the lexer split (`>>=` lexes as `>` `>=`, so
+ * the parser misreads `x >>= 2` as `(x >) >= 2`): where each run starts and where it ends. A run of
+ * `>` followed by a token that closes type arguments (`F<List<int>>()`) is nested generics instead.
+ */
+function splitTokenRuns(source: string, tokens: readonly Token[]): { starts: Set<number>; ends: Set<number> } {
+  const starts = new Set<number>();
+  const ends = new Set<number>();
+  let first = 0;
+  for (let index = 1; index <= tokens.length; index++) {
+    const left = tokens[index - 1];
+    const right = tokens[index] as Token | undefined;
+    if (right && left.end === right.start && FUSING_PAIRS[source[left.end - 1] + source[right.start]] === true) {
+      continue;
+    }
+
+    const closesGenerics = left.type === '>' && right !== undefined && GENERIC_FOLLOWERS[right.type] === true;
+    if (index - 1 > first && !closesGenerics) {
+      starts.add(tokens[first].start);
+      ends.add(left.end);
+    }
+
+    first = index;
+  }
+
+  return { starts, ends };
+}
+
 class Gaps {
   private readonly edits = new Map<number, TextEdit>();
 
   constructor(
     private readonly source: string,
     /** Spans Roslyn's formatter leaves alone (multi-line collection initializers and enum lists). */
-    private readonly frozen: readonly [number, number][]
+    private readonly frozen: readonly [number, number][],
+    private readonly splitRuns: { starts: Set<number>; ends: Set<number> }
   ) {}
 
-  /** Sets the whitespace between `start` and `end` unless it spans a line or holds anything but spaces. */
+  /**
+   * Sets the whitespace between `start` and `end` unless it spans a line or holds anything but spaces.
+   * A gap is never emptied where its neighbours would lex as one token (`a - --b` must not become
+   * `a---b`, nor `a / *p` a comment); it keeps a single space instead. Conversely, a lexer-split
+   * token is never cut, and the gaps around it are never widened: the rule asking for it comes from
+   * a misread parse (`x >>= 2` must not become `x > >= 2`, nor `x>>=2` become `x>>= 2`).
+   */
   set(start: number, end: number, text: string): void {
     if (end < start || this.edits.has(start) || this.frozen.some(([from, to]) => start >= from && start < to)) {
       return;
@@ -71,7 +122,19 @@ class Gaps {
 
     // The first rule deciding a gap wins, even when it keeps the gap as it is.
     if (/^[ \t]*$/.test(this.source.slice(start, end))) {
-      this.edits.set(start, { start, end, text });
+      const left = this.source[start - 1] ?? '';
+      const right = this.source[end] ?? '';
+      const fusingPair = FUSING_PAIRS[left + right] === true;
+      const insideSplitToken = start === end && fusingPair;
+      const besideSplitToken = this.splitRuns.ends.has(start) || this.splitRuns.starts.has(end);
+      if (insideSplitToken || (text !== '' && besideSplitToken)) {
+        this.edits.set(start, { start, end, text: this.source.slice(start, end) });
+        return;
+      }
+
+      // Two word characters (identifiers, keywords, numbers) would also merge into one token.
+      const fuses = text === '' && end > start && (fusingPair || (/[\w@]/.test(left) && /[\w@]/.test(right)));
+      this.edits.set(start, { start, end, text: fuses ? ' ' : text });
     }
   }
 
@@ -89,7 +152,7 @@ export function applySpacing(source: string, props: EditorConfigProperties): str
   try {
     const tokens = lex(source).tokens.filter((token) => token.type !== 'end');
     const indexOf = new Map(tokens.map((token, index) => [token.start, index]));
-    const gaps = new Gaps(source, frozenSpans(tree.rootNode, source));
+    const gaps = new Gaps(source, frozenSpans(tree.rootNode, source), splitTokenRuns(source, tokens));
     const before = (token: Token | Node): number => {
       const index = indexOf.get('start' in token ? token.start : token.startIndex) ?? 0;
 

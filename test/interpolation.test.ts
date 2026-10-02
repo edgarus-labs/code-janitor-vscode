@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { interpolationHoles, interpolationWritesName } from '../src/cleanup/transformations/interpolation';
+import { interpolationAccessesMember, interpolationHoles, interpolationWritesName } from '../src/cleanup/transformations/interpolation';
 
 describe('interpolationHoles', () => {
   it('returns the expression of each hole without its format or alignment', () => {
@@ -44,6 +44,11 @@ describe('interpolationHoles', () => {
     expect(interpolationHoles('$"open {x}')).toEqual(['x']);
     expect(interpolationHoles('$"open {x')).toEqual(['x']);
   });
+
+  it('reads an `@$` string as verbatim: a backslash does not escape a brace and `""` does not end it', () => {
+    expect(interpolationHoles('@$"C:\\{x}"')).toEqual(['x']);
+    expect(interpolationHoles('@$"a""b{y}"')).toEqual(['y']);
+  });
 });
 
 describe('interpolationWritesName', () => {
@@ -77,5 +82,32 @@ describe('interpolationWritesName', () => {
 
   it('escapes regular expression characters in the name', () => {
     expect(interpolationWritesName('$"{a$b++}"', 'a$b')).toBe(true);
+  });
+
+  it('reads past escaped and verbatim quotes in a hole before looking for its format part', () => {
+    expect(interpolationWritesName('$"{"a\\":" + (_n++)}"', '_n')).toBe(true);
+    expect(interpolationWritesName('$"{@"a\\" + ":" + (_n++)}"', '_n')).toBe(true);
+  });
+});
+
+describe('interpolationAccessesMember', () => {
+  it('finds member, element and conditional access on the name', () => {
+    expect(interpolationAccessesMember('$"{_c.Increment()}"', '_c')).toBe(true);
+    expect(interpolationAccessesMember('$"{this._c[0]}"', '_c')).toBe(true);
+    expect(interpolationAccessesMember('$"{_c?.Value}"', '_c')).toBe(true);
+    expect(interpolationAccessesMember('$"{_c!.Value}"', '_c')).toBe(true);
+  });
+
+  it('finds an access through a parenthesized receiver', () => {
+    expect(interpolationAccessesMember('$"{(_c).Increment()}"', '_c')).toBe(true);
+    expect(interpolationAccessesMember('$"{((this._c))[0]}"', '_c')).toBe(true);
+    expect(interpolationAccessesMember('$"{( _c )?.Value}"', '_c')).toBe(true);
+  });
+
+  it('ignores plain reads, members of other values, other names and string contents', () => {
+    expect(interpolationAccessesMember('$"{_c} {_c + 1:D3}"', '_c')).toBe(false);
+    expect(interpolationAccessesMember('$"{other._c.Value}"', '_c')).toBe(false);
+    expect(interpolationAccessesMember('$"{my_c.Value}"', '_c')).toBe(false);
+    expect(interpolationAccessesMember('$"{"_c.Value"} _c.Value"', '_c')).toBe(false);
   });
 });

@@ -37,7 +37,7 @@ function rewrite(source: string, collect: Collect): string {
     const tree = parseCSharp(current);
     let edits: TextEdit[];
     try {
-      edits = collect(current, tree.rootNode);
+      edits = collect(current, tree.rootNode).map((edit) => separatedFromNeighbors(current, edit));
     } finally {
       tree.delete();
     }
@@ -51,6 +51,24 @@ function rewrite(source: string, collect: Collect): string {
   }
 
   return current;
+}
+
+/**
+ * `edit` with a space where it would join two words: `return(x)` and `return!(x is T)` lose the
+ * only thing between the keyword and the operand.
+ */
+function separatedFromNeighbors(source: string, edit: TextEdit): TextEdit {
+  const isWord = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}_]/u.test(c);
+  const before = source[edit.start - 1];
+  const after = source[edit.end];
+  if (edit.text === '') {
+    return isWord(before) && isWord(after) && !isWord(source[edit.start]) ? { ...edit, text: ' ' } : edit;
+  }
+
+  const prefix = isWord(before) && isWord(edit.text[0]) && !isWord(source[edit.start]) ? ' ' : '';
+  const suffix = isWord(after) && isWord(edit.text.at(-1)) && !isWord(source[edit.end - 1]) ? ' ' : '';
+
+  return prefix || suffix ? { ...edit, text: `${prefix}${edit.text}${suffix}` } : edit;
 }
 
 /** A rule for a boolean option that rewrites while the option is `true` and enforced. */
@@ -520,12 +538,15 @@ const nullPropagation: Collect = (source, root) => {
     const value = test.isNull ? parts.whenFalse : parts.whenTrue;
     const nullBranch = test.isNull ? parts.whenTrue : parts.whenFalse;
     const receiver = receiverInChain(value, normalized(test.subject.text));
+    const type = subjectTypeText(test.subject);
     if (
       unparenthesized(nullBranch).type !== 'null_literal' ||
       !receiver ||
       !/^[.[]/.test(source.slice(receiver.endIndex, receiver.endIndex + 1)) ||
       /\?[.[]/.test(value.text) ||
-      (!test.byPattern && !isPlainReferenceType(subjectTypeText(test.subject), root))
+      (!test.byPattern && !isPlainReferenceType(type, root)) ||
+      // Only `Nullable<T>` has these members, and on it `x?.M` binds `M` on `T`: `x?.Value` does not compile.
+      (/^\.\s*@?(?:Value|HasValue|GetValueOrDefault)\b/.test(source.slice(receiver.endIndex)) && !isPlainReferenceType(type, root))
     ) {
       continue;
     }

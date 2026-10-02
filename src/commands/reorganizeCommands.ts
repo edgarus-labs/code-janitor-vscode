@@ -8,7 +8,7 @@ import { logInfo } from '../logging';
 import { CollectedFile, collectFiles, expandToCSharpFiles, isCSharp, isPathCleanable, writeFileContent } from './cleanupCore';
 import { replaceChangedPart, selectedLines } from './editorText';
 import { readReorganizeSettings } from './reorganizeSettings';
-import { readCleanupSettings } from './settings';
+import { readCleanupSettingsForUri } from './settings';
 
 /** Reorganize, and the region commands that belong to it. */
 export function registerReorganizeCommands(context: vscode.ExtensionContext): void {
@@ -20,8 +20,15 @@ export function registerReorganizeCommands(context: vscode.ExtensionContext): vo
   );
 }
 
+interface ReorganizeTarget {
+  name: string;
+  content: string;
+  /** The cleanup settings of the file: its nearest `.codejanitor` applies. */
+  cleanup: CleanupSettings;
+}
+
 interface Reorganization {
-  file: { name: string; content: string };
+  file: ReorganizeTarget;
   result: ReorganizeResult;
 }
 
@@ -29,18 +36,16 @@ interface Reorganization {
  * Reorganizes the files. Files with preprocessor conditionals are reorganized only when the
  * policy says yes; on "ask" the user is asked once for all of them (`CodeReorganizationAvailabilityLogic`).
  */
-async function reorganizeFiles(
-  files: readonly { name: string; content: string }[],
-  settings: ReorganizeSettings,
-  cleanup: CleanupSettings
-): Promise<Reorganization[]> {
-  let outcomes = files.map((file) => ({ file, result: reorganizeSourceDetailed(file.content, settings, cleanup) }));
+async function reorganizeFiles(files: readonly ReorganizeTarget[], settings: ReorganizeSettings): Promise<Reorganization[]> {
+  let outcomes = files.map((file) => ({ file, result: reorganizeSourceDetailed(file.content, settings, file.cleanup) }));
   const blocked = outcomes.filter((outcome) => outcome.result.blockedByPreprocessor);
 
   if (blocked.length > 0 && settings.performWhenPreprocessorConditionals === 'ask' && (await askAboutPreprocessorConditionals(blocked.map((outcome) => outcome.file.name)))) {
     const permissive: ReorganizeSettings = { ...settings, performWhenPreprocessorConditionals: 'yes' };
     outcomes = outcomes.map((outcome) =>
-      outcome.result.blockedByPreprocessor ? { file: outcome.file, result: reorganizeSourceDetailed(outcome.file.content, permissive, cleanup) } : outcome
+      outcome.result.blockedByPreprocessor
+        ? { file: outcome.file, result: reorganizeSourceDetailed(outcome.file.content, permissive, outcome.file.cleanup) }
+        : outcome
     );
   }
 
@@ -91,9 +96,8 @@ async function reorganizeActiveFile(): Promise<void> {
   }
 
   const name = path.basename(editor.document.uri.fsPath);
-  const cleanup = readCleanupSettings(vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath);
   const source = editor.document.getText();
-  const [{ result }] = await reorganizeFiles([{ name, content: source }], readReorganizeSettings(), cleanup);
+  const [{ result }] = await reorganizeFiles([{ name, content: source, cleanup: readCleanupSettingsForUri(editor.document.uri) }], readReorganizeSettings());
 
   if (result.blockedByPreprocessor) {
     void vscode.window.showInformationMessage(`Code Janitor: ${name} has preprocessor conditionals, so it was not reorganized.`);
@@ -154,11 +158,9 @@ async function reorganizeSelectedFiles(clicked?: vscode.Uri, selected?: vscode.U
 
 async function reorganizeUris(uris: vscode.Uri[]): Promise<{ changed: number; failed: number; blocked: number; leftAlone: number }> {
   const collected = await collectFiles(uris);
-  const cleanup = readCleanupSettings(vscode.workspace.getWorkspaceFolder(uris[0])?.uri.fsPath);
   const outcomes = await reorganizeFiles(
-    collected.map((file) => ({ name: path.basename(file.uri.fsPath), content: file.content })),
-    readReorganizeSettings(),
-    cleanup
+    collected.map((file) => ({ name: path.basename(file.uri.fsPath), content: file.content, cleanup: readCleanupSettingsForUri(file.uri) })),
+    readReorganizeSettings()
   );
 
   let changed = 0;
@@ -202,8 +204,7 @@ async function insertRegion(): Promise<void> {
   }
 
   const { firstLine, lastLine } = selectedLines(editor.selection);
-  const cleanup = readCleanupSettings(vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath);
-  const inserted = insertRegionAroundLines(editor.document.getText(), firstLine, lastLine, cleanup);
+  const inserted = insertRegionAroundLines(editor.document.getText(), firstLine, lastLine, readCleanupSettingsForUri(editor.document.uri));
 
   if (await replaceChangedPart(editor, inserted.text)) {
     // The name is selected, ready to be typed over.

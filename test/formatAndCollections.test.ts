@@ -166,12 +166,19 @@ describe('stringInterpolationConverter keeps the behavior of string.Format', () 
     expect(apply('string.Format("{0,5:N1}", f ? 1.5 : 2.5)')).toContain('$"{(f ? 1.5 : 2.5),5:N1}"');
   });
 
+  it('parenthesizes a conditional whose branches are verbatim or interpolated strings', () => {
+    expect(apply('string.Format("{0}", f ? @"a\\" : "b")')).toContain('$"{(f ? @"a\\" : "b")}"');
+    expect(apply('string.Format("{0}", f ? $@"{n}\\" : "b")')).toContain('$"{(f ? $@"{n}\\" : "b")}"');
+  });
+
   it.each([
     ['an argument that is used twice', 'string.Format("{0}-{0}", A())'],
     ['arguments used out of order', 'string.Format("{1}{0}", A(), B())'],
     ['an argument that is never used', 'string.Format("{0}", 1, B())'],
     ['an object creation used twice', 'string.Format("{0}{0}", new object())'],
     ['an assignment used twice', 'string.Format("{0}{0}", n = 2)'],
+    ['an interpolated string with a call used twice', 'string.Format("{0}{0}", $"{A()}")'],
+    ['an @$ interpolated string with a backslash and a call used twice', 'string.Format("{0}{0}", @$"C:\\{A()}")'],
   ])('leaves %s alone: the call would run a different number of times or in another order', (_name, body) => {
     unchanged(body);
   });

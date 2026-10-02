@@ -15,9 +15,13 @@ function main(): void {
   const source = 'namespace N\\n{\\n    class C\\n    {\\n        void M() { }\\n    }\\n}\\n';
   // File-scoped namespaces need a project that is known to use C# 10 or newer.
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-bundle-'));
-  fs.writeFileSync(path.join(folder, 'Check.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>');
-  const output = runCleanup(source, path.join(folder, 'check.cs'), { ...createDefaultSettings(), convertToFileScopedNamespace: true });
-  fs.rmSync(folder, { recursive: true, force: true });
+  let output: string;
+  try {
+    fs.writeFileSync(path.join(folder, 'Check.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>');
+    output = runCleanup(source, path.join(folder, 'check.cs'), { ...createDefaultSettings(), convertToFileScopedNamespace: true });
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
 
   if (!output.includes('namespace N;') || !output.includes('internal class C')) {
     throw new Error('Unexpected bundled pipeline output:\\n' + output);

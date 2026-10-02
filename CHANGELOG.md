@@ -12,7 +12,7 @@ First release of the Visual Studio Code port.
   [code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) repository (one class per option) and builds and runs the
   cleaned solution with the real compiler. It found the fixes listed under **Fixed (found on real code)**.
 - **CI.** The tests that build C# with the .NET SDK run in one job per category (`test/compilerTests.json`), each on its own runner
-  with a pinned SDK; Build and Test runs the rest. The Code Style compiler tests build each rule group as its own project.
+  with the .NET 10 SDK (`10.0.x`); Build and Test runs the rest. The Code Style compiler tests build each rule group as its own project.
 
 - **Changed:** `.codejanitor` is discovered per file, walking up from the cleaned file's folder (nearest file wins as a whole), in cleanup on save, every cleanup command, the editor diagnostics, the preview and `code-janitor check`; before, only the first workspace folder's root was read.
 - **Changed:** precedence is `.editorconfig` (where it enforces) > `.codejanitor` > VS Code settings, as in the Visual Studio extension; a key in `.codejanitor` now wins over an explicit VS Code setting.
@@ -227,6 +227,28 @@ First release of the Visual Studio Code port.
   - Blank lines inside multi-line string literals (verbatim, raw and interpolated) were collapsed by *Remove multiple consecutive blank lines* and by IDE2000.
   - `string.Format` was converted to an interpolated string even when that changes the number or the order of evaluations of its arguments, and a conditional
     argument was not parenthesized (CS8361).
+  - Code review fixes, each with a test reproducing it:
+    - Rewrites that no longer compiled or changed behavior: `return(x)` became `returnx`; `a - --b` became `a---b` with
+      `csharp_space_around_binary_operators = none`; an expression body was put after a `//` comment on the header line; a trailing
+      `throw` after an assigning `switch` was folded into its `_` arm; `?.` on a `Nullable<T>` pattern null check (CS1061); object/collection
+      initializers, deconstruction, tuple swap and pattern matching that ignored uses inside interpolated strings; `static` lambdas reading
+      deconstructed or `case` pattern locals; `readonly` struct members calling through nested struct fields.
+    - Using directive placement skips moves that would rebind a name: a namespace directive resolved only through a moved one, an alias
+      next to a same-named imported type, an alias named like a member of the target namespace (CS0576); `<Using>` items count as global usings.
+    - CA1822/CA1852 read member uses inside interpolated strings and property patterns of other files, keep pattern-bound members
+      (`GetEnumerator`, `Deconstruct`, ...) and interface implementations through derived types, and report instead of fixing in projects
+      with Razor/XAML markup.
+    - Workspace rename refuses anonymous-type, `dynamic` and unresolved-receiver members, contextual keywords as new names, and projects
+      whose references or packability it cannot read; it no longer inserts a byte order mark.
+    - In the effective settings, `NoWarn` wins over `.editorconfig` severities, and the `AnalysisLevel`/`AnalysisMode` rule set over the
+      category and global bulk severities, as in the build; `<GlobalAnalyzerConfigFiles>`
+      items resolve against the project; a `none` severity on the selected diagnostic is no longer overridden.
+    - The preview, Reorganize and Insert Region use the `.codejanitor` nearest to each file; Cleanup Open/Changed Files and Workspace
+      format Razor files when `formatRazorComponents` is on.
+    - `check` lists Code Janitor setting notes without failing on them; changed-lines cleanup ignores a byte order mark in `HEAD`;
+      `x < (y) ? a > b : c` is no longer parsed as a generic name; the Razor formatter keeps inline control blocks as written; Reorganize
+      keeps static initializers that read names it cannot resolve in order.
+    - Large files: applying edits, IDE0360 and IDE0002 were quadratic.
 
 - **Project settings read as MSBuild evaluates them**: the target frameworks, C# version, root
   namespace and `<Nullable>` ignore XML comments, follow `Directory.Build.targets` and resolvable

@@ -57,6 +57,15 @@ const PURE_STATIC_TYPES = new Set([
   'Comparer', 'EqualityComparer', 'StringComparer', 'CultureInfo', 'NumberFormatInfo', 'ArrayPool', 'Buffer', 'BigInteger',
 ]);
 
+/** BCL enums: reading their values runs no code. */
+const LIBRARY_ENUMS = new Set([
+  'RegexOptions', 'StringComparison', 'StringSplitOptions', 'BindingFlags', 'DateTimeKind', 'DateTimeStyles', 'NumberStyles',
+  'CompareOptions', 'MidpointRounding', 'DayOfWeek', 'UriKind', 'FileMode', 'FileAccess', 'FileShare', 'FileOptions',
+  'FileAttributes', 'SearchOption', 'SeekOrigin', 'ConsoleColor', 'EnvironmentVariableTarget', 'LazyThreadSafetyMode',
+  'TaskCreationOptions', 'TaskContinuationOptions', 'MethodImplOptions', 'AttributeTargets', 'HttpStatusCode',
+  'Base64FormattingOptions', 'TimeSpanStyles', 'UnicodeCategory', 'JsonIgnoreCondition', 'JsonValueKind', 'JsonTokenType',
+]);
+
 const LITERAL_TYPES = new Set([
   'string_literal',
   'verbatim_string_literal',
@@ -73,10 +82,6 @@ const PURE_CONTAINERS = new Set([
   'parenthesized_expression',
   'binary_expression',
   'conditional_expression',
-  'cast_expression',
-  'default_expression',
-  'typeof_expression',
-  'sizeof_expression',
   'checked_expression',
   'argument',
   'argument_list',
@@ -90,7 +95,6 @@ const PURE_CONTAINERS = new Set([
   'element_access_expression',
   'bracketed_argument_list',
   'range_expression',
-  'is_pattern_expression',
   'pattern',
   'anonymous_object_creation_expression',
   'postfix_unary_expression',
@@ -115,7 +119,15 @@ const TYPE_NODES = new Set([
   'implicit_type',
 ]);
 
+/** Syntax whose children are types only: `typeof(T)`, `sizeof(T)`, `default(T)`. */
+const TYPE_ONLY = new Set(['typeof_expression', 'sizeof_expression', 'default_expression']);
+
 const DEFERRED = new Set(['lambda_expression', 'anonymous_method_expression']);
+
+const TYPE_DECLARATIONS = new Set([
+  'class_declaration', 'struct_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration',
+  'record_struct_declaration', 'delegate_declaration',
+]);
 
 interface Scan {
   refs: Set<string>;
@@ -229,7 +241,7 @@ function initializersOf(declaration: Node): Initializer[] {
 }
 
 function scanExpression(node: Node, context: InitContext, declaredType: string, scan: Scan): void {
-  if (LITERAL_TYPES.has(node.type) || TYPE_NODES.has(node.type) || DEFERRED.has(node.type)) {
+  if (LITERAL_TYPES.has(node.type) || TYPE_NODES.has(node.type) || TYPE_ONLY.has(node.type) || DEFERRED.has(node.type)) {
     return;
   }
 
@@ -263,6 +275,19 @@ function scanExpression(node: Node, context: InitContext, declaredType: string, 
       scanCreation(node, declaredType, context, declaredType, scan);
 
       return;
+
+    case 'cast_expression':
+    case 'is_pattern_expression': {
+      // The cast type and the pattern name types or constants; only the operand is read.
+      const operand = node.childForFieldName(node.type === 'cast_expression' ? 'value' : 'expression');
+      if (operand) {
+        scanExpression(operand, context, declaredType, scan);
+      } else {
+        scan.opaque = true;
+      }
+
+      return;
+    }
 
     case 'prefix_unary_expression':
       if (node.children.some((child) => child.type === '++' || child.type === '--')) {
@@ -306,8 +331,15 @@ function readName(name: string, context: InitContext, scan: Scan): void {
 
       return;
 
+    case undefined:
+      // Not declared in this type body: a member of another partial part, a base type or a `using static`
+      // type, possibly a property whose accessor reads this type's statics.
+      scan.opaque = true;
+
+      return;
+
     default:
-      // A constant, a method group (not called), a field without initializer, or a name of another type.
+      // A constant, a method group (not called) or a field without initializer.
   }
 }
 
@@ -328,7 +360,42 @@ function scanMemberAccess(node: Node, context: InitContext, declaredType: string
     return;
   }
 
+  if (target.type === 'identifier' && !context.names.has(target.text)) {
+    // `Other.Member`: a known library type or an enum value is pure; any other may be a member declared
+    // elsewhere, or a type whose static constructor and accessors run code.
+    if (!PURE_STATIC_TYPES.has(target.text) && !PURE_CONSTRUCTED_TYPES.has(target.text) && !LIBRARY_ENUMS.has(target.text) && !isDeclaredEnum(node, target.text)) {
+      scan.opaque = true;
+    }
+
+    return;
+  }
+
   scanExpression(target, context, declaredType, scan);
+}
+
+/**
+ * Whether `name` used at `node` resolves to an enum declared in this file: the innermost scope declaring
+ * a type of that name decides. The search stops at a type that has a base list or other partial parts,
+ * whose inherited or unseen nested types may shadow an outer enum.
+ */
+function isDeclaredEnum(node: Node, name: string): boolean {
+  for (let scope = node.parent; scope; scope = scope.parent) {
+    if (scope.type !== 'declaration_list' && scope.type !== 'compilation_unit' && scope.type !== 'file_scoped_namespace_declaration') {
+      continue;
+    }
+
+    const declared = scope.namedChildren.find((child) => TYPE_DECLARATIONS.has(child.type) && child.childForFieldName('name')?.text === name);
+    if (declared) {
+      return declared.type === 'enum_declaration';
+    }
+
+    const owner = scope.parent;
+    if (owner && TYPE_DECLARATIONS.has(owner.type) && (owner.namedChildren.some((child) => child.type === 'base_list') || owner.namedChildren.some((child) => child.type === 'modifier' && child.text === 'partial'))) {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 function scanInvocation(node: Node, context: InitContext, declaredType: string, scan: Scan): void {
@@ -391,12 +458,40 @@ function lastIdentifier(typeText: string): string {
 function scanInterpolation(text: string, context: InitContext, scan: Scan): void {
   const holes = text.match(/\{[^{}]*\}/g) ?? [];
   for (const hole of holes) {
-    if (hole.includes('(')) {
+    const expression = holeExpression(hole.slice(1, -1));
+    if (expression.includes('(')) {
       scan.opaque = true;
     }
 
-    for (const identifier of hole.match(/[A-Za-z_]\w*/g) ?? []) {
+    for (const identifier of expression.match(/[A-Za-z_]\w*/g) ?? []) {
       readName(identifier, context, scan);
     }
   }
+}
+
+/** `x,10:N2` -> `x`: the alignment (a constant) and the format string after the expression are not read. */
+function holeExpression(hole: string): string {
+  let depth = 0;
+  let quote = '';
+
+  for (let i = 0; i < hole.length; i++) {
+    const char = hole[i];
+    if (quote) {
+      if (char === '\\') {
+        i++;
+      } else if (char === quote) {
+        quote = '';
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '(' || char === '[') {
+      depth++;
+    } else if (char === ')' || char === ']') {
+      depth--;
+    } else if (depth === 0 && (char === ',' || (char === ':' && hole[i + 1] !== ':'))) {
+      return hole.slice(0, i);
+    }
+  }
+
+  return hole;
 }

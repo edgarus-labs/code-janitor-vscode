@@ -201,6 +201,23 @@ describe('override notes', () => {
     expect(notes.get('csharp_prefer_braces')).toBe(`Overridden by .editorconfig: csharp_prefer_braces in ${configPath}`);
     expect(notes.has('dotnet_style_null_propagation')).toBe(false);
   });
+
+  it('attributes a rule enforced by the project rule set to the project, without an .editorconfig lookup', () => {
+    fs.writeFileSync(
+      path.join(workspace, 'App.csproj'),
+      '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework><AnalysisMode>All</AnalysisMode></PropertyGroup></Project>'
+    );
+    writeEditorConfig(workspace, false, 'indent_style = space');
+    const lookups: string[] = [];
+
+    const notes = editorConfigOverrideNotes(workspace, createDefaultSettings(), (_file, key) => {
+      lookups.push(key);
+      return undefined;
+    });
+
+    expect(notes.get('sealClassesWhenSafe')).toBe("Overridden by the project's AnalysisLevel/AnalysisMode");
+    expect(lookups).not.toContain('AnalysisLevel/AnalysisMode');
+  });
 });
 
 describe('findDefiningEditorConfigPath', () => {

@@ -20,7 +20,7 @@ export interface MSBuildProject {
   property(name: string): string | undefined;
   /** Whether {@link property} is the value MSBuild evaluates (set or unset); false when a condition or unknown import may change it. */
   isCertain(name: string): boolean;
-  /** Full paths of the unconditional `Include`s of an item type, in order. */
+  /** Full paths of the unconditional `Include`s of an item type, in order; relative ones are relative to the project, wherever they are defined. */
   items(type: string): readonly string[];
   /** Whether a `<PackageReference Include="...">` of this package id (case-insensitive) exists. */
   hasPackage(id: string): boolean;
@@ -127,10 +127,13 @@ class EvaluationState {
   private unknownImport = false;
   private readonly setAfterUnknownImport = new Set<string>();
   private readonly importing = new Set<string>();
+  /** Relative item paths are resolved here, even in imported files (only `<Import>` paths are relative to the importing file). */
+  private readonly projectDirectory: string;
 
   constructor(projectFile: string) {
+    this.projectDirectory = path.dirname(projectFile);
     this.properties = new Map([
-      ['msbuildprojectdirectory', path.dirname(projectFile)],
+      ['msbuildprojectdirectory', this.projectDirectory],
       ['msbuildprojectfullpath', projectFile],
       ['msbuildprojectfile', path.basename(projectFile)],
       ['msbuildprojectname', path.basename(projectFile, path.extname(projectFile))],
@@ -185,7 +188,7 @@ class EvaluationState {
         } else if (element[6] !== undefined) {
           this.import(element[6], file, directory);
         } else if (element[1] !== undefined) {
-          this.group(element[1], element[2] ?? '', element[3], file, directory);
+          this.group(element[1], element[2] ?? '', element[3], file);
         }
       }
     } finally {
@@ -233,7 +236,7 @@ class EvaluationState {
     this.evaluateFile(resolved);
   }
 
-  private group(kind: string, attributes: string, body: string, file: string, directory: string): void {
+  private group(kind: string, attributes: string, body: string, file: string): void {
     const conditionalGroup = CONDITION.test(attributes);
     if (kind.toLowerCase() === 'propertygroup') {
       for (const property of body.matchAll(PROPERTY)) {
@@ -276,7 +279,7 @@ class EvaluationState {
 
       const list = this.items.get(type) ?? [];
       for (const part of this.expand(decode(include), file).value.split(';').map((entry) => entry.trim()).filter(Boolean)) {
-        list.push(path.resolve(directory, part.replace(/\\/g, path.sep)));
+        list.push(path.resolve(this.projectDirectory, part.replace(/\\/g, path.sep)));
       }
 
       this.items.set(type, list);

@@ -36,6 +36,16 @@ describe('convertToFileScoped', () => {
     expect(toFileScoped(input)).toEqual({ output: input, reasons: [] });
   });
 
+  it('dedents the body by its own indentation when a comment follows the opening brace', () => {
+    expect(toFileScoped('namespace A { // c\n    class C { }\n}\n').output).toBe('namespace A;\n\n// c\nclass C { }\n');
+    expect(toFileScoped('namespace A\n{ // c\n\n    class C\n    {\n    }\n}\n').output).toBe('namespace A;\n\n// c\n\nclass C\n{\n}\n');
+  });
+
+  it('takes the dedent unit from code lines, not from a comment or a nested member opened on the brace line', () => {
+    expect(toFileScoped('namespace A { /* a\n   b */\n    class C { }\n}\n').output).toBe('namespace A;\n\n/* a\n   b */\nclass C { }\n');
+    expect(toFileScoped('namespace A { class C {\n        int x;\n    }\n}\n').output).toBe('namespace A;\n\nclass C {\n    int x;\n}\n');
+  });
+
   it.each([
     ['multiple namespaces', 'namespace A\r\n{\r\n}\r\nnamespace B\r\n{\r\n}\r\n'],
     ['no namespace', 'class C\r\n{\r\n}\r\n'],
@@ -154,6 +164,11 @@ describe('convertToBlockScoped', () => {
     expect(toBlockScoped('namespace A;\n\nclass C\n{\n    string s = @"x\ny";\n}\n').output).toBe(
       'namespace A\n{\n    class C\n    {\n        string s = @"x\ny";\n    }\n}\n'
     );
+  });
+
+  it('indents a comment that follows the semicolon like the rest of the body', () => {
+    expect(toBlockScoped('namespace A; // c\n\nclass C { }\n').output).toBe('namespace A\n{\n    // c\n\n    class C { }\n}\n');
+    expect(toBlockScoped('namespace A;\t/* c */ class C { }\n').output).toBe('namespace A\n{\n    /* c */ class C { }\n}\n');
   });
 
   it.each([

@@ -202,6 +202,23 @@ describe('formatRazor: content it must not touch', () => {
   unchanged('text without any block', 'Hello @name, you have @count new messages.\n<p class="x">a &amp; b</p>\n');
   unchanged('an empty file', '');
   unchanged('a lone carriage return', '@if(a){\rvar x=1;\r}');
+  // A line break added after `}` or inside the block would land in the rendered text of the line.
+  unchanged('a block followed by text on its line', '<p>Total: @if (a) {<b>x</b>}items</p>');
+  unchanged('an if/else chain inside an inline element', '<span>@if (a) {<b>x</b>} else {<i>y</i>}</span>');
+  unchanged('a block preceded by text on its line', '<p>Total: @if (a) {<b>x</b>}\n</p>');
+  // Razor drops the line break after `}` and renders the next line: moving the markup off the brace
+  // line adds a line break (or an indent) next to text that had none.
+  unchanged('a block alone on its line with markup on the brace line, followed by text', '<p>Total:\n@if (a) {<b>x</b>}\nitems</p>');
+  unchanged('two blocks on consecutive lines with markup on the brace lines', '@if (a) {<b>x</b>}\n@if (b) {<i>y</i>}\n');
+  unchanged('markup followed by code on its line inside the block', '@if (a) {\n<i>y</i>var x = 1;\n<b>z</b>\n}\n');
+
+  it('still moves markup off the brace line when whitespace is rendered around it anyway', () => {
+    const indentedNext = '<p>Total:\n    @if (a) {<b>x</b>}\n    items</p>';
+    const spaced = '<p>Total:\n@if (a) { <b>x</b> }\nitems</p>';
+
+    expect(formatRazor(indentedNext)).toBe('<p>Total:\n    @if (a)\n    {\n        <b>x</b>\n    }\n    items</p>');
+    expect(formatRazor(spaced)).toBe('<p>Total:\n@if (a)\n{\n    <b>x</b>\n}\nitems</p>');
+  });
 
   it('does not treat a less-than in code as markup', () => {
     expect(formatRazor('@if(a<b){var c=a<b;}')).toBe('@if (a < b)\n{\n    var c = a < b;\n}');
@@ -216,9 +233,13 @@ describe('formatRazor: content it must not touch', () => {
     expect(formatRazor('<!-- { -->\n@if(a){var x=1;}')).toBe('<!-- { -->\n@if (a)\n{\n    var x = 1;\n}');
   });
 
-  it('leaves a block with a catch filter as authored', () => {
+  it('leaves a whole try chain as authored when a catch has a filter', () => {
     const input = '@try{var a=1;}catch(Exception ex) when (ex is null){var b=2;}';
-    const output = formatRazor(input);
-    expect(output).toContain('catch(Exception ex) when (ex is null){var b=2;}');
+    expect(formatRazor(input)).toBe(input);
+  });
+
+  it('still formats the chain that follows an unreadable one', () => {
+    const input = '@try{var a=1;}catch(Exception ex) when (ex is null){var b=2;}\n@if(a){var c=1;}';
+    expect(formatRazor(input)).toBe('@try{var a=1;}catch(Exception ex) when (ex is null){var b=2;}\n@if (a)\n{\n    var c = 1;\n}');
   });
 });

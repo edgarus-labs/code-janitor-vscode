@@ -20,6 +20,8 @@ type Gate =
       readonly diagnosticId: (value: string) => string;
       /** Every diagnostic `diagnosticId` can select. */
       readonly diagnosticIds: readonly string[];
+      /** The value picks one of `diagnosticIds` (the others are not reported); otherwise they share the option. */
+      readonly selective: boolean;
     }
   /** While the given diagnostic is enforced; the value carries no severity. */
   | { readonly kind: 'diagnostic'; readonly diagnosticId: string };
@@ -40,15 +42,21 @@ const oneOf =
 const isBoolean = oneOf('true', 'false');
 const always: Gate = { kind: 'always' };
 const formatting: Gate = { kind: 'formatting' };
-const codeStyle = (diagnosticId: string): Gate => ({ kind: 'codeStyle', diagnosticId: () => diagnosticId, diagnosticIds: [diagnosticId] });
+const codeStyle = (diagnosticId: string): Gate => ({ kind: 'codeStyle', diagnosticId: () => diagnosticId, diagnosticIds: [diagnosticId], selective: false });
 /** A code-style option whose value selects one of two diagnostics. */
 const codeStyleBy = (value: string, whenValue: string, otherwise: string): Gate => ({
   kind: 'codeStyle',
   diagnosticId: (actual) => (actual === value ? whenValue : otherwise),
   diagnosticIds: [whenValue, otherwise],
+  selective: true,
 });
 /** A code-style option shared by several diagnostics, each gating its own part of the rule. */
-const codeStyleFamily = (main: string, ...others: string[]): Gate => ({ kind: 'codeStyle', diagnosticId: () => main, diagnosticIds: [main, ...others] });
+const codeStyleFamily = (main: string, ...others: string[]): Gate => ({
+  kind: 'codeStyle',
+  diagnosticId: () => main,
+  diagnosticIds: [main, ...others],
+  selective: false,
+});
 const varDiagnostic = codeStyleBy('true', 'IDE0007', 'IDE0008');
 const qualificationDiagnostic = codeStyleBy('true', 'IDE0009', 'IDE0003');
 const parenthesesDiagnostic = codeStyleBy('always_for_clarity', 'IDE0048', 'IDE0047');
@@ -426,6 +434,17 @@ export function diagnosticIdsOfOption(props: EditorConfigProperties, option: str
   const ids = [...(selected.size > 0 ? selected : possible)].sort();
 
   return ids.length > 0 ? ids.join('/') : option;
+}
+
+/**
+ * The one diagnostic Roslyn reports for a code-style option whose value selects between several
+ * (`dotnet_style_qualification_for_field = true` reports IDE0009, `false` IDE0003); undefined for
+ * an option whose diagnostics all apply, or that is not supported.
+ */
+export function diagnosticIdSelectedBy(key: string, value: string): string | undefined {
+  const gate = SUPPORTED_SETTINGS[key]?.gate;
+
+  return gate?.kind === 'codeStyle' && gate.selective ? gate.diagnosticId(value.toLowerCase()) : undefined;
 }
 
 /** The value of a setting as written: code-style options and plain options take a `:severity` suffix. */

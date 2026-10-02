@@ -50,6 +50,26 @@ describe('editorconfig formatting: csharp_space_*', () => {
     expect(format(inMethod('var x = a  +b;'), 'csharp_space_around_binary_operators = ignore')).toBe(inMethod('var x = a  +b;'));
   });
 
+  it('keeps one space where removing it would fuse the operator with the operand into another token', () => {
+    const source = inMethod('x = a - --b;', 'x = a + ++b;', 'x = a - -b;', 'x = a / *p;', 'x = a & &b;', 'x = a * -b;');
+
+    expect(format(source, 'csharp_space_around_binary_operators = none')).toBe(
+      inMethod('x=a- --b;', 'x=a+ ++b;', 'x=a- -b;', 'x=a/ *p;', 'x=a& &b;', 'x=a*-b;')
+    );
+  });
+
+  it('never splits a shift or shift assignment the lexer reads as two tokens', () => {
+    const source = inMethod('x >>= 2;', 'x>>=2;', 'x = y >>= 2;', 'x = y>>>2;', 'x >>>= 2;', 'x = a<b>>c;');
+
+    expect(format(source, 'csharp_space_around_binary_operators = before_and_after')).toBe(source);
+  });
+
+  it('still spaces around closing nested generics', () => {
+    expect(format(inMethod('F<List<int>>();'), 'csharp_space_between_method_call_name_and_opening_parenthesis = true')).toBe(
+      inMethod('F<List<int>> ();')
+    );
+  });
+
   it('spaces the colon of base lists, constraints and constructor initializers', () => {
     const source = 'class C:B where T:class\n{\n    C():base()\n    {\n    }\n}\n';
 

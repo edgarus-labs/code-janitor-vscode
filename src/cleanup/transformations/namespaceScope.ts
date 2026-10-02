@@ -1,4 +1,4 @@
-import { STRING, classifyCSharp } from '../csharpScanner';
+import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { ProjectInfo } from '../projectInfo';
 import { lex } from '../syntax/lexer';
 import { SourceTransformation } from '../types';
@@ -194,7 +194,8 @@ export function convertToBlockScoped(source: string, options: NamespaceConversio
   const kinds = classifyCSharp(source);
   const newline = newlineOf(source);
   const rest = source.slice(namespace.open.end);
-  const leadingBlank = /^(?:[ \t]*\r?\n)*/.exec(rest)?.[0].length ?? 0;
+  // The rest of the namespace line loses its leading spaces; the blank lines after it are dropped.
+  const leadingBlank = /^[ \t]*(?:\r?\n(?:[ \t]*\r?\n)*)?/.exec(rest)?.[0].length ?? 0;
   const content = rest.slice(leadingBlank).trimEnd();
   const body = content ? `${options.indent}${indentFollowingLines(content, options.indent, kinds, namespace.open.end + leadingBlank)}${newline}` : '';
 
@@ -250,11 +251,13 @@ function dedentBlock(source: string, kinds: Uint8Array, start: number, end: numb
     return '';
   }
 
-  // Directives stand in column 0 whatever the code's indentation is: the first line of code sets the unit.
-  const code = /^[ \t]*(?!#)\S/m.exec(text.slice(lineStartAt(text, firstContent)));
-  const unit = lineIndentAt(text, code ? lineStartAt(text, firstContent) + code.index : firstContent);
-  const body = text.slice(lineStartAt(text, firstContent)).trimEnd();
-  const offset = start + text.length - text.slice(lineStartAt(text, firstContent)).length;
+  // Text on the line of the `{` (a trailing comment, or code) has no indentation of its own: the body
+  // starts at that text, and the unit comes from the lines below it.
+  const onBraceLine = !text.slice(0, firstContent).includes('\n');
+  const bodyStart = onBraceLine ? firstContent : lineStartAt(text, firstContent);
+  const unit = memberIndent(text, kinds, start, onBraceLine ? firstContent : bodyStart) ?? (onBraceLine ? '' : lineIndentAt(text, firstContent));
+  const body = text.slice(bodyStart).trimEnd();
+  const offset = start + bodyStart;
   let result = '';
   let lineStart = 0;
   while (lineStart < body.length) {
@@ -268,4 +271,44 @@ function dedentBlock(source: string, kinds: Uint8Array, start: number, end: numb
   }
 
   return result;
+}
+
+/**
+ * Indentation of the first line in `text` from `from` on that starts a namespace member: a line of
+ * code at brace depth 0, or the line whose leading `}` returns to it. Directives (column 0 whatever
+ * the code's indentation), lines continuing a comment or string, and lines nested in a block opened
+ * on the `{` line set no unit. `from` inside a line (text on the `{` line) only counts its braces.
+ * `undefined` when no line qualifies.
+ */
+function memberIndent(text: string, kinds: Uint8Array, offset: number, from: number): string | undefined {
+  const isCode = (index: number) => kinds[offset + index] === CODE;
+  let depth = 0;
+  let lineStart = from;
+  while (lineStart < text.length) {
+    const next = text.indexOf('\n', lineStart);
+    const lineEnd = next < 0 ? text.length : next;
+    const indent = /^[ \t]*/.exec(text.slice(lineStart, lineEnd))![0];
+    const first = lineStart + indent.length;
+    const startsLine = lineStart > 0 && text[lineStart - 1] === '\n';
+    if (startsLine && first < lineEnd && isCode(first - 1) && text[first] !== '#' && text[first] !== '\r') {
+      let closers = 0;
+      while (text[first + closers] === '}' && isCode(first + closers)) {
+        closers++;
+      }
+
+      if (depth - closers <= 0) {
+        return indent;
+      }
+    }
+
+    for (let index = lineStart; index < lineEnd; index++) {
+      if (isCode(index)) {
+        depth += text[index] === '{' ? 1 : text[index] === '}' ? -1 : 0;
+      }
+    }
+
+    lineStart = lineEnd + 1;
+  }
+
+  return undefined;
 }

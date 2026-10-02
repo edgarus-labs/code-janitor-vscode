@@ -590,15 +590,20 @@ function convertBracket(content: string): string {
   for (; index < content.length; index++) {
     const ch = content[index];
     if (ch === '\\' && index + 1 < content.length) {
-      body += `\\${content[++index]}`;
+      // `\x` is the literal `x`, never a regex class escape such as `\d`.
+      body += escapeClassCharacter(content[++index]);
     } else if (ch === '-' && body && index + 1 < content.length) {
       body += '-';
     } else {
-      body += /[\\\]\[^-]/.test(ch) ? `\\${ch}` : ch;
+      body += escapeClassCharacter(ch);
     }
   }
 
   return negate ? `[^/${body}]` : `[${body}]`;
+}
+
+function escapeClassCharacter(ch: string): string {
+  return /[\\\]\[^-]/.test(ch) ? `\\${ch}` : ch;
 }
 
 function findBraceEnd(glob: string, open: number): number {

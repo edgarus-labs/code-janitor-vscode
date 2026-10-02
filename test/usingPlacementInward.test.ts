@@ -263,6 +263,56 @@ describe('inward move: skipped with a reason', () => {
   });
 
   it.each([
+    ['namespace import', 'using System;\n\nnamespace N\n{\n    using static Math;\n\n    class C { double d = Sqrt(4); }\n}\n', 'Math'],
+    ['alias', 'using M = System.Math;\n\nnamespace N\n{\n    using static M;\n\n    class C { double d = Sqrt(4); }\n}\n', 'M'],
+    ['alias in a type argument', 'using M = System.Math;\n\nnamespace N\n{\n    using L = System.Collections.Generic.List<M>;\n\n    class C { L l; }\n}\n', 'M'],
+  ])('skips when a directive of the namespace only resolves through the moved %s', (_name, input, name) => {
+    // Directives of one scope do not see each other: next to the moved directive, the one of the namespace no longer resolves.
+    expect(skipped(input)).toMatch(new RegExp(`'${name}'`));
+  });
+
+  it('moves a using static next to a package namespace directive of the namespace', () => {
+    const input = 'using System;\nusing static System.Math;\n\nnamespace N\n{\n    using Newtonsoft.Json;\n\n    class C { }\n}\n';
+    const result = placeUsings(input, 'inside', { index: createIndex([input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toEqual({ status: 'moved', text: 'namespace N\n{\n    using System;\n    using static System.Math;\n    using Newtonsoft.Json;\n\n    class C { }\n}\n' });
+  });
+
+  it.each([
+    ['a using static', 'using static Helpers;'],
+    ['an alias', 'using H = Helpers;'],
+  ])('skips when %s of the namespace may only resolve through a moved package namespace', (_name, directive) => {
+    const input = `using Pkg;\n\nnamespace N\n{\n    ${directive}\n\n    class C { }\n}\n`;
+    const result = placeUsings(input, 'inside', { index: createIndex([input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: expect.stringContaining("'Helpers' through 'using Pkg;'") });
+  });
+
+  it.each([
+    ['a nested type of a project type', 'namespace Lib { public static class Outer { public class Inner { } } }\n', true],
+    ['a project type without that nested type', 'namespace Lib { public static class Outer { } }\n', false],
+  ])('for a moved using static of %s, decides by the nested types the project declares', (_name, library, hidden) => {
+    const input = 'using static Lib.Outer;\n\nnamespace N\n{\n    using I = Inner;\n\n    class C { }\n}\n';
+    const result = placeUsings(input, 'inside', { index: createIndex([library, input]), externalReferences: true, indent: '    ' });
+
+    expect(result).toMatchObject(hidden ? { status: 'skipped', reason: expect.stringContaining("'Inner' through 'using static Lib.Outer;'") } : { status: 'moved' });
+  });
+
+  it('skips an alias that would join a namespace import providing a type of the same name', () => {
+    // In N, Lib.X (imported in N) wins over the file-level alias X; side by side in N, the alias would win.
+    const input = 'using X = System.Text.StringBuilder;\n\nnamespace N\n{\n    using Lib;\n\n    class C { int i = new X().Only; }\n}\n';
+
+    expect(skipped(input, 'namespace Lib { public class X { public int Only; } }\n')).toMatch(/'X'/);
+  });
+
+  it.each([
+    ['in the namespace itself', 'using Foo = System.Text.StringBuilder;\n\nnamespace N\n{\n    class Foo { }\n\n    class C { Foo f; }\n}\n', []],
+    ['in another file', 'using Foo = System.Text.StringBuilder;\n\nnamespace N\n{\n    class C { Foo f; }\n}\n', ['namespace N { class Foo { } }\n']],
+  ])('skips an alias named like a member of the namespace it would move into, declared %s (CS0576)', (_name, input, more) => {
+    expect(skipped(input, ...more)).toMatch(/alias 'Foo'/);
+  });
+
+  it.each([
     ['#if around a using', '#if DEBUG\r\nusing System.Diagnostics;\r\n#endif\r\nusing System;\r\n\r\nnamespace Company.App\r\n{\r\n    class C { Action a; }\r\n}\r\n'],
     ['#region around the usings', '#region Usings\r\nusing System;\r\n#endregion\r\n\r\nnamespace Company.App\r\n{\r\n    class C { Action a; }\r\n}\r\n'],
     ['#nullable in front of a using that does not start the file', 'global using System.Text;\r\n#nullable enable\r\nusing System;\r\n\r\nnamespace Company.App\r\n{\r\n    class C { Action a; }\r\n}\r\n'],

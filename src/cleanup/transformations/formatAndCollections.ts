@@ -1,5 +1,6 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
+import { interpolationHoles } from './interpolation';
 
 const STRING_FORMAT_RECEIVERS = new Set(['string', 'String', 'System.String']);
 const PLACEHOLDER = /\{(\d+)(?:,(-?\d+))?(?::([^}]+))?\}/g;
@@ -104,7 +105,7 @@ function tryBuildInterpolatedString(invocation: Node): string | undefined {
     const formatSpecifier = match[3] !== undefined ? `:${match[3]}` : '';
     const index = Number.parseInt(match[1], 10);
     // The colon of a conditional expression would start the format specifier.
-    const hole = hasTopLevelColon(formatArgs[index]) ? `(${formatArgs[index]})` : formatArgs[index];
+    const hole = hasTopLevelColon(argumentNodes[index]!) ? `(${formatArgs[index]})` : formatArgs[index];
     result += `{${hole}${alignment}${formatSpecifier}}`;
     lastIndex = matchIndex + match[0].length;
   }
@@ -133,7 +134,7 @@ const SIDE_EFFECT_NODES = new Set([
 
 /** True when evaluating `node` can do something other than compute a value (a call, a creation, a write, an increment). */
 function hasSideEffects(node: Node): boolean {
-  for (const candidate of [node, ...findAll(node, [...SIDE_EFFECT_NODES, 'prefix_unary_expression'])]) {
+  for (const candidate of [node, ...findAll(node, [...SIDE_EFFECT_NODES, 'prefix_unary_expression', 'interpolated_string_expression'])]) {
     if (SIDE_EFFECT_NODES.has(candidate.type) && !(candidate.type === 'postfix_unary_expression' && !candidate.children.some((child) => child?.type === '++' || child?.type === '--'))) {
       return true;
     }
@@ -141,22 +142,29 @@ function hasSideEffects(node: Node): boolean {
     if (candidate.type === 'prefix_unary_expression' && candidate.children.some((child) => child?.type === '++' || child?.type === '--')) {
       return true;
     }
+
+    // The parser reads an interpolated string as one literal: what its holes run is not visible.
+    if (candidate.type === 'interpolated_string_expression' && interpolationHoles(candidate.text).length > 0) {
+      return true;
+    }
   }
 
   return false;
 }
 
-/** True when `text` has a `:` outside strings, characters and brackets (a conditional's, which would end an interpolation hole). */
-function hasTopLevelColon(text: string): boolean {
+const LITERAL_NODES = ['string_literal', 'verbatim_string_literal', 'raw_string_literal', 'interpolated_string_expression', 'character_literal'];
+
+/** True when `node` has a `:` outside literals and brackets (a conditional's, which would end an interpolation hole). */
+function hasTopLevelColon(node: Node): boolean {
+  const text = node.text;
+  // Literal tokens are skipped whole: the parser knows where each kind (verbatim, raw, interpolated) ends.
+  const literalEnds = new Map(findAll(node, LITERAL_NODES).map((literal) => [literal.startIndex - node.startIndex, literal.endIndex - node.startIndex]));
   let depth = 0;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (c === '"' || c === "'") {
-      for (i++; i < text.length && text[i] !== c; i++) {
-        if (text[i] === '\\') {
-          i++;
-        }
-      }
+    const literalEnd = literalEnds.get(i);
+    if (literalEnd !== undefined) {
+      i = literalEnd - 1;
     } else if (c === '(' || c === '[' || c === '{') {
       depth++;
     } else if (c === ')' || c === ']' || c === '}') {

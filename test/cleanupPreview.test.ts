@@ -386,6 +386,24 @@ describe('multi-file cleanup preview: applying', () => {
     expect(state.informationMessages.at(-1)).toContain('applied to 4 file(s)');
   });
 
+  it('plans and applies every file with the .codejanitor nearest to it, like the ordinary cleanup', async () => {
+    const project = previewProject();
+    const regions = 'Services/Regions.cs';
+    const text = 'namespace Shop.Services\n{\n    public class Regions\n    {\n        #region Members\n        public int Count { get; set; }   \n        #endregion\n    }\n}\n';
+    fs.writeFileSync(project.file(regions), text);
+    state.files.set(project.file(regions), text);
+    fs.writeFileSync(project.file('Services/.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+    const files = ['Models/Customer.cs', regions];
+    const expected = await ordinaryCleanup(project, files);
+    user(accept);
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, files.map((file) => project.uri(file)));
+
+    expect(expected[regions]).toContain('#region Members');
+    expect(expected[regions]).not.toBe(text);
+    expect(snapshot(project, files)).toEqual(expected);
+  });
+
   it('plans from the editor buffer and applies to the buffer of an open file', async () => {
     const project = previewProject();
     const file = project.file('Services/Pricing.cs');

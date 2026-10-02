@@ -229,6 +229,56 @@ const WELL_KNOWN_STATIC_TYPES: Record<string, true> = {
   Volatile: true,
 };
 
+/**
+ * Members the compiler binds to by name for a language pattern, with no reference in the source,
+ * and what the type needs for the pattern to apply: `foreach` (`GetEnumerator`, `MoveNext`,
+ * `Current` and their async forms), deconstruction, `await` (the awaiter members), `fixed`,
+ * `await using`, ranges (`Slice`), a collection initializer (`Add`, on an `IEnumerable`), `using`
+ * on a ref struct (`Dispose`), implicit index support (`Length`, `Count`, on a type that has or may
+ * inherit an indexer) and query expressions (`Select`, `Where`, ...; see `mayBindQuery`). They must
+ * stay instance members, and are used even when nothing names them.
+ */
+const PATTERN_MEMBERS: Record<string, 'always' | 'baseList' | 'refStruct' | 'indexer' | 'query'> = {
+  GetEnumerator: 'always',
+  GetAsyncEnumerator: 'always',
+  MoveNext: 'always',
+  MoveNextAsync: 'always',
+  Current: 'always',
+  Deconstruct: 'always',
+  GetAwaiter: 'always',
+  GetResult: 'always',
+  IsCompleted: 'always',
+  GetPinnableReference: 'always',
+  DisposeAsync: 'always',
+  Slice: 'always',
+  Add: 'baseList',
+  Dispose: 'refStruct',
+  Length: 'indexer',
+  Count: 'indexer',
+  Select: 'query',
+  SelectMany: 'query',
+  Where: 'query',
+  OrderBy: 'query',
+  OrderByDescending: 'query',
+  ThenBy: 'query',
+  ThenByDescending: 'query',
+  GroupBy: 'query',
+  Join: 'query',
+  GroupJoin: 'query',
+  Cast: 'query',
+};
+
+/** `from x in` (or `from T x in`), a query expression, also in comments or strings: over-matching only makes a rule report. */
+const QUERY_EXPRESSION = /\bfrom\s+(?:[\w.<>,?()[\]\s]+?\s+)?@?\w+\s+in\b/;
+
+/**
+ * Whether a query expression may bind to a `query` pattern member: one of the file (a private
+ * member is only reachable from it), or, for a member visible to the project, of any file.
+ */
+function mayBindQuery(source: string, member: Node): boolean {
+  return resultantVisibility(member) !== 'private' || QUERY_EXPRESSION.test(source);
+}
+
 interface ApiSurface {
   readonly all: boolean;
   readonly groups: ReadonlySet<Visibility>;
@@ -341,19 +391,27 @@ class StaticMembers {
       return SKIP;
     }
 
-    // A public member of a type with a base list may implicitly implement an interface member,
-    // which Roslyn does not analyze.
+    // A public member may implicitly implement an interface member, of its type or of a type
+    // deriving from it, which Roslyn does not analyze.
     const baseList = type.node.namedChildren.find((child) => child.type === 'base_list');
-    let unknownBases: string[] = [];
-    if (baseList && hasModifier(member, 'public')) {
-      if (this.interfaceMemberNames.has(name) || WELL_KNOWN_INTERFACE_MEMBERS[name] === true) {
+    const interfaceName = this.interfaceMemberNames.has(name) || WELL_KNOWN_INTERFACE_MEMBERS[name] === true;
+    const unknownBases: string[] = [];
+    let derivedImplementation: string | undefined;
+    if (hasModifier(member, 'public')) {
+      if (baseList && interfaceName) {
         return SKIP;
       }
 
-      unknownBases = baseList.namedChildren
-        .filter((base) => base.type !== 'argument_list')
-        .map((base) => base.text.replace(/<.*$/s, '').split('.').pop()?.trim() ?? '')
-        .filter((base) => !this.types.declaresType(base) && WELL_KNOWN_INTERFACES[base] !== true);
+      const derived = this.derivedTypes(type);
+      if (derived.length > 0 && interfaceName) {
+        derivedImplementation = `a derived type may implement an interface member named '${name}' with it`;
+      } else if (this.project?.others.derivedOrConstrainedNames.has(type.name)) {
+        derivedImplementation = `a type of another file derives from ${type.name} and may implement an interface member with it`;
+      }
+
+      for (const info of [type, ...derived]) {
+        unknownBases.push(...baseNames(info).filter((base) => !this.types.declaresType(base) && WELL_KNOWN_INTERFACES[base] !== true && !unknownBases.includes(base)));
+      }
     }
 
     // From here on the member is a violation Roslyn reports; anything unproven is reported.
@@ -381,6 +439,21 @@ class StaticMembers {
 
     if (unknownBases.length > 0) {
       return report(`it is public and may implement a member of ${unknownBases.join(', ')}`);
+    }
+
+    if (derivedImplementation) {
+      return report(derivedImplementation);
+    }
+
+    const pattern = Object.hasOwn(PATTERN_MEMBERS, name) ? PATTERN_MEMBERS[name] : undefined;
+    if (
+      pattern === 'always' ||
+      (pattern === 'baseList' && baseList) ||
+      (pattern === 'refStruct' && type.node.type === 'struct_declaration' && hasModifier(type.node, 'ref')) ||
+      (pattern === 'indexer' && this.mayHaveIndexer(type)) ||
+      (pattern === 'query' && mayBindQuery(this.source, member))
+    ) {
+      return report(`the compiler binds a language pattern (foreach, deconstruction, fixed, using, collection initializers, indexing or queries) to an instance member named '${name}'`);
     }
 
     if (use?.kind === 'report') {
@@ -417,6 +490,23 @@ class StaticMembers {
     }
 
     return { kind: 'fix', edits: [addModifierEdit(this.context.props, member, 'static', first), ...references.edits] };
+  }
+
+  /** The types of this file deriving from `type`, directly or through other types of the file. */
+  private derivedTypes(type: TypeInfo): TypeInfo[] {
+    const derived: TypeInfo[] = [];
+    const pending = [type.name];
+    while (pending.length > 0) {
+      const base = pending.pop() as string;
+      for (const info of this.model.types) {
+        if (info !== type && !derived.includes(info) && baseNames(info).includes(base)) {
+          derived.push(info);
+          pending.push(info.name);
+        }
+      }
+    }
+
+    return derived;
   }
 
   /** The members CA1822 analyzes (Roslyn's `ShouldAnalyze`), minus those suppressed or outside `api_surface`. */
@@ -614,6 +704,37 @@ class StaticMembers {
     });
   }
 
+  /**
+   * True when `type` has an indexer implicit index support may use: its own, one a class of the
+   * file it derives from has, or possibly one of a base type this file does not declare (or of its
+   * other parts, for a partial type).
+   */
+  private mayHaveIndexer(type: TypeInfo, seen = new Set<TypeInfo>()): boolean {
+    if (type.node.childForFieldName('body')?.namedChildren.some((child) => child.type === 'indexer_declaration')) {
+      return true;
+    }
+
+    if (type.isPartial) {
+      return true;
+    }
+
+    if (seen.has(type) || type.node.type === 'struct_declaration' || isRecordStruct(type.node)) {
+      return false;
+    }
+
+    seen.add(type);
+    const interfaces = this.project?.others.interfaceNames;
+
+    return baseNames(type).some((base) => {
+      const declared = this.model.types.filter((info) => info.name === base);
+      if (declared.length === 0) {
+        return WELL_KNOWN_INTERFACES[base] !== true && interfaces?.has(base) !== true;
+      }
+
+      return declared.some((info) => info.kind !== 'interface' && this.mayHaveIndexer(info, seen));
+    });
+  }
+
   private isTypeParameter(name: string, offset: number): boolean {
     return this.model.symbols.some(
       (symbol) => symbol.category === 'typeParameter' && symbol.name === name && symbol.region !== undefined && spans(symbol.region, offset, offset)
@@ -729,6 +850,10 @@ class StaticMembers {
       return report(`it is visible to the whole project, whose files could not all be checked (${this.project.incomplete})`);
     }
 
+    if (this.project.markup) {
+      return report(`it is visible to markup of the project the cleanup does not read (${this.project.markup})`);
+    }
+
     if (this.project.internalsVisibleTo) {
       return report('InternalsVisibleTo exposes it to other assemblies');
     }
@@ -739,6 +864,15 @@ class StaticMembers {
 
     return undefined;
   }
+}
+
+/** The simple names in the base list of `type` (`Base<T>`, `Ns.IFace` -> `Base`, `IFace`). */
+function baseNames(type: TypeInfo): string[] {
+  const baseList = type.node.namedChildren.find((child) => child.type === 'base_list');
+
+  return (baseList?.namedChildren ?? [])
+    .filter((base) => base.type !== 'argument_list')
+    .map((base) => base.text.replace(/<.*$/s, '').split('.').pop()?.trim() ?? '');
 }
 
 function accessorKeyword(accessor: Node): string {
@@ -929,6 +1063,8 @@ export function applyRemoveUnusedPrivateMembers(source: string, context: RuleCon
           issue(member, 'the cleanup parser could not fully analyze its type');
         } else if (attributesOf(member.declaration).length > 0) {
           issue(member, 'it has attributes that may use it (serialization, reflection or framework hooks)');
+        } else if (member.kind !== 'field' && Object.hasOwn(PATTERN_MEMBERS, member.name) && (PATTERN_MEMBERS[member.name] !== 'query' || mayBindQuery(current, member.declaration))) {
+          issue(member, 'the compiler may bind a language pattern (deconstruction, foreach, await, using, indexing or a query) to it without naming it');
         } else if (uses.mentioned(uses.strings, member.name)) {
           issue(member, 'its name appears in a string literal, so it may be used through reflection or data binding');
         } else if (uses.mentioned(uses.comments, member.name)) {

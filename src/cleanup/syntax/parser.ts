@@ -50,9 +50,13 @@ const LITERAL_TYPES = new Set([
   'null_literal',
 ]);
 
-/** Tokens that may appear inside a type argument list; anything else rules out generics. */
+/**
+ * Tokens that may appear inside a type argument list or a cast type; anything else rules out
+ * generics. Tuple-type parentheses are handled by typeArgumentListEnd alone: in a cast they would
+ * make `((Action)a)(b)` read as a cast to `(Action)`.
+ */
 const TYPE_ARGUMENT_TOKENS = new Set([
-  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out', '(', ')',
+  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out',
 ]);
 
 const AFTER_TYPE_ARGUMENTS = new Set([
@@ -1288,19 +1292,34 @@ class CSharpParser {
    */
   private typeArgumentListEnd(): number {
     let depth = 0;
-    // Parentheses only appear around tuple types, so they must balance inside the list.
-    let parentheses = 0;
+    // Parentheses only appear around tuple types, which always have at least two elements: every
+    // group must balance and hold a comma at its own level, or `x < (y) ? a > b` and
+    // `a < (int)b, c > (int)d` would read as generics. A comma inside a generic nested in the
+    // group (`a < (G<b, c>)d, e > f`) is not at the group's level. Each entry records the generic
+    // depth the group opened at and whether the group has seen its own comma yet.
+    const tupleGroups: { depth: number; comma: boolean }[] = [];
     let i = this.pos;
 
     for (; i < this.tokens.length; i++) {
       const type = this.tokens[i].type;
 
-      if (type === '(' || type === ')') {
-        parentheses += type === '(' ? 1 : -1;
-        if (parentheses < 0) {
+      if (type === '(') {
+        tupleGroups.push({ depth, comma: false });
+        continue;
+      }
+
+      if (type === ')') {
+        const group = tupleGroups.pop();
+        if (!group?.comma || group.depth !== depth) {
           return -1;
         }
 
+        continue;
+      }
+
+      const group = tupleGroups[tupleGroups.length - 1];
+      if (type === ',' && group?.depth === depth) {
+        group.comma = true;
         continue;
       }
 
@@ -1323,7 +1342,7 @@ class CSharpParser {
       }
     }
 
-    if (depth !== 0 || parentheses !== 0 || i >= this.tokens.length) {
+    if (depth !== 0 || tupleGroups.length !== 0 || i >= this.tokens.length) {
       return -1;
     }
 

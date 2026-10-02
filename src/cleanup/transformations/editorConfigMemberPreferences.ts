@@ -132,6 +132,9 @@ function isInside(node: Node, type: string): boolean {
 /** Field types whose methods cannot change the field itself (reference types). */
 const REFERENCE_FIELD_TYPE = /^(?:string|object|String|Object|(?:List|Dictionary|HashSet|Queue|Stack|SortedDictionary|SortedList|SortedSet|IList|ICollection|IEnumerable|IDictionary|IReadOnlyList|IReadOnlyCollection|IReadOnlyDictionary)<.+>|.+\[\])\??$/;
 
+/** Expressions whose value is a part of the expression they start with: `x.A`, `x[0]`, `(x)`. */
+const RECEIVER_CHAINS: Record<string, true> = { member_access_expression: true, element_access_expression: true, parenthesized_expression: true };
+
 /**
  * Adds `readonly` to the methods and get-only properties of a non-readonly, non-partial struct
  * that cannot change the instance: they assign nothing but their own locals, pass nothing by
@@ -238,9 +241,15 @@ function isNonMutating(member: Node, memberNames: Set<string>, safeMembers: Set<
         break;
       case 'invocation_expression': {
         const callee = node.childForFieldName('function');
-        const receiver = callee?.type === 'member_access_expression' ? callee.childForFieldName('expression') : null;
         const called = callee ? refersToMember(callee) : undefined;
-        const field = receiver ? refersToMember(receiver) : undefined;
+        // `_o.A.M()` copies `_o` in a readonly member too: check the field the receiver chain starts at.
+        let receiver = callee?.type === 'member_access_expression' ? callee.childForFieldName('expression') : null;
+        let field = receiver ? refersToMember(receiver) : undefined;
+        while (receiver && !field && RECEIVER_CHAINS[receiver.type]) {
+          receiver = receiver.type === 'parenthesized_expression' ? receiver.namedChildren[0] : receiver.childForFieldName('expression');
+          field = receiver ? refersToMember(receiver) : undefined;
+        }
+
         if ((called && !safeMembers.has(called)) || (field && !REFERENCE_FIELD_TYPE.test(fieldTypes.get(field) ?? ''))) {
           return false;
         }

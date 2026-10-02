@@ -34,6 +34,8 @@ describe.skipIf(!dotnetAvailable)('formatRazor against the compiler', () => {
   const baseline = buildRazorProject(baselineFolder, PROJECT);
 
   it('builds the unformatted oracle project without errors', () => {
+    // A build that fails without a CS/RZ error (restore, SDK, MSBuild) compiles nothing: it must fail the test.
+    expect(baseline.ok, baseline.output).toBe(true);
     expect(baseline.errors, formatErrors(baseline)).toEqual([]);
   }, 180_000);
 
@@ -56,6 +58,8 @@ describe.skipIf(!dotnetAvailable)('formatRazor against the compiler', () => {
 
     expect(changed, 'the formatter changed no file').toBeGreaterThan(4);
     const after = buildRazorProject(folder, PROJECT);
+    expect(baseline.ok, baseline.output).toBe(true);
+    expect(after.ok, after.output).toBe(true);
     expect(newCompilerErrors(baseline.errors, after.errors), formatErrors(after)).toEqual([]);
   }, 180_000);
 });

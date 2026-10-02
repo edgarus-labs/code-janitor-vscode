@@ -105,15 +105,13 @@ function loadProject(projectFile: string): CachedProject {
   const problems: string[] = [];
   let externalReferences = false;
 
-  // The SDK writes the implicit usings of the project into a generated file; they are global usings like the written ones.
-  const implicitUsings = implicitUsingsOf(projects[0]);
-  if (implicitUsings.namespaces.length > 0) {
-    aggregate.add({ keys: new Set(implicitUsings.namespaces.map((namespace) => `G:${namespace.split('.').join(' . ')}`)) });
+  // The SDK writes the `<Using>` items of the project (`<ImplicitUsings>` adds some) into a generated file; they are global usings like the written ones.
+  const msbuildUsings = msbuildGlobalUsingsOf(projects[0]);
+  if (msbuildUsings.usings.length > 0) {
+    aggregate.add({ keys: new Set(msbuildUsings.usings.map((words) => `G:${words}`)) });
   }
 
-  if (implicitUsings.problem) {
-    problems.push(implicitUsings.problem);
-  }
+  problems.push(...msbuildUsings.problems);
 
   for (const project of projects) {
     if (project.problem) {
@@ -211,15 +209,12 @@ const IMPLICIT_USINGS: Readonly<Record<string, readonly string[]>> = {
   'Microsoft.NET.Sdk.Worker': ['Microsoft.Extensions.Configuration', 'Microsoft.Extensions.DependencyInjection', 'Microsoft.Extensions.Hosting', 'Microsoft.Extensions.Logging'],
 };
 
-/** The namespaces the SDK imports for `<ImplicitUsings>enable</ImplicitUsings>` (project, `Directory.Build.props`/`.targets`), none when it is off. */
-function implicitUsingsOf(project: WorkspaceProject | undefined): { namespaces: string[]; problem?: string } {
-  if (!project) {
-    return { namespaces: [] };
-  }
-
-  const texts: string[] = [];
+/** Text of the files of `project` in the order MSBuild reads them: `Directory.Build.props` (outermost first), the project, `Directory.Build.targets`. */
+function buildFilesOf(project: WorkspaceProject): { props: string[]; projectText?: string; targets: string[] } {
+  const props: string[] = [];
+  const targets: string[] = [];
   for (let directory = project.directory; ; directory = path.dirname(directory)) {
-    for (const name of ['Directory.Build.props', 'Directory.Build.targets']) {
+    for (const [name, texts] of [['Directory.Build.props', props], ['Directory.Build.targets', targets]] as const) {
       try {
         texts.unshift(fs.readFileSync(path.join(directory, name), 'utf8'));
       } catch {
@@ -232,27 +227,105 @@ function implicitUsingsOf(project: WorkspaceProject | undefined): { namespaces: 
     }
   }
 
-  let projectText = '';
   try {
-    projectText = fs.readFileSync(project.projectFile, 'utf8');
+    return { props, projectText: fs.readFileSync(project.projectFile, 'utf8'), targets };
   } catch {
-    return { namespaces: [] };
+    return { props, targets };
+  }
+}
+
+/**
+ * The global usings MSBuild generates for the project, as `G:` key texts: its `<Using>` items (`Static`, `Alias`),
+ * including those the SDK adds for `<ImplicitUsings>enable</ImplicitUsings>`, less the ones `<Using Remove>` takes out.
+ */
+function msbuildGlobalUsingsOf(project: WorkspaceProject | undefined): { usings: string[]; problems: string[] } {
+  if (!project) {
+    return { usings: [], problems: [] };
   }
 
-  texts.push(projectText);
-  const values = texts.flatMap((text) => [...text.matchAll(/<ImplicitUsings>\s*([^<\s]*)\s*<\/ImplicitUsings>/gi)].map((match) => match[1].toLowerCase()));
+  const files = buildFilesOf(project);
+  if (files.projectText === undefined) {
+    return { usings: [], problems: [] };
+  }
+
+  const uncommented = (text: string): string => text.replace(/<!--[\s\S]*?-->/g, '');
+  const props = files.props.map(uncommented);
+  const projectText = uncommented(files.projectText);
+  const targets = files.targets.map(uncommented);
+
+  const problems: string[] = [];
+  const values = [...props, projectText, ...targets].flatMap((text) => [...text.matchAll(/<ImplicitUsings>\s*([^<\s]*)\s*<\/ImplicitUsings>/gi)].map((match) => match[1].toLowerCase()));
   const enabled = values.length > 0 && (values[values.length - 1] === 'enable' || values[values.length - 1] === 'true');
-  if (!enabled) {
-    return { namespaces: [] };
+  let implicit: readonly string[] = [];
+  if (enabled) {
+    const sdk = /<Project\s[^>]*\bSdk\s*=\s*(["'])([^"']+)\1/i.exec(projectText)?.[2] ?? 'Microsoft.NET.Sdk';
+    const extra = IMPLICIT_USINGS[sdk];
+    implicit = [...IMPLICIT_USINGS['Microsoft.NET.Sdk'], ...(sdk === 'Microsoft.NET.Sdk' ? [] : (extra ?? []))];
+    if (extra === undefined) {
+      problems.push(`the implicit usings of the SDK ${sdk} are not known`);
+    }
   }
 
-  const sdk = /<Project\s[^>]*\bSdk\s*=\s*"([^"]+)"/i.exec(projectText)?.[1] ?? 'Microsoft.NET.Sdk';
-  const extra = IMPLICIT_USINGS[sdk];
+  // Item order: Directory.Build.props, the SDK's implicit usings (its props), the project, Directory.Build.targets.
+  const items: { include: string; words: string }[] = [];
+  const spaced = (name: string): string => name.split('.').map((segment) => segment.trim()).join(' . ');
+  const apply = (text: string): void => {
+    // Where MSBuild may skip the elements: below a `Condition`, in a `<Choose>` or in a `<Target>` run at build time.
+    const conditional: { start: number; end: number }[] = [];
+    const open: { name: string; start: number; conditioned: boolean }[] = [];
+    for (const tag of text.matchAll(/<(\/?)([\w.:-]+)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g)) {
+      const [, closing, name, attributes, selfClosing] = tag;
+      if (closing) {
+        const at = open.map((element) => element.name).lastIndexOf(name);
+        if (at >= 0) {
+          const [element] = open.splice(at);
+          if (element.conditioned) {
+            conditional.push({ start: element.start, end: tag.index + tag[0].length });
+          }
+        }
+      } else if (!selfClosing) {
+        open.push({ name, start: tag.index, conditioned: /^(?:Choose|Target)$/i.test(name) || /\bCondition\s*=/i.test(attributes) });
+      }
+    }
 
-  return {
-    namespaces: [...IMPLICIT_USINGS['Microsoft.NET.Sdk'], ...(sdk === 'Microsoft.NET.Sdk' ? [] : (extra ?? []))],
-    ...(extra === undefined ? { problem: `the implicit usings of the SDK ${sdk} are not known` } : {}),
+    conditional.push(...open.filter((element) => element.conditioned).map((element) => ({ start: element.start, end: text.length })));
+
+    for (const element of text.matchAll(/<Using\b([^>]*?)(?:\/>|>([\s\S]*?)<\/Using\s*>)/gi)) {
+      const attributes = new Map([...element[1].matchAll(/([\w.]+)\s*=\s*(["'])(.*?)\2/g)].map((match) => [match[1].toLowerCase(), match[3].trim()]));
+      for (const metadata of (element[2] ?? '').matchAll(/<(\w+)>\s*([^<]*?)\s*<\/\1\s*>/g)) {
+        attributes.set(metadata[1].toLowerCase(), metadata[2]);
+      }
+
+      const remove = attributes.get('remove');
+      if (remove !== undefined) {
+        // An unconditional removal only: keeping an item MSBuild may drop errs towards more global usings.
+        const names = new Set(remove.split(';').map((name) => name.trim().toLowerCase()));
+        const at = element.index;
+        if (!attributes.has('condition') && !conditional.some((range) => range.start < at && at < range.end)) {
+          items.splice(0, items.length, ...items.filter((item) => !names.has(item.include.toLowerCase())));
+        }
+
+        continue;
+      }
+
+      const alias = attributes.get('alias');
+      const isStatic = attributes.get('static')?.toLowerCase() === 'true';
+      for (const include of (attributes.get('include') ?? '').split(';').map((name) => name.trim()).filter((name) => name.length > 0)) {
+        if (/[$@%*?]/.test(include) || (alias !== undefined && /[$@%]/.test(alias))) {
+          problems.push(`the <Using> item '${include}' needs MSBuild to be evaluated`);
+          continue;
+        }
+
+        items.push({ include, words: alias ? `${alias} = ${spaced(include)}` : isStatic ? `static ${spaced(include)}` : spaced(include) });
+      }
+    }
   };
+
+  props.forEach(apply);
+  items.push(...implicit.map((namespace) => ({ include: namespace, words: spaced(namespace) })));
+  [projectText, ...targets].forEach(apply);
+
+  return { usings: [...new Set(items.map((item) => item.words))], problems };
 }
 
 const EXTERNAL_REFERENCE = /<(?:PackageReference|Reference|FrameworkReference|COMReference|PackageVersion)\b/i;

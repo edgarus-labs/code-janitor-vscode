@@ -281,6 +281,86 @@ describe('newer rules', () => {
     expect(issues).toEqual([expect.stringMatching(/^IDE0059 .*line 11: /)]);
   });
 
+  it('IDE0058 only discards the value of a method of the type that makes the call', () => {
+    const source = lines(
+      'class A',
+      '{',
+      '    int Run() => 1;',
+      '    int Own() => 1;',
+      '    void M() { Run(); Own(); }',
+      '}',
+      'class B : Base',
+      '{',
+      '    int Own() => 1;',
+      '    void M() { Run(); Own(); }',
+      '}',
+      'class C',
+      '{',
+      '    void M() { Run(); }',
+      '}',
+      'partial class D',
+      '{',
+      '    int Twice(int x) => x * 2;',
+      '    void M() { Twice(1); }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('void M() { Run(); Own(); }', 'void M() { _ = Run(); _ = Own(); }'));
+  });
+
+  it('IDE0058 binds a call in an interface nested in a class to the interface, not the outer class', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    static int Run() => 1;',
+      '    interface I',
+      '    {',
+      '        void Run();',
+      '        void M() { Run(); }',
+      '    }',
+      '    interface J',
+      '    {',
+      '        int Count();',
+      '        void M() { Count(); }',
+      '    }',
+      '    interface K : I',
+      '    {',
+      '        int Own();',
+      '        void N() { Own(); }',
+      '    }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('void M() { Count(); }', 'void M() { _ = Count(); }'));
+  });
+
+  it('IDE0058 still discards in a class whose base list names only interfaces', () => {
+    const source = lines(
+      'using System;',
+      'interface IService { void M(); }',
+      'class Service : IService',
+      '{',
+      '    int Save() => 1;',
+      '    public void M() { Save(); }',
+      '}',
+      'record R(int X) : IEquatable<R>, IService',
+      '{',
+      '    int Load() => 1;',
+      '    public void M() { Load(); }',
+      '}',
+      'class Derived : Service, IService',
+      '{',
+      '    int Keep() => 1;',
+      '    public void N() { Keep(); }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('{ Save(); }', '{ _ = Save(); }').replace('{ Load(); }', '{ _ = Load(); }'));
+  });
+
   it('reports top-level statements, hidden foreach casts, unneeded suppressions and async methods without await', () => {
     const source = lines(
       '#pragma warning disable IDE0005',
@@ -410,6 +490,33 @@ describe('IDE0320 never makes a capturing lambda static (shapes found in real co
     unchanged(lines('using System;', 'using System.Linq;', '', ...statements, '', 'record Item(string Name);'));
   });
 
+  it.each([
+    ['a local of a var deconstruction', ['var (a, b) = (new int[0], 1);', 'Func<int> h = () => a.Length;']],
+    ['a local of a nested var deconstruction', ['var (a, (b, c)) = (1, (2, new int[0]));', 'Func<int> h = () => c.Length;']],
+    ['a local of a typed deconstruction', ['(int p, int q) = (1, 2);', 'Func<int> h = () => p.GetHashCode();']],
+    ['a case label pattern variable', ['switch (o)', '{', '    case string t:', '        Func<int> h = () => t.Length;', '        break;', '}']],
+    ['a switch expression arm pattern variable', ['var n = o switch { string s => ((Func<int>)(() => s.Length))(), _ => 0 };']],
+  ])('keeps a lambda that reads %s', (_name, statements) => {
+    unchanged(lines('using System;', '', 'class C', '{', '    void M(object o)', '    {', ...statements.map((line) => `        ${line}`), '    }', '}'));
+  });
+
+  it('keeps a lambda that reads a field in a tuple literal or a case guard of its own body', () => {
+    unchanged(lines(
+      'using System;',
+      '',
+      'class C',
+      '{',
+      '    string _name = "";',
+      '    int _count;',
+      '    void M()',
+      '    {',
+      '        Func<int, (int, int)> pair = x => (x, _count);',
+      '        Func<object, int> length = x => { switch (x) { case string t when t == _name: return t.Length; } return 0; };',
+      '    }',
+      '}'
+    ));
+  });
+
   it('still makes a lambda static inside a type of a file that also has top-level statements', () => {
     const source = lines('using System;', 'using System.Linq;', '', 'var total = 3;', 'Console.WriteLine(total);', '', 'class Helper', '{', '    public int[] Doubled(int[] items) => items.Select(x => x * 2).ToArray();', '}');
 
@@ -420,5 +527,27 @@ describe('IDE0320 never makes a capturing lambda static (shapes found in real co
     const before = lines('using System;', '', 'class P', '{', '    Func<int, string> M() => x => $"{x} {Math.Abs(x)} {string.Empty}";', '}');
 
     expect(codeStyle(before, RULE).output).toContain('static x => $"{x}');
+  });
+
+  it('keeps a lambda in an interface nested in a class that calls an instance member of the interface', () => {
+    unchanged(lines('using System;', '', 'class C', '{', '    static int Run() => 1;', '    interface I', '    {', '        int Run();', '        Func<int> M() => () => Run();', '    }', '}'));
+  });
+
+  it('keeps a lambda in a partial class that qualifies a member another part may declare', () => {
+    unchanged(lines('using System;', '', 'partial class P', '{', '    Func<string> M() => () => Other.ToString();', '}'));
+  });
+
+  it('still makes a lambda static in a class whose base list names only interfaces', () => {
+    const before = lines('using System;', '', 'interface IService { }', 'class S : IService, IDisposable', '{', '    static int Twice(int x) => x * 2;', '    public void Dispose() { }', '    Func<int, int> M() => x => Twice(x);', '}');
+
+    expect(codeStyle(before, RULE).output).toContain('static x => Twice(x)');
+  });
+});
+
+describe('IDE0002 inside a nested interface', () => {
+  it('keeps the type qualifier where the interface declares a member of the same name', () => {
+    const source = lines('class C', '{', '    static int X = 1;', '    interface I', '    {', '        int X { get; }', '        int M() => C.X;', '    }', '}');
+
+    expect(codeStyle(source, enforced('IDE0002')).output).toBe(source);
   });
 });

@@ -1,5 +1,5 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
-import { interpolationWritesName } from './interpolation';
+import { interpolationAccessesMember, interpolationWritesName } from './interpolation';
 import { SourceTransformation } from '../types';
 import { hasModifier } from './editorConfigSupport';
 
@@ -187,7 +187,8 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
   // Outside its constructor, a readonly field of a mutable struct is copied before each member
   // access, so a call that changed it would change the copy instead
   // (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/readonly#readonly-field-example).
-  // Unless the field's type is known to be a reference type, it must not be accessed that way.
+  // Unless the field's type is known to be a reference type, it must not be accessed that way,
+  // inside an interpolation hole (only visible in the literal's text) either.
   const type = declaration?.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '';
   let root: Node = typeDeclaration;
   while (root.parent) {
@@ -198,8 +199,10 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
     isKnownReferenceType(type, root) ||
     ![...scopeNodes(typeDeclaration)].some(
       (node) =>
-        (node.type === 'member_access_expression' || node.type === 'element_access_expression' || node.type === 'conditional_access_expression') &&
-        fieldAccessKind(node.childForFieldName('expression') ?? node.namedChild(0)!, fieldName) === FieldAccess.Direct &&
+        (node.type === 'interpolated_string_expression'
+          ? interpolationAccessesMember(node.text, fieldName)
+          : (node.type === 'member_access_expression' || node.type === 'element_access_expression' || node.type === 'conditional_access_expression') &&
+            fieldAccessKind(node.childForFieldName('expression') ?? node.namedChild(0)!, fieldName) === FieldAccess.Direct) &&
         !isWriteInMatchingConstructor(node, typeDeclaration, isStatic)
     )
   );

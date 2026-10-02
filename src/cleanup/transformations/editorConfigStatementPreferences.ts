@@ -5,6 +5,7 @@ import { RELATIONAL, UNARY, nullTest, operatorOf, precedenceOf, unparenthesized,
 import { hasParseErrors, lineEndAt, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
 import { isPlainNullComparison } from './typeFacts';
 import { delegateParameterTypes, subjectTypeText } from './editorConfigExpressionPreferences';
+import { interpolationIdentifiers, interpolationWritesName } from './interpolation';
 
 /**
  * Statement-level code-style preferences. A group of statements is rewritten only when every
@@ -124,9 +125,18 @@ export function isSimpleTarget(node: Node): boolean {
   return node.type === 'member_access_expression' && receiver !== null && isSimpleTarget(receiver);
 }
 
-/** Identifier occurrences named `name` inside `scope`, other than `except`. */
+/**
+ * Occurrences of `name` inside `scope`, other than `except`: its identifiers, and the interpolated
+ * strings (one literal node to the parser) whose holes use it as a name in scope.
+ */
 export function occurrences(scope: Node, name: string, except: readonly Node[] = []): Node[] {
-  return scope.descendantsOfType('identifier').filter((node) => node.text === name && !except.includes(node));
+  return scope
+    .descendantsOfType(['identifier', 'interpolated_string_expression'])
+    .filter(
+      (node) =>
+        !except.includes(node) &&
+        (node.type === 'identifier' ? node.text === name : interpolationIdentifiers(node.text).some((used) => used.name === name && !used.member))
+    );
 }
 
 export function isNameOfMemberAccess(identifier: Node): boolean {
@@ -270,8 +280,10 @@ function localFunctions(source: string, block: Node, statements: readonly Node[]
 
     const names = parameters.map((parameter) => parameter.name);
     const nameNode = local.declarator.childForFieldName('name')!;
-    const onlyCalled = occurrences(block, local.name, [nameNode]).every(
-      (use) => use.parent?.type === 'invocation_expression' && use.parent.childForFieldName('function') === use
+    const onlyCalled = occurrences(block, local.name, [nameNode]).every((use) =>
+      use.type === 'interpolated_string_expression'
+        ? interpolationIdentifiers(use.text).every((used) => used.name !== local.name || used.member || used.invoked)
+        : use.parent?.type === 'invocation_expression' && use.parent.childForFieldName('function') === use
     );
     const redeclared = block
       .descendantsOfType(['variable_declarator', 'parameter', 'local_function_statement'])
@@ -834,10 +846,11 @@ function switchExpressions(source: string, _block: Node, statements: readonly No
     if (defaultValue >= 0) {
       armTexts.push(`_ => ${arms[defaultValue]!.value}`);
     } else {
-      const next = statements[i + 1];
-      const fallback = form === 'return' ? returnedValue(next) : undefined;
+      // After an assigning switch, every section breaks to the next statement: it runs unconditionally.
+      const next = form === 'return' ? statements[i + 1] : undefined;
+      const fallback = returnedValue(next);
       const thrown = next?.type === 'throw_statement' && next.namedChildCount === 1 ? `throw ${next.namedChildren[0].text}` : undefined;
-      if (!fallback && !thrown) {
+      if (!next || (!fallback && !thrown)) {
         continue;
       }
 
@@ -900,12 +913,13 @@ function declaredOnlyBy(member: Node, name: string, declarations: number): boole
   return others === declarations && patterns === 0;
 }
 
-/** True when an identifier `name` inside `scope` is assigned (`name = `, `name++`, `ref`/`out name`). */
+/** True when an identifier `name` inside `scope` is assigned (`name = `, `name++`, `ref`/`out name`), in an interpolation hole too. */
 function isAssignedIn(scope: Node, name: string): boolean {
   return occurrences(scope, name).some((use) => {
     const parent = use.parent;
 
     return (
+      (use.type === 'interpolated_string_expression' && interpolationWritesName(use.text, name)) ||
       (parent?.type === 'assignment_expression' && parent.childForFieldName('left') === use) ||
       parent?.type === 'postfix_unary_expression' ||
       (parent?.type === 'prefix_unary_expression' && /^(?:\+\+|--)/.test(parent.text)) ||
