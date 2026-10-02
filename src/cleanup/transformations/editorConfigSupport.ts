@@ -43,7 +43,8 @@ export function readCodeStyleOption(
   const { value, severity } = splitOptionSeverity(raw);
   const normalized = value.toLowerCase();
   const id = typeof diagnosticId === 'string' ? diagnosticId : diagnosticId(normalized);
-  const effective = resolveDiagnosticSeverity(props, id, severity);
+  // A `:none` suffix stops the rule whatever severity its diagnostic gets from `dotnet_diagnostic` or a bulk severity.
+  const effective = severity === 'none' ? 'none' : resolveDiagnosticSeverity(props, id, severity);
 
   return { value: normalized, diagnosticId: id, severity: effective, enforced: isEnforced(effective) };
 }
@@ -278,4 +279,34 @@ export function modifiersOf(node: Node): Node[] {
 
 export function hasModifier(node: Node, name: string): boolean {
   return modifiersOf(node).some((modifier) => modifier.text === name);
+}
+
+/** What a file can hold outside every type: anything else directly in the compilation unit is a top-level statement. */
+const COMPILATION_UNIT_MEMBERS = new Set([
+  'using_directive',
+  'extern_alias_directive',
+  'attribute_list',
+  'namespace_declaration',
+  'file_scoped_namespace_declaration',
+  'class_declaration',
+  'struct_declaration',
+  'record_declaration',
+  'interface_declaration',
+  'enum_declaration',
+  'delegate_declaration',
+]);
+
+/**
+ * True when `node` is in the top-level statements of a file. The parser has no model of them: a
+ * statement there is read as a field, a property or an incomplete declaration, so the names it
+ * declares and the code after it cannot be analyzed. Rules that decide from what a piece of code
+ * uses (captures, reads, writes) leave such code unchanged.
+ */
+export function isInTopLevelStatements(node: Node): boolean {
+  let top: Node = node;
+  while (top.parent && top.parent.type !== 'compilation_unit') {
+    top = top.parent;
+  }
+
+  return top.parent?.type === 'compilation_unit' && !COMPILATION_UNIT_MEMBERS.has(top.type);
 }

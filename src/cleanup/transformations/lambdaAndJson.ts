@@ -45,7 +45,11 @@ export const jsonSerializerOptionsReuseConverter: SourceTransformation = {
 
           const expression = argumentExpression(argument);
           if (expression && isPlainOptionsCreation(expression)) {
-            edits.push({ start: expression.startIndex, end: expression.endIndex, text: 'null' });
+            // A positional `null` is ambiguous with the `JsonTypeInfo<T>` and `JsonSerializerContext` overloads
+            // (CS0121); a named `options:` argument only matches the options overloads.
+            const named = argument.children.some((child) => child?.type === ':');
+            const createdType = expression.childForFieldName('type')?.text ?? 'JsonSerializerOptions';
+            edits.push({ start: expression.startIndex, end: expression.endIndex, text: named ? 'null' : `default(${createdType})` });
           }
         }
       }

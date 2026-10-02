@@ -61,7 +61,16 @@ function tryBuildInterpolatedString(invocation: Node): string | undefined {
     return undefined;
   }
 
-  const formatArgs = args.slice(1).map((argument) => argument!.namedChild(argument!.namedChildCount - 1)?.text ?? '');
+  const argumentNodes = args.slice(1).map((argument) => argument!.namedChild(argument!.namedChildCount - 1));
+  const formatArgs = argumentNodes.map((node) => node?.text ?? '');
+  if (argumentNodes.some((node) => !node)) {
+    return undefined;
+  }
+
+  // A single array is the `params object[]` itself, not one value to format.
+  if (argumentNodes.length === 1 && /^(?:array_creation_expression|implicit_array_creation_expression)$/.test(argumentNodes[0]!.type)) {
+    return undefined;
+  }
 
   PLACEHOLDER.lastIndex = 0;
   const matches = [...formatString.matchAll(PLACEHOLDER)];
@@ -70,6 +79,15 @@ function tryBuildInterpolatedString(invocation: Node): string | undefined {
   }
 
   if (matches.some((match) => Number.parseInt(match[1], 10) >= formatArgs.length)) {
+    return undefined;
+  }
+
+  // `string.Format` evaluates each argument once, left to right, and evaluates all of them. An interpolated
+  // string evaluates a hole where it stands: an argument used twice, out of order or not at all would run
+  // another number of times or in another order, so only arguments without side effects may do that.
+  const used = matches.map((match) => Number.parseInt(match[1], 10));
+  const straightThrough = used.length === formatArgs.length && used.every((index, position) => index === position);
+  if (!straightThrough && argumentNodes.some((node) => hasSideEffects(node!))) {
     return undefined;
   }
 
@@ -84,7 +102,10 @@ function tryBuildInterpolatedString(invocation: Node): string | undefined {
 
     const alignment = match[2] !== undefined ? `,${match[2]}` : '';
     const formatSpecifier = match[3] !== undefined ? `:${match[3]}` : '';
-    result += `{${formatArgs[Number.parseInt(match[1], 10)]}${alignment}${formatSpecifier}}`;
+    const index = Number.parseInt(match[1], 10);
+    // The colon of a conditional expression would start the format specifier.
+    const hole = hasTopLevelColon(formatArgs[index]) ? `(${formatArgs[index]})` : formatArgs[index];
+    result += `{${hole}${alignment}${formatSpecifier}}`;
     lastIndex = matchIndex + match[0].length;
   }
 
@@ -93,6 +114,59 @@ function tryBuildInterpolatedString(invocation: Node): string | undefined {
   }
 
   return `${result}"`;
+}
+
+const SIDE_EFFECT_NODES = new Set([
+  'invocation_expression',
+  'object_creation_expression',
+  'implicit_object_creation_expression',
+  'array_creation_expression',
+  'implicit_array_creation_expression',
+  'assignment_expression',
+  'await_expression',
+  'lambda_expression',
+  'anonymous_method_expression',
+  'query_expression',
+  'throw_expression',
+  'postfix_unary_expression',
+]);
+
+/** True when evaluating `node` can do something other than compute a value (a call, a creation, a write, an increment). */
+function hasSideEffects(node: Node): boolean {
+  for (const candidate of [node, ...findAll(node, [...SIDE_EFFECT_NODES, 'prefix_unary_expression'])]) {
+    if (SIDE_EFFECT_NODES.has(candidate.type) && !(candidate.type === 'postfix_unary_expression' && !candidate.children.some((child) => child?.type === '++' || child?.type === '--'))) {
+      return true;
+    }
+
+    if (candidate.type === 'prefix_unary_expression' && candidate.children.some((child) => child?.type === '++' || child?.type === '--')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/** True when `text` has a `:` outside strings, characters and brackets (a conditional's, which would end an interpolation hole). */
+function hasTopLevelColon(text: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      for (i++; i < text.length && text[i] !== c; i++) {
+        if (text[i] === '\\') {
+          i++;
+        }
+      }
+    } else if (c === '(' || c === '[' || c === '{') {
+      depth++;
+    } else if (c === ')' || c === ']' || c === '}') {
+      depth--;
+    } else if (c === ':' && depth === 0 && text[i + 1] !== ':' && text[i - 1] !== ':') {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function escapeForInterpolatedString(text: string): string {

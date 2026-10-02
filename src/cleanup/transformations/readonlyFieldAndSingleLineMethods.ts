@@ -1,4 +1,5 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
+import { interpolationWritesName } from './interpolation';
 import { SourceTransformation } from '../types';
 import { hasModifier } from './editorConfigSupport';
 
@@ -107,6 +108,15 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
         const isByReference = node.children.some((child) => child?.type === 'ref' || child?.type === 'out');
         const expression = node.namedChild(node.namedChildCount - 1);
         if (isByReference && expression && fieldAccessKind(expression, fieldName) !== FieldAccess.None) {
+          return false;
+        }
+
+        break;
+      }
+
+      case 'interpolated_string_expression': {
+        // The parser reads the whole literal as one node: a write inside a hole is only visible in its text.
+        if (interpolationWritesName(node.text, fieldName)) {
           return false;
         }
 

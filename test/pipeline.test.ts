@@ -76,7 +76,10 @@ describe('cleanup pipeline', () => {
 
   it('honours the opt-in modernization settings', () => {
     const source = 'namespace Demo\n{\n    class Sample\n    {\n        void M()\n        {\n            Foo x = new Foo();\n        }\n    }\n}\n';
-    const result = run(source, { convertToVarWhenApparent: true, convertToFileScopedNamespace: true });
+    const settings = { ...createDefaultSettings(), convertToVarWhenApparent: true, convertToFileScopedNamespace: true };
+    // File-scoped namespaces are only written for a project that is known to compile them.
+    const rules = { ...editorConfig('root = true'), project: { directory: '/repo', languageVersion: 12 } };
+    const result = buildPipeline(source, settings, rules).run(source);
 
     expect(result).toContain('namespace Demo;');
     expect(result).toContain('var x = new Foo();');
@@ -299,7 +302,7 @@ describe('cleanup pipeline', () => {
     const source = 'class C\n{\n    void M()\n    {\n        JsonSerializer.Serialize(obj, new JsonSerializerOptions());\n    }\n}\n';
     const result = run(source, { reuseJsonSerializerOptionsForCA1869: true });
 
-    expect(result).toContain('null');
+    expect(result).toContain('JsonSerializer.Serialize(obj, default(JsonSerializerOptions));');
   });
 
   it('applies single statement lambda simplification', () => {

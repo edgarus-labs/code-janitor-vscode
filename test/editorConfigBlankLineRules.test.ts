@@ -102,3 +102,21 @@ describe('experimental blank-line and wrapping options (IDE2000 - IDE2006)', () 
     );
   });
 });
+
+describe('IDE2000 and multi-line string literals', () => {
+  it.each([
+    ['verbatim', lines('class C', '{', '    string S = @"a', '', '', '', 'b";', '}')],
+    ['raw', lines('class C', '{', '    string S = """', '        a', '', '', '        b', '        """;', '}')],
+    ['interpolated verbatim', lines('class C', '{', '    string S(int n) => $@"a', '', '', '{n}', '', '', 'b";', '}')],
+  ])('keeps the blank lines of a %s string', (_name, source) => {
+    expect(codeStyle(source, 'dotnet_style_allow_multiple_blank_lines_experimental = false:warning')).toBe(source);
+  });
+
+  it('still collapses blank lines in code next to a literal', () => {
+    expectRewrite(
+      'dotnet_style_allow_multiple_blank_lines_experimental',
+      lines('class C', '{', '    string S = @"a', '', '', 'b";', '', '', '', '    int N;', '}'),
+      lines('class C', '{', '    string S = @"a', '', '', 'b";', '', '    int N;', '}')
+    );
+  });
+});

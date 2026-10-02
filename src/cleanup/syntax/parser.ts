@@ -604,10 +604,16 @@ class CSharpParser {
     const typeStart = this.pos;
     const type = this.parseType();
 
-    if (this.is('{') || (this.is('identifier') && this.peek(1).type === '{')) {
+    const explicitEvent = this.is('identifier') && this.isExplicitInterfaceSpecifier();
+
+    if (this.is('{') || explicitEvent || (this.is('identifier') && this.peek(1).type === '{')) {
       if (type) {
         children.push(type);
         fields.set('type', type);
+      }
+
+      if (explicitEvent) {
+        children.push(this.parseExplicitInterfaceSpecifier());
       }
 
       const name = this.eat('identifier', children);
@@ -742,6 +748,11 @@ class CSharpParser {
     children.push(type);
     fields.set('type', type);
 
+    // `void IFoo.Bar()` / `int IFoo.this[int i]` - everything up to the final dot is the explicit interface specifier.
+    if (this.is('identifier') && this.isExplicitInterfaceSpecifier()) {
+      children.push(this.parseExplicitInterfaceSpecifier());
+    }
+
     if (this.is('this')) {
       this.take(children);
 
@@ -754,11 +765,6 @@ class CSharpParser {
       this.parseAccessorsOrArrow(children, fields);
 
       return this.finish('indexer_declaration', true, startToken, children, fields);
-    }
-
-    // `void IFoo.Bar()` - everything up to the final dot is the explicit interface specifier.
-    if (this.is('identifier') && this.isExplicitInterfaceSpecifier()) {
-      children.push(this.parseExplicitInterfaceSpecifier());
     }
 
     const name = this.eat('identifier', children);
@@ -2224,6 +2230,15 @@ class CSharpParser {
           args.endIndex,
           [expression, args]
         );
+        continue;
+      }
+
+      // `expression with { Member = value }`: `with` is a contextual keyword, so it is only one here.
+      if (this.isContextual('with') && this.peek(1).type === '{') {
+        const startIndex = expression.startIndex;
+        const keyword = this.leaf();
+        const initializer = this.parseInitializerExpression();
+        expression = this.makeNode('with_expression', true, startIndex, initializer.endIndex, [expression, keyword, initializer]);
         continue;
       }
 

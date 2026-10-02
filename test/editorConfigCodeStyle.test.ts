@@ -383,7 +383,7 @@ describe('csharp_prefer_braces', () => {
   });
 
   it('reports instead of bracing a statement the parser cannot read', () => {
-    const source = method('if (x > 0) y = z with { A = 1 };');
+    const source = method('if (x > 0) y = z');
     const { output, issues } = codeStyle(source, 'csharp_prefer_braces = true:warning');
 
     expect(output).toBe(source);
@@ -512,7 +512,7 @@ describe('dotnet_style_qualification_for_*', () => {
   });
 
   it('leaves members the parser could not fully read untouched', () => {
-    const source = lines('record Sample', '{', '    int count;', '    Sample Copy() { var copy = this with { }; count = 1; return copy; }', '}');
+    const source = lines('record Sample', '{', '    int count;', '    Sample Copy() { var copy = this; count = 1 return copy; }', '}');
 
     expect(codeStyle(source, 'dotnet_style_qualification_for_field = true:warning').output).toBe(source);
   });

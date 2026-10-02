@@ -194,6 +194,15 @@ First release of the Visual Studio Code port.
   (`IDE0090 (3 changes)`). Unchecked ones are left out of the diff and of what gets applied.
 
 ### Fixed
+- Rewrites that broke the build or changed behavior, found by cleaning a large real C# solution with every setting and rule:
+  - `readonly` was added to a field written inside an interpolated string (`$"{_n++}"`, `$"{(_n = 3)}"`, `out _n`).
+  - `static` was added to a lambda that captures a local, a parameter or a member (CS8820/CS8821), also through names inside interpolated strings, in
+    constructor initializers and inside `with` expressions (the parser now reads `with`).
+  - CA1869: `new JsonSerializerOptions()` was replaced by a positional `null`, which is ambiguous between overloads (CS0121); it is now `default(JsonSerializerOptions)`
+    (positionally) or `null` (as `options:`).
+  - Blank lines inside multi-line string literals (verbatim, raw and interpolated) were collapsed by *Remove multiple consecutive blank lines* and by IDE2000.
+  - `string.Format` was converted to an interpolated string even when that changes the number or the order of evaluations of its arguments, and a conditional
+    argument was not parenthesized (CS8361).
 
 - **Project settings read as MSBuild evaluates them**: the target frameworks, C# version, root
   namespace and `<Nullable>` ignore XML comments, follow `Directory.Build.targets` and resolvable

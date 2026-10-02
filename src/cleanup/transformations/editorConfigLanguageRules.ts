@@ -6,7 +6,8 @@ import { declaredTypeText } from './editorConfigExpressionPreferences';
 import { operatorOf, precedenceOf } from './editorConfigPrecedence';
 import { loadProjectFacts } from './editorConfigQualityRulesProject';
 import { Collect, diagnosticRule, enclosingMember, valueNames } from './editorConfigSimplificationRules';
-import { describeIssue, hasModifier, hasParseErrors, readCodeStyleOption } from './editorConfigSupport';
+import { describeIssue, hasModifier, hasParseErrors, isInTopLevelStatements, readCodeStyleOption } from './editorConfigSupport';
+import { interpolationIdentifiers } from './interpolation';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
 import { isPlainReferenceType } from './typeFacts';
 
@@ -190,8 +191,10 @@ function declaredNames(scope: Node, except?: Node): Set<string> {
       names.add(name.text);
     }
 
+    // A lambda declares only the identifier before its `=>` (`x => ...`); an identifier after it is the body.
+    const arrow = node.type === 'lambda_expression' ? node.children.find((child) => child.type === '=>') : undefined;
     for (const child of node.namedChildren) {
-      if (child.type === 'identifier') {
+      if (child.type === 'identifier' && (!arrow || child.startIndex < arrow.startIndex)) {
         names.add(child.text);
       }
     }
@@ -282,6 +285,24 @@ function capturesNothing(lambda: Node, root: Node): boolean {
     }
   }
 
+  // The parser reads an interpolated string as one literal: the names used in its holes are read from its text.
+  for (const literal of findAll(lambda, 'interpolated_string_expression')) {
+    for (const used of interpolationIdentifiers(literal.text)) {
+      if (used.member || inner.has(used.name)) {
+        continue;
+      }
+
+      if (outer.has(used.name) || hasBase) {
+        return false;
+      }
+
+      const declared = members.get(used.name);
+      if (declared ? !declared.isStatic : !used.qualifier) {
+        return false;
+      }
+    }
+  }
+
   return true;
 }
 
@@ -300,7 +321,7 @@ function collectStaticLambdas(_source: string, root: Node): TextEdit[] {
   return findAll(root, ['lambda_expression', 'anonymous_method_expression']).flatMap((lambda): TextEdit[] => {
     // The lambda an `async` wrapper modifies is decided with (and made static through) its wrapper.
     const isStatic = lambda.children[0]?.type === 'static' || isAsyncWrapper(lambda.parent);
-    if (isStatic || hasParseErrors(lambda) || isInPossibleExpressionTree(lambda) || !capturesNothing(lambda, root)) {
+    if (isStatic || hasParseErrors(lambda) || isInTopLevelStatements(lambda) || isInPossibleExpressionTree(lambda) || !capturesNothing(lambda, root)) {
       return [];
     }
 

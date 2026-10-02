@@ -316,3 +316,109 @@ describe('newer rules', () => {
     ]);
   });
 });
+
+describe('IDE0320 never makes a capturing lambda static (shapes found in real code)', () => {
+  const RULE = 'csharp_prefer_static_anonymous_function = true:warning';
+  const unchanged = (source: string): void => {
+    expect(codeStyle(source, RULE).output).toBe(source);
+  };
+
+  it('keeps a lambda that reads an instance field declared with a nullable type', () => {
+    unchanged(lines(
+      'using System;',
+      '',
+      'class P',
+      '{',
+      '    private object? _scope;',
+      '',
+      '    public Func<object?> Get() => () => _scope;',
+      '}'
+    ));
+  });
+
+  it('keeps a lambda that reads a field of a type with a primary constructor', () => {
+    unchanged(lines('using System;', '', 'class P(int x)', '{', '    private int _y = x;', '    public Func<int> Get() => () => _y + x;', '}'));
+  });
+
+  it('keeps a lambda in a constructor initializer that reads a constructor parameter', () => {
+    unchanged(lines(
+      'using System;',
+      '',
+      'class P',
+      '{',
+      '    public P(string device) : this(() => device)',
+      '    {',
+      '    }',
+      '',
+      '    private P(Func<string> factory)',
+      '    {',
+      '    }',
+      '}'
+    ));
+  });
+
+  it('keeps a lambda that reads an enclosing parameter inside an interpolated string', () => {
+    unchanged(lines(
+      'using System;',
+      'using System.Linq;',
+      '',
+      'class P',
+      '{',
+      '    string[] M(string[] ids, Profile profile) => ids.Select(id => $"{id:D} of {profile.Name:D}.").ToArray();',
+      '}',
+      'class Profile { public string Name = ""; }'
+    ));
+  });
+
+  it('keeps a lambda that reads a local only inside an interpolation hole or a nested hole', () => {
+    for (const body of ['$"{local}"', '$@"{local}"', '$"""{local}"""', '$"a{$"b{local}"}"']) {
+      unchanged(lines('using System;', '', 'class P', '{', '    Func<int, string> M(int local) => x => ' + body + ';', '}'));
+    }
+  });
+
+  it('keeps a lambda whose with expression reads a local, a parameter or a closure of the method', () => {
+    unchanged(lines(
+      'using System;',
+      'using System.Linq;',
+      '',
+      'record State(int Count, string Names, int[] Items);',
+      '',
+      'class P',
+      '{',
+      '    void M(int[] devices, int now)',
+      '    {',
+      '        var tracked = devices.Where(d => d > 0).ToArray();',
+      '        Update(current => current with',
+      '        {',
+      '            Count = tracked.Any(item => item > 1) ? now : current.Count,',
+      '            Names = string.Join(",", devices.Select(item => item.ToString())),',
+      '            Items = tracked,',
+      '        });',
+      '    }',
+      '',
+      '    void Update(Func<State, State> change) { }',
+      '}'
+    ).replace('Where(d => d > 0)', 'Where(static d => d > 0)'));
+  });
+
+  it.each([
+    ['a local declared in an earlier statement', ['var source = new Item("a");', 'var found = new[] { new Item("a") }.FirstOrDefault(i => i.Name == source.Name);']],
+    ['a local used after an await', ['var source = new Item("a");', 'await System.Threading.Tasks.Task.Delay(1);', 'var found = new[] { new Item("a") }.FirstOrDefault(i => i.Name == source.Name);']],
+    ['a local function of the program', ['int Twice(int x) => x * 2;', 'var found = new[] { 1, 2 }.Select(i => Twice(i));']],
+    ['a lambda inside an if statement', ['var source = new Item("a");', 'if (source.Name.Length > 0)', '{', '    var found = new[] { new Item("a") }.Any(i => i.Name == source.Name);', '}']],
+  ])('keeps a lambda in top-level statements that reads %s', (_name, statements) => {
+    unchanged(lines('using System;', 'using System.Linq;', '', ...statements, '', 'record Item(string Name);'));
+  });
+
+  it('still makes a lambda static inside a type of a file that also has top-level statements', () => {
+    const source = lines('using System;', 'using System.Linq;', '', 'var total = 3;', 'Console.WriteLine(total);', '', 'class Helper', '{', '    public int[] Doubled(int[] items) => items.Select(x => x * 2).ToArray();', '}');
+
+    expect(codeStyle(source, RULE).output).toContain('items.Select(static x => x * 2)');
+  });
+
+  it('still makes a lambda static when an interpolation only uses its own parameter and types', () => {
+    const before = lines('using System;', '', 'class P', '{', '    Func<int, string> M() => x => $"{x} {Math.Abs(x)} {string.Empty}";', '}');
+
+    expect(codeStyle(before, RULE).output).toContain('static x => $"{x}');
+  });
+});
