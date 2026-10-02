@@ -11,8 +11,19 @@ export function removeBlankLinesAtTop(source: string): string {
   return source.replace(/^(?:[ \t]*\r?\n)+/, '');
 }
 
-export function removeBlankLinesAtBottom(source: string): string {
-  return source.replace(/(?:\r?\n[ \t]*)+$/, '');
+/**
+ * Removes the blank lines at the end of the file, with the final newline unless
+ * `keepFinalNewline` (then exactly one, in the file's line ending, stays).
+ */
+export function removeBlankLinesAtBottom(source: string, keepFinalNewline = false): string {
+  const trailing = /(?:\r?\n[ \t]*)+$/.exec(source);
+  if (!trailing) {
+    return source;
+  }
+
+  const finalNewline = keepFinalNewline ? (trailing[0].startsWith('\r\n') ? '\r\n' : '\n') : '';
+
+  return source.slice(0, trailing.index) + finalNewline;
 }
 
 export function removeBlankLinesAfterAttributes(source: string): string {

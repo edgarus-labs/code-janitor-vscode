@@ -1,5 +1,7 @@
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
+import { interpolationWritesName } from './interpolation';
 import { SourceTransformation } from '../types';
+import { hasModifier } from './editorConfigSupport';
 
 const TYPE_DECLARATIONS = new Set([
   'class_declaration',
@@ -76,10 +78,6 @@ function directFields(typeDeclaration: Node): Node[] {
   return (body?.namedChildren ?? []).filter((child): child is Node => child?.type === 'field_declaration');
 }
 
-function hasModifier(node: Node, ...names: readonly string[]): boolean {
-  return node.namedChildren.some((child) => child?.type === 'modifier' && names.includes(child.text));
-}
-
 function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
   const declaration = field.namedChildren.find((child) => child?.type === 'variable_declaration');
   const declarators = declaration?.namedChildren.filter((child) => child?.type === 'variable_declarator') ?? [];
@@ -87,12 +85,12 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
     return false;
   }
 
-  if (hasModifier(field, 'readonly', 'const', 'volatile')) {
+  if (['readonly', 'const', 'volatile'].some((name) => hasModifier(field, name))) {
     return false;
   }
 
   // Writes to non-private fields cannot be ruled out from a single file.
-  if (hasModifier(field, 'public', 'internal', 'protected')) {
+  if (['public', 'internal', 'protected'].some((name) => hasModifier(field, name))) {
     return false;
   }
 
@@ -110,6 +108,15 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
         const isByReference = node.children.some((child) => child?.type === 'ref' || child?.type === 'out');
         const expression = node.namedChild(node.namedChildCount - 1);
         if (isByReference && expression && fieldAccessKind(expression, fieldName) !== FieldAccess.None) {
+          return false;
+        }
+
+        break;
+      }
+
+      case 'interpolated_string_expression': {
+        // The parser reads the whole literal as one node: a write inside a hole is only visible in its text.
+        if (interpolationWritesName(node.text, fieldName)) {
           return false;
         }
 
@@ -173,7 +180,45 @@ function isSafeToMakeReadonly(typeDeclaration: Node, field: Node): boolean {
     }
   }
 
-  return writes.every((write) => isWriteInMatchingConstructor(write, typeDeclaration, isStatic));
+  if (!writes.every((write) => isWriteInMatchingConstructor(write, typeDeclaration, isStatic))) {
+    return false;
+  }
+
+  // Outside its constructor, a readonly field of a mutable struct is copied before each member
+  // access, so a call that changed it would change the copy instead
+  // (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/readonly#readonly-field-example).
+  // Unless the field's type is known to be a reference type, it must not be accessed that way.
+  const type = declaration?.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '';
+  let root: Node = typeDeclaration;
+  while (root.parent) {
+    root = root.parent;
+  }
+
+  return (
+    isKnownReferenceType(type, root) ||
+    ![...scopeNodes(typeDeclaration)].some(
+      (node) =>
+        (node.type === 'member_access_expression' || node.type === 'element_access_expression' || node.type === 'conditional_access_expression') &&
+        fieldAccessKind(node.childForFieldName('expression') ?? node.namedChild(0)!, fieldName) === FieldAccess.Direct &&
+        !isWriteInMatchingConstructor(node, typeDeclaration, isStatic)
+    )
+  );
+}
+
+/** Reference types whose members cannot change a field holding them: known framework types and the file's own. */
+const KNOWN_REFERENCE_TYPES =
+  /^(?:(?:System\.)?(?:string|object|String|Object|Random|Exception|Type|Uri|Task|StringBuilder|Stopwatch|SemaphoreSlim|CancellationTokenSource|HttpClient|Regex|Timer)|(?:List|Dictionary|HashSet|Queue|Stack|SortedDictionary|SortedList|SortedSet|LinkedList|ConcurrentDictionary|ConcurrentQueue|ConcurrentBag|Lazy|Func|Action|Task|ObservableCollection|Collection|WeakReference)<.+>|I[A-Z]\w*(?:<.+>)?|.+\[\])\??$/;
+
+function isKnownReferenceType(type: string, root: Node): boolean {
+  if (KNOWN_REFERENCE_TYPES.test(type)) {
+    return true;
+  }
+
+  const name = type.replace(/\?$/, '').replace(/<.*>$/, '');
+
+  return findAll(root, ['class_declaration', 'interface_declaration', 'delegate_declaration', 'record_declaration']).some(
+    (declaration) => declaration.childForFieldName('name')?.text === name && !declaration.children.some((child) => child.type === 'struct')
+  );
 }
 
 /** Every descendant of the type, including any nested type declarations it contains. */

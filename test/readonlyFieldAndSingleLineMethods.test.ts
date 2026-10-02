@@ -234,3 +234,35 @@ describe('updateSingleLineMethodsConverter', () => {
     expect(updateSingleLineMethodsConverter.name).toBe('Update single-line methods');
   });
 });
+
+describe('readonlyFieldConverter and writes inside interpolated strings', () => {
+  const apply = (input: string): string => readonlyFieldConverter.apply(input);
+
+  it.each([
+    ['ref argument', 'class C { private int _n; string M() => $"x{System.Threading.Interlocked.Increment(ref _n)}"; }'],
+    ['out argument', 'class C { private int _n; string M() => $"{int.TryParse("1", out _n)}"; }'],
+    ['postfix increment', 'class C { private int _n; string M() => $"{_n++}"; }'],
+    ['prefix decrement', 'class C { private int _n; string M() => $"{--_n}"; }'],
+    ['assignment', 'class C { private int _n; string M() => $"{(_n = 3)}"; }'],
+    ['compound assignment', 'class C { private int _n; string M() => $"{(_n += 3)}"; }'],
+    ['this-qualified write', 'class C { private int _n; string M() => $"{this._n++}"; }'],
+    ['verbatim interpolated string', 'class C { private int _n; string M() => $@"{System.Threading.Interlocked.Increment(ref _n)}"; }'],
+    ['raw interpolated string', 'class C { private int _n; string M() => $"""{System.Threading.Interlocked.Increment(ref _n)}"""; }'],
+    ['nested interpolation', 'class C { private int _n; string M() => $"a{$"b{_n++}"}"; }'],
+    ['format specifier after the write', 'class C { private int _n; string M() => $"{_n++:D3}"; }'],
+  ])('keeps a field that is written in an interpolation hole: %s', (_name, input) => {
+    expect(apply(input)).toBe(input);
+  });
+
+  it('still makes a field readonly when an interpolation only reads it', () => {
+    expect(apply('class C { private int _n; string M() => $"{_n} {_n + 1:D3} {{_n}}"; }')).toContain('private readonly int _n');
+  });
+
+  it('does not mistake a comparison or a string that looks like a write for one', () => {
+    expect(apply('class C { private int _n; string M() => $"{(_n == 3)} _n++ {"_n = 1"}"; }')).toContain('private readonly int _n');
+  });
+
+  it('does not take a write to another member with the same suffix for a write to the field', () => {
+    expect(apply('class C { private int _n; int other_n; string M() => $"{other_n++}"; }')).toContain('private readonly int _n');
+  });
+});

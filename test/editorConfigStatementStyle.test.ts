@@ -1,0 +1,139 @@
+import { describe, expect, it } from 'vitest';
+import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
+import { createEditorConfigCodeStyleConverter } from '../src/cleanup/transformations/editorConfigCodeStyle';
+
+function lines(...text: string[]): string {
+  return `${text.join('\n')}\n`;
+}
+
+function method(returnType: string, ...body: string[]): string {
+  return lines('class Sample', '{', '    private string _name;', '', `    ${returnType} M(bool c, int i, object o)`, '    {', ...body.map((line) => (line ? `        ${line}` : '')), '    }', '}');
+}
+
+function codeStyle(source: string, rules: string): string {
+  const props = resolveEditorConfigProperties([{ directory: '/repo', text: `root = true\n[*.cs]\n${rules}\n` }], '/repo/Sample.cs');
+
+  return createEditorConfigCodeStyleConverter(props, () => undefined).apply(source);
+}
+
+/** Asserts the setting rewrites `before` to `after` while enforced and changes nothing while silent. */
+function expectRewrite(setting: string, before: string, after: string): void {
+  expect(codeStyle(before, `${setting}:warning`)).toBe(after);
+  expect(codeStyle(before, `${setting}:silent`)).toBe(before);
+}
+
+describe('IDE0045 dotnet_style_prefer_conditional_expression_over_assignment', () => {
+  it('assigns a conditional when the target type keeps each value unchanged', () => {
+    expectRewrite(
+      'dotnet_style_prefer_conditional_expression_over_assignment = true',
+      method('void', 'if (c) i = 1; else i = 2;', 'int n;', 'if (c)', '{', '    n = i;', '}', 'else', '{', '    n = 0;', '}', 'object x;', 'if (c) x = 1; else x = 2L;'),
+      method('void', 'i = c ? 1 : 2;', 'int n = c ? i : 0;', 'object x;', 'if (c) x = 1; else x = 2L;')
+    );
+  });
+});
+
+describe('IDE0046 dotnet_style_prefer_conditional_expression_over_return', () => {
+  it('returns a conditional for if/else and if/return', () => {
+    expectRewrite(
+      'dotnet_style_prefer_conditional_expression_over_return = true',
+      method('string', 'if (c) return "a"; else return _name;'),
+      method('string', 'return c ? "a" : _name;')
+    );
+    expectRewrite(
+      'dotnet_style_prefer_conditional_expression_over_return = true',
+      method('int', 'if (c)', '{', '    return 1;', '}', '', 'return i;'),
+      method('int', 'return c ? 1 : i;')
+    );
+  });
+
+  it('simplifies boolean results instead of returning true or false from a conditional', () => {
+    expectRewrite(
+      'dotnet_style_prefer_conditional_expression_over_return = true',
+      method('bool', 'if (i > 1) return true;', 'return false;'),
+      method('bool', 'return i > 1;')
+    );
+    expectRewrite(
+      'dotnet_style_prefer_conditional_expression_over_return = true',
+      method('bool', 'if (c || i > 1) return false;', 'return o is string;'),
+      method('bool', 'return !(c || i > 1) && o is string;')
+    );
+  });
+
+  it('leaves returns of types the conditional could change alone', () => {
+    const source = method('object', 'if (c) return 1; return 2L;');
+
+    expect(codeStyle(source, 'dotnet_style_prefer_conditional_expression_over_return = true:warning')).toBe(source);
+  });
+});
+
+describe('IDE0017 dotnet_style_object_initializer', () => {
+  it('moves member assignments after a creation into an initializer', () => {
+    expectRewrite(
+      'dotnet_style_object_initializer = true',
+      method('void', 'var s = new Sample();', 's._name = "x";', 's.Count = i;', 's.Other = s.Count;', 'Use(s);'),
+      method('void', 'var s = new Sample()', '{', '    _name = "x",', '    Count = i', '};', 's.Other = s.Count;', 'Use(s);')
+    );
+  });
+});
+
+describe('IDE0028 dotnet_style_collection_initializer', () => {
+  it('moves Add calls after a creation into a collection initializer', () => {
+    expectRewrite(
+      'dotnet_style_collection_initializer = true',
+      method('void', 'var list = new List<int>();', 'list.Add(1);', 'list.Add(i);', 'var map = new Dictionary<string, int>(4);', 'map.Add("a", 1);', 'Use(list, map);'),
+      method('void', 'var list = new List<int>()', '{', '    1,', '    i', '};', 'var map = new Dictionary<string, int>(4)', '{', '    { "a", 1 }', '};', 'Use(list, map);')
+    );
+  });
+
+  it('leaves explicitly typed locals to collection expressions (IDE0306) when those are preferred', () => {
+    const source = method('void', 'List<int> list = new List<int>();', 'list.Add(1);');
+
+    expect(codeStyle(source, 'dotnet_style_collection_initializer = true:warning\ndotnet_style_prefer_collection_expression = true:warning')).toBe(
+      method('void', 'List<int> list = [];', 'list.Add(1);')
+    );
+  });
+});
+
+describe('IDE0066 csharp_style_prefer_switch_expression', () => {
+  it('turns a switch that returns in every section into a switch expression', () => {
+    expectRewrite(
+      'csharp_style_prefer_switch_expression = true',
+      method('string', 'switch (i)', '{', '    case 1:', '    case 2:', '        return "low";', '    case int n when n > 9:', '        return "high";', '    default:', '        throw new ArgumentOutOfRangeException();', '}'),
+      method('string', 'return i switch', '{', '    1 or 2 => "low",', '    int n when n > 9 => "high",', '    _ => throw new ArgumentOutOfRangeException(),', '};')
+    );
+  });
+
+  it('assigns a switch expression and uses a following return as the default arm', () => {
+    expectRewrite(
+      'csharp_style_prefer_switch_expression = true',
+      method('int', 'int n;', 'switch (i)', '{', '    case 1:', '        n = 10;', '        break;', '    default:', '        n = 0;', '        break;', '}', 'switch (i)', '{', '    case 3: return 30;', '}', 'return n;'),
+      method('int', 'int n = i switch', '{', '    1 => 10,', '    _ => 0,', '};', 'return i switch', '{', '    3 => 30,', '    _ => n,', '};')
+    );
+  });
+
+  it('leaves switches with other statements, or of types the arms could change, alone', () => {
+    const source = method('object', 'switch (i)', '{', '    case 1: return 1;', '    default: return 2L;', '}');
+
+    expect(codeStyle(source, 'csharp_style_prefer_switch_expression = true:warning')).toBe(source);
+  });
+});
+
+describe('IDE0019 csharp_style_pattern_matching_over_as_with_null_check', () => {
+  it('uses a type pattern instead of as and a null check', () => {
+    expectRewrite(
+      'csharp_style_pattern_matching_over_as_with_null_check = true',
+      method('void', 'var s = o as string;', 'if (s != null && s.Length > 0)', '{', '    Use(s);', '    Use(s.Length);', '}', 'var u = o as Uri;', 'if (u != null) Use(u);', 'Use(u);'),
+      method('void', 'if (o is string s && s.Length > 0)', '{', '    Use(s);', '    Use(s.Length);', '}', 'var u = o as Uri;', 'if (u != null) Use(u);', 'Use(u);')
+    );
+  });
+});
+
+describe('IDE0020 csharp_style_pattern_matching_over_is_with_cast_check', () => {
+  it('declares the pattern variable instead of casting after a type check', () => {
+    expectRewrite(
+      'csharp_style_pattern_matching_over_is_with_cast_check = true',
+      method('void', 'if (o is string)', '{', '    var s = (string)o;', '    Use(s);', '}'),
+      method('void', 'if (o is string s)', '{', '    Use(s);', '}')
+    );
+  });
+});

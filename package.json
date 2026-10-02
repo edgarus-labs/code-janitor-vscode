@@ -217,9 +217,20 @@
         "command": "codeJanitor.showOutputChannel",
         "title": "Show Output Channel",
         "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.fixRuleInFile",
+        "title": "Fix All Occurrences of an .editorconfig Rule in File",
+        "category": "Code Janitor"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "codeJanitor.fixRuleInFile",
+          "when": "false"
+        }
+      ],
       "explorer/context": [
         {
           "submenu": "codeJanitor.explorerSubmenu",
@@ -355,6 +366,22 @@
             "type": "boolean",
             "default": false,
             "description": "Automatically run Code Janitor cleanup on C# files when they are saved."
+          },
+          "codeJanitor.cleanup.onlyChangedLines": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Cleanup on save and **Cleanup Changed Files (Git)** only change the lines changed since the last commit (`HEAD`; every line of a new file). A rule whose change also covers unchanged lines is skipped and reported; names are not changed and types are not moved to their own files. Needs Git."
+          },
+          "codeJanitor.diagnostics.enabled": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Show the `.editorconfig` rule violations of open C# files in the Problems panel: what cleanup would change (with quick fixes) and what it cannot fix, with the rule's `.editorconfig` severity."
+          },
+          "codeJanitor.diagnostics.maxFileSizeKB": {
+            "type": "number",
+            "default": 256,
+            "minimum": 1,
+            "description": "C# files larger than this (in KB) are not analyzed for diagnostics."
           },
           "codeJanitor.cleanup.exclude": {
             "type": "array",
@@ -522,6 +549,11 @@
             "type": "boolean",
             "default": false,
             "description": "Add the 'sealed' modifier to classes that are not derived from within the same file."
+          },
+          "codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace": {
+            "type": "boolean",
+            "default": false,
+            "description": "Cleanup Selected Files and Cleanup Workspace: rename public and internal symbols that break the .editorconfig naming rules (IDE1006) in every file of their project and of the projects referencing it, after showing the list of renames. Renames that cannot be proven safe (names used as text, NuGet package APIs, virtual members, ...) are reported instead. Never runs on save."
           },
           "codeJanitor.cleanup.convertToCollectionExpressions": {
             "type": "boolean",
@@ -760,6 +792,10 @@
     "pretest:e2e": "npm run build && tsc -p tsconfig.e2e.json",
     "test:e2e": "vscode-test",
     "smoke-test": "node scripts/smoke-test.js",
+    "generate:editorconfig": "vite-node scripts/generate-editorconfig.ts",
+    "verify:compile": "vite-node scripts/compile-oracle.ts --",
+    "check": "vite-node scripts/check.ts --",
+    "perf:corpus": "vite-node scripts/perf-corpus.ts --",
     "verify:bundle": "node scripts/verify-bundle.js",
     "package": "npm run build && npx vsce package"
   },

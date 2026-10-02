@@ -182,3 +182,23 @@ describe('createSealedClassConverter with cross-file context', () => {
     expect(createSealedClassConverter().apply('internal class Foo { }')).toBe('internal sealed class Foo { }');
   });
 });
+
+describe('sealedClassConverter never seals a type that could not be sealed', () => {
+  const apply = (source: string) => sealedClassConverter.apply(source);
+
+  it('leaves types with abstract members or nested abstract types at any depth unsealed', () => {
+    const source = [
+      'internal class Outer { protected abstract class Inner { } public abstract void X(); }',
+      'internal class Host { private abstract class Nested { } private class Impl : Nested { } }',
+      'internal class Deep { private class Middle { private abstract class Leaf { } } }',
+    ].join('\n');
+
+    expect(apply(source)).toBe(source);
+  });
+
+  it('leaves types with protected members or nested types unsealed (CS0628)', () => {
+    const source = 'internal class Guarded { protected int Value; }\ninternal class Holder { protected class Nested { } }';
+
+    expect(apply(source)).toBe(source);
+  });
+});

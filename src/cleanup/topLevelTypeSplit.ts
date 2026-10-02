@@ -10,6 +10,30 @@ export const enum TopLevelTypeSplitSkipReason {
   EmptySource = 'emptySource',
   UnsupportedStructure = 'unsupportedStructure',
   NotMultipleEligibleTypes = 'notMultipleEligibleTypes',
+  FileNameCollision = 'fileNameCollision',
+}
+
+/** The kind of a top-level type as the one-type-per-file rules distinguish it; records count as class or struct. */
+export type TopLevelTypeKind = 'class' | 'struct' | 'interface' | 'enum' | 'delegate';
+
+export interface SplitOptions {
+  /** Kinds of eligible types that may move (default: every eligible type); other types stay in place. */
+  readonly movableKinds?: ReadonlySet<TopLevelTypeKind>;
+  /** Refuse the split (instead of numbering the new file) when a planned file name is already taken. */
+  readonly refuseFileNameCollisions?: boolean;
+}
+
+/** A top-level type declaration of a file. */
+export interface TopLevelTypeInfo {
+  readonly name: string;
+  readonly kind: TopLevelTypeKind;
+  readonly isPartial: boolean;
+  /** 1-based line of the type's name. */
+  readonly line: number;
+  /** The file name (with `.cs`) the split gives the type, e.g. `Box{T}.cs`. */
+  readonly fileName: string;
+  /** Names of the type parameters, as declared. */
+  readonly typeParameters: readonly string[];
 }
 
 export interface PlannedFile {
@@ -22,6 +46,8 @@ export interface SplitPlan {
   readonly newFiles: readonly PlannedFile[];
   readonly skipReason: TopLevelTypeSplitSkipReason;
   readonly hasChanges: boolean;
+  /** With `refuseFileNameCollisions`: the planned file names that were already taken. */
+  readonly collidingFileNames?: readonly string[];
 }
 
 const NAMESPACE_TYPES = new Set(['namespace_declaration', 'file_scoped_namespace_declaration']);
@@ -51,7 +77,8 @@ interface MemberEntry {
 export function createTopLevelTypeSplitPlan(
   source: string,
   filePath: string,
-  reservedFileNames: ReadonlySet<string> = new Set()
+  reservedFileNames: ReadonlySet<string> = new Set(),
+  options: SplitOptions = {}
 ): SplitPlan {
   if (!source.trim() || !filePath.trim()) {
     return emptyPlan(source, TopLevelTypeSplitSkipReason.EmptySource);
@@ -74,15 +101,18 @@ export function createTopLevelTypeSplitPlan(
       return emptyPlan(source, TopLevelTypeSplitSkipReason.UnsupportedStructure);
     }
 
-    const eligible = entries.filter((entry) => isEligibleTopLevelType(entry.member));
-    if (eligible.length <= 1) {
-      return emptyPlan(source, TopLevelTypeSplitSkipReason.NotMultipleEligibleTypes);
-    }
+    const eligible = entries.filter(
+      (entry) =>
+        isEligibleTopLevelType(entry.member) && (options.movableKinds?.has(typeKind(entry.member)) ?? true)
+    );
 
-    const originalFileName = path.basename(filePath);
-    const keep =
-      eligible.find((entry) => buildTypeFileName(entry.member).toUpperCase() === originalFileName.toUpperCase()) ??
-      eligible[0];
+    // The type named like the file (up to its first dot: `View.xaml.cs`) stays, movable or not;
+    // without one, the first movable type does.
+    const fileStem = fileStemOf(filePath);
+    const named = entries.find(
+      (entry) => TYPE_DECL_TYPES.has(entry.member.type) && matchesFileStem(entry.member.childForFieldName('name')?.text ?? '', getTypeParameterNames(entry.member), fileStem)
+    );
+    const keep = named ?? eligible[0];
     const moved = eligible.filter((entry) => entry !== keep);
 
     if (moved.length === 0) {
@@ -96,6 +126,13 @@ export function createTopLevelTypeSplitPlan(
 
     const directoryPath = path.dirname(filePath);
     const reservedUpper = new Set([...reservedFileNames].map((name) => name.toUpperCase()));
+    if (options.refuseFileNameCollisions) {
+      const colliding = moved.map((entry) => buildTypeFileName(entry.member)).filter((name) => reservedUpper.has(name.toUpperCase()));
+      if (colliding.length > 0) {
+        return { ...emptyPlan(source, TopLevelTypeSplitSkipReason.FileNameCollision), collidingFileNames: colliding };
+      }
+    }
+
     const newFiles: PlannedFile[] = [];
 
     for (const entry of moved) {
@@ -114,6 +151,59 @@ export function createTopLevelTypeSplitPlan(
     return { updatedSource, newFiles, skipReason: TopLevelTypeSplitSkipReason.None, hasChanges: true };
   } finally {
     tree.delete();
+  }
+}
+
+/**
+ * Every type declared at the top level of the file - directly in the compilation unit or in any
+ * (nested) namespace - whatever the file's structure.
+ */
+export function listTopLevelTypes(source: string): TopLevelTypeInfo[] {
+  const tree = parseCSharp(source);
+  const types: TopLevelTypeInfo[] = [];
+  const visit = (container: Node): void => {
+    for (const child of container.namedChildren) {
+      if (NAMESPACE_TYPES.has(child.type)) {
+        visit(child.type === 'namespace_declaration' ? child.childForFieldName('body') ?? child : child);
+      } else if (TYPE_DECL_TYPES.has(child.type)) {
+        const name = child.childForFieldName('name');
+        if (name) {
+          types.push({
+            name: name.text,
+            kind: typeKind(child),
+            isPartial: hasPartialModifier(child),
+            line: name.startPosition.row + 1,
+            fileName: buildTypeFileName(child),
+            typeParameters: getTypeParameterNames(child),
+          });
+        }
+      }
+    }
+  };
+
+  try {
+    visit(tree.rootNode);
+  } finally {
+    tree.delete();
+  }
+
+  return types;
+}
+
+function typeKind(member: Node): TopLevelTypeKind {
+  switch (member.type) {
+    case 'record_declaration':
+      return member.children.some((child) => child.type === 'struct') ? 'struct' : 'class';
+    case 'struct_declaration':
+      return 'struct';
+    case 'interface_declaration':
+      return 'interface';
+    case 'enum_declaration':
+      return 'enum';
+    case 'delegate_declaration':
+      return 'delegate';
+    default:
+      return 'class';
   }
 }
 
@@ -232,6 +322,21 @@ function isEligibleTopLevelType(member: Node): boolean {
 
 function hasPartialModifier(member: Node): boolean {
   return member.children.some((child) => child.type === 'modifier' && child.text === 'partial');
+}
+
+/** The file name up to its first dot, which StyleCop and Meziantou compare type names with (`View.xaml.cs` -> `View`). */
+export function fileStemOf(filePath: string): string {
+  return path.basename(filePath).split('.')[0];
+}
+
+/** `Box`, `Box{T}` (StyleCop) and ``Box`1`` (metadata) all name the generic type `Box<T>`. */
+export function matchesFileStem(name: string, typeParameters: readonly string[], fileStem: string): boolean {
+  const accepted = [name];
+  if (typeParameters.length > 0) {
+    accepted.push(`${name}{${typeParameters.join(',')}}`, `${name}\`${typeParameters.length}`);
+  }
+
+  return accepted.some((candidate) => candidate.toUpperCase() === fileStem.toUpperCase());
 }
 
 function buildTypeFileName(member: Node): string {

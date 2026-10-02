@@ -40,6 +40,13 @@ export class Uri {
     return new Uri('file', fsPath);
   }
 
+  /** Only what the extension parses: `scheme://path`. */
+  static parse(value: string): Uri {
+    const match = /^([a-z][\w+.-]*):\/\/(.*)$/i.exec(value);
+
+    return match ? new Uri(match[1], match[2]) : new Uri('file', value);
+  }
+
   toString(): string {
     return `${this.scheme}://${this.fsPath.replace(/\\/g, '/')}`;
   }
@@ -257,6 +264,63 @@ function applyRangeEdits(document: TextDocument, edits: readonly RecordedEdit[])
   document.setText(content);
 }
 
+// ---------------------------------------------------------------- languages
+
+export const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 } as const;
+
+export class Diagnostic {
+  source?: string;
+  code?: string | { value: string; target: Uri };
+
+  constructor(
+    readonly range: Range,
+    readonly message: string,
+    readonly severity: number
+  ) {}
+}
+
+export class CodeActionKind {
+  static readonly QuickFix = new CodeActionKind('quickfix');
+
+  constructor(readonly value: string) {}
+}
+
+export class CodeAction {
+  edit?: WorkspaceEdit;
+  diagnostics?: Diagnostic[];
+  isPreferred?: boolean;
+  command?: { title: string; command: string; arguments?: unknown[] };
+
+  constructor(
+    readonly title: string,
+    readonly kind: CodeActionKind
+  ) {}
+}
+
+export interface MockCodeActionProvider {
+  provideCodeActions(document: TextDocument, range: Range, context: { diagnostics: readonly Diagnostic[] }): CodeAction[];
+}
+
+export const languages = {
+  createDiagnosticCollection(_name: string) {
+    return {
+      set: (uri: Uri, diagnostics: readonly Diagnostic[]) => {
+        state.diagnostics.set(uri.toString(), [...diagnostics]);
+      },
+      delete: (uri: Uri) => {
+        state.diagnostics.delete(uri.toString());
+      },
+      dispose: () => undefined,
+    };
+  },
+
+  registerCodeActionsProvider(_selector: unknown, provider: MockCodeActionProvider, _metadata?: unknown): { dispose(): void } {
+    state.codeActionProviders.push(provider);
+
+    return { dispose: () => undefined };
+  },
+};
+
 export interface WorkspaceFolder {
   uri: Uri;
   name: string;
@@ -282,14 +346,27 @@ export const state = {
   errorMessages: [] as string[],
   inputBoxResult: undefined as string | undefined,
   modalChoice: undefined as string | undefined,
+  /** Answers to the next messages, in order; `modalChoice` answers once they are used up. */
+  modalChoices: [] as (string | undefined)[],
   /** Label of the quick pick item to choose, or undefined to simulate dismissal. */
   quickPickChoice: undefined as string | undefined,
+  /** Labels to choose in the next multi-select quick picks, in order (undefined simulates dismissal). */
+  quickPickSelections: [] as (string[] | undefined)[],
   quickPickItems: [] as { label: string }[],
   copilotModels: [] as { id: string; family: string; vendor: string; name: string; maxInputTokens: number }[],
   openedDocuments: [] as { content: string; language: string }[],
   willSaveHandlers: [] as ((event: WillSaveEvent) => void)[],
   outputChannelLines: [] as string[],
   readDirectoryCalls: 0,
+  /** Paths whose `workspace.fs.writeFile` fails. */
+  failingWrites: new Set<string>(),
+  /** What `workspace.applyEdit` returns; `false` applies nothing, as when VS Code rejects the edit. */
+  applyEditResult: true,
+  /** Published diagnostics, by document uri. */
+  diagnostics: new Map<string, Diagnostic[]>(),
+  codeActionProviders: [] as MockCodeActionProvider[],
+  /** Handlers of `workspace.onDid(Open|Change|Close|Save)TextDocument`. */
+  documentListeners: { open: [], change: [], close: [], save: [] } as Record<'open' | 'change' | 'close' | 'save', ((argument: unknown) => void)[]>,
 };
 
 export function resetMock(): void {
@@ -310,12 +387,19 @@ export function resetMock(): void {
   state.errorMessages = [];
   state.inputBoxResult = undefined;
   state.modalChoice = undefined;
+  state.modalChoices = [];
   state.quickPickChoice = undefined;
+  state.quickPickSelections = [];
   state.quickPickItems = [];
   state.copilotModels = [];
   state.openedDocuments = [];
   state.willSaveHandlers = [];
   state.outputChannelLines = [];
+  state.failingWrites = new Set();
+  state.applyEditResult = true;
+  state.diagnostics = new Map();
+  state.codeActionProviders = [];
+  state.documentListeners = { open: [], change: [], close: [], save: [] };
   window.activeTextEditor = undefined;
 }
 
@@ -373,13 +457,13 @@ export const window = {
   showInformationMessage(message: string, ..._rest: unknown[]): Thenable<string | undefined> {
     state.informationMessages.push(message);
 
-    return Promise.resolve(state.modalChoice);
+    return Promise.resolve(state.modalChoices.length > 0 ? state.modalChoices.shift() : state.modalChoice);
   },
 
   showWarningMessage(message: string, ..._rest: unknown[]): Thenable<string | undefined> {
     state.warningMessages.push(message);
 
-    return Promise.resolve(state.modalChoice);
+    return Promise.resolve(state.modalChoices.length > 0 ? state.modalChoices.shift() : state.modalChoice);
   },
 
   showErrorMessage(message: string): Thenable<string | undefined> {
@@ -392,8 +476,13 @@ export const window = {
     return Promise.resolve(state.inputBoxResult);
   },
 
-  showQuickPick<T extends { label: string }>(items: T[], _options?: unknown): Thenable<T | undefined> {
+  showQuickPick<T extends { label: string }>(items: T[], options?: { canPickMany?: boolean }): Thenable<T | T[] | undefined> {
     state.quickPickItems = items;
+    if (options?.canPickMany) {
+      const labels = state.quickPickSelections.shift();
+
+      return Promise.resolve(labels && items.filter((item) => labels.includes(item.label)));
+    }
 
     return Promise.resolve(items.find((item) => item.label === state.quickPickChoice));
   },
@@ -493,14 +582,52 @@ export const workspace = {
   },
 
   applyEdit(edit: WorkspaceEdit): Thenable<boolean> {
+    if (!state.applyEditResult) {
+      return Promise.resolve(false);
+    }
+
     for (const [key, edits] of edit.edits) {
       const document = state.documents.find((candidate) => candidate.uri.toString() === key);
       if (document) {
         applyRangeEdits(document, edits);
+        continue;
+      }
+
+      // A closed file: VS Code loads it, applies the edit and the caller saves it.
+      const filePath = key.replace(/^file:\/\//, '');
+      const content = state.files.get(filePath);
+      if (content !== undefined) {
+        const loaded = new TextDocument(Uri.file(filePath), content, 'csharp');
+        applyRangeEdits(loaded, edits);
+        state.files.set(filePath, loaded.getText());
       }
     }
 
     return Promise.resolve(true);
+  },
+
+  onDidOpenTextDocument(handler: (document: TextDocument) => void): { dispose(): void } {
+    state.documentListeners.open.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidChangeTextDocument(handler: (event: { document: TextDocument }) => void): { dispose(): void } {
+    state.documentListeners.change.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidCloseTextDocument(handler: (document: TextDocument) => void): { dispose(): void } {
+    state.documentListeners.close.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidSaveTextDocument(handler: (document: TextDocument) => void): { dispose(): void } {
+    state.documentListeners.save.push(handler as (argument: unknown) => void);
+
+    return { dispose: () => undefined };
   },
 
   onWillSaveTextDocument(handler: (event: WillSaveEvent) => void): { dispose(): void } {
@@ -524,7 +651,17 @@ export const workspace = {
     },
 
     writeFile(uri: Uri, content: Uint8Array): Thenable<void> {
+      if (state.failingWrites.has(uri.fsPath)) {
+        return Promise.reject(new Error(`EACCES: permission denied, open '${uri.fsPath}'`));
+      }
+
       state.files.set(uri.fsPath, new TextDecoder().decode(content));
+
+      return Promise.resolve();
+    },
+
+    delete(uri: Uri): Thenable<void> {
+      state.files.delete(uri.fsPath);
 
       return Promise.resolve();
     },

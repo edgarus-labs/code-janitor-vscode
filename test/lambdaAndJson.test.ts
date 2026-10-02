@@ -13,7 +13,7 @@ describe('jsonSerializerOptionsReuseConverter', () => {
         'using System.Text.Json; class C { string M(object value) { return JsonSerializer.Serialize(value, new JsonSerializerOptions()); } }'
       )
     ).toBe(
-      'using System.Text.Json; class C { string M(object value) { return JsonSerializer.Serialize(value, null); } }'
+      'using System.Text.Json; class C { string M(object value) { return JsonSerializer.Serialize(value, default(JsonSerializerOptions)); } }'
     );
   });
 
@@ -32,7 +32,7 @@ describe('jsonSerializerOptionsReuseConverter', () => {
       apply(
         'class C { string M(object value) { return System.Text.Json.JsonSerializer.Serialize(value, new System.Text.Json.JsonSerializerOptions()); } }'
       )
-    ).toBe('class C { string M(object value) { return System.Text.Json.JsonSerializer.Serialize(value, null); } }');
+    ).toBe('class C { string M(object value) { return System.Text.Json.JsonSerializer.Serialize(value, default(System.Text.Json.JsonSerializerOptions)); } }');
   });
 
   it('skips a configured options initializer', () => {

@@ -52,7 +52,7 @@ const LITERAL_TYPES = new Set([
 
 /** Tokens that may appear inside a type argument list; anything else rules out generics. */
 const TYPE_ARGUMENT_TOKENS = new Set([
-  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out',
+  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out', '(', ')',
 ]);
 
 const AFTER_TYPE_ARGUMENTS = new Set([
@@ -604,10 +604,16 @@ class CSharpParser {
     const typeStart = this.pos;
     const type = this.parseType();
 
-    if (this.is('{') || (this.is('identifier') && this.peek(1).type === '{')) {
+    const explicitEvent = this.is('identifier') && this.isExplicitInterfaceSpecifier();
+
+    if (this.is('{') || explicitEvent || (this.is('identifier') && this.peek(1).type === '{')) {
       if (type) {
         children.push(type);
         fields.set('type', type);
+      }
+
+      if (explicitEvent) {
+        children.push(this.parseExplicitInterfaceSpecifier());
       }
 
       const name = this.eat('identifier', children);
@@ -742,6 +748,11 @@ class CSharpParser {
     children.push(type);
     fields.set('type', type);
 
+    // `void IFoo.Bar()` / `int IFoo.this[int i]` - everything up to the final dot is the explicit interface specifier.
+    if (this.is('identifier') && this.isExplicitInterfaceSpecifier()) {
+      children.push(this.parseExplicitInterfaceSpecifier());
+    }
+
     if (this.is('this')) {
       this.take(children);
 
@@ -754,11 +765,6 @@ class CSharpParser {
       this.parseAccessorsOrArrow(children, fields);
 
       return this.finish('indexer_declaration', true, startToken, children, fields);
-    }
-
-    // `void IFoo.Bar()` - everything up to the final dot is the explicit interface specifier.
-    if (this.is('identifier') && this.isExplicitInterfaceSpecifier()) {
-      children.push(this.parseExplicitInterfaceSpecifier());
     }
 
     const name = this.eat('identifier', children);
@@ -814,25 +820,14 @@ class CSharpParser {
     return this.finish('field_declaration', true, startToken, children, fields);
   }
 
+  /** `IFoo.Bar` or `IFoo<T>.Bar`: a (generic) name followed by a dot. */
   private isExplicitInterfaceSpecifier(): boolean {
-    let offset = 0;
+    const save = this.pos;
+    this.pos++;
+    const end = this.is('<') ? this.typeArgumentListEnd() : this.pos - 1;
+    this.pos = save;
 
-    while (this.peek(offset).type === 'identifier') {
-      const next = this.peek(offset + 1);
-
-      if (next.type === '.') {
-        return true;
-      }
-
-      if (next.type === '<') {
-        offset += 1;
-        continue;
-      }
-
-      return false;
-    }
-
-    return false;
+    return end >= 0 && this.tokens[end + 1]?.type === '.';
   }
 
   private parseExplicitInterfaceSpecifier(): Node {
@@ -1293,10 +1288,21 @@ class CSharpParser {
    */
   private typeArgumentListEnd(): number {
     let depth = 0;
+    // Parentheses only appear around tuple types, so they must balance inside the list.
+    let parentheses = 0;
     let i = this.pos;
 
     for (; i < this.tokens.length; i++) {
       const type = this.tokens[i].type;
+
+      if (type === '(' || type === ')') {
+        parentheses += type === '(' ? 1 : -1;
+        if (parentheses < 0) {
+          return -1;
+        }
+
+        continue;
+      }
 
       if (type === '<') {
         depth++;
@@ -1317,7 +1323,7 @@ class CSharpParser {
       }
     }
 
-    if (depth !== 0 || i >= this.tokens.length) {
+    if (depth !== 0 || parentheses !== 0 || i >= this.tokens.length) {
       return -1;
     }
 
@@ -1599,16 +1605,12 @@ class CSharpParser {
       return;
     }
 
-    let depth = 0;
+    this.take(children);
+    let depth = 1;
 
-    do {
-      if (this.is('(')) {
-        depth++;
-      } else if (this.is(')')) {
-        depth--;
-      }
-
-      if (depth === 1 && !this.is('(')) {
+    while (depth > 0 && !this.is('end')) {
+      // At the header's own level every part is parsed, including one that starts with `(`.
+      if (depth === 1) {
         const before = this.pos;
         const inner = this.parseHeaderContent();
 
@@ -1622,8 +1624,14 @@ class CSharpParser {
         }
       }
 
+      if (this.is('(')) {
+        depth++;
+      } else if (this.is(')')) {
+        depth--;
+      }
+
       this.take(children);
-    } while (depth > 0 && !this.is('end'));
+    }
   }
 
   /**
@@ -1637,7 +1645,8 @@ class CSharpParser {
 
     const save = this.pos;
     const declaration = this.tryParseVariableDeclaration();
-    if (declaration) {
+    // `(await f(x))` is not the declaration `await f`: a header declaration ends the header part.
+    if (declaration && (this.is(')') || this.is(';') || this.is('in'))) {
       return declaration;
     }
 
@@ -2224,6 +2233,15 @@ class CSharpParser {
         continue;
       }
 
+      // `expression with { Member = value }`: `with` is a contextual keyword, so it is only one here.
+      if (this.isContextual('with') && this.peek(1).type === '{') {
+        const startIndex = expression.startIndex;
+        const keyword = this.leaf();
+        const initializer = this.parseInitializerExpression();
+        expression = this.makeNode('with_expression', true, startIndex, initializer.endIndex, [expression, keyword, initializer]);
+        continue;
+      }
+
       if (type === 'switch' && this.peek(1).type === '{') {
         const startIndex = expression.startIndex;
         const children = [expression, this.leaf()];
@@ -2289,6 +2307,20 @@ class CSharpParser {
 
     if (type === 'delegate') {
       return this.parseAnonymousMethod();
+    }
+
+    // `static x => ...`, `static async (a) => ...`, `static delegate (...) { ... }` (C# 9): the
+    // modifier becomes the first token of the anonymous function itself.
+    if (type === 'static' && (this.peek(1).type === '(' || this.peek(1).type === 'identifier' || this.peek(1).type === 'delegate')) {
+      const save = this.pos;
+      const startToken = this.pos;
+      const staticToken = this.leaf();
+      const inner = this.parsePrimary();
+      if (inner && (inner.type === 'lambda_expression' || inner.type === 'anonymous_method_expression')) {
+        return this.finish(inner.type, true, startToken, [staticToken, ...inner.children], inner.fields as Map<string, Node> | undefined);
+      }
+
+      this.pos = save;
     }
 
     if (type === 'this' || type === 'base') {
@@ -3119,7 +3151,9 @@ class CSharpParser {
     const save = this.pos;
     const type = this.parseType();
 
-    if (!type || !this.is('identifier')) {
+    // The declaration is the whole argument: `async x => ...` and `await f(x)` are not `T name`.
+    const end = this.peek(1).type;
+    if (!type || !this.is('identifier') || (end !== ',' && end !== ')' && end !== ']')) {
       this.pos = save;
 
       return undefined;

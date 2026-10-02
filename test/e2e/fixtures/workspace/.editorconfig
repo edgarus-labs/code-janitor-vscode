@@ -1,0 +1,3 @@
+# The e2e fixture workspace: stops the lookup here, so the .editorconfig of the repository
+# (or of a developer checkout above it) never changes what the tests see.
+root = true

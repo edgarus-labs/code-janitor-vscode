@@ -735,8 +735,29 @@ describe('parseCSharpSource - broad coverage', () => {
   it('parses with expression', () => {
     const root = parse('class C { void M() { var x = record with { Name = "B" }; } }');
 
-    // The parser may not have a dedicated with_expression node
-    expect(root.type).toBe('compilation_unit');
+    const withExpression = root.descendantsOfType('with_expression')[0];
+    expect(withExpression?.text).toBe('record with { Name = "B" }');
+    expect(withExpression?.namedChildren.map((child) => child.type)).toEqual(['identifier', 'identifier', 'initializer_expression']);
+  });
+
+  it('keeps a with expression inside a lambda body, with its initializer', () => {
+    const root = parse('class C { void M() { Update(current => current with { A = tracked, B = x.Select(i => i) }); } }');
+
+    const lambda = root.descendantsOfType('lambda_expression')[0];
+    expect(lambda?.text).toBe('current => current with { A = tracked, B = x.Select(i => i) }');
+    expect(root.descendantsOfType('argument').filter((argument) => argument.parent?.parent?.type === 'invocation_expression' && argument.parent.parent.childForFieldName('function')?.text === 'Update')).toHaveLength(1);
+  });
+
+  it('parses a with expression on a call result and chains of with', () => {
+    const root = parse('class C { void M() { var x = Make() with { A = 1 } with { B = 2 }; } }');
+
+    expect(root.descendantsOfType('with_expression')).toHaveLength(2);
+  });
+
+  it('does not take an identifier named with for a with expression', () => {
+    const root = parse('class C { void M(int with) { var x = with + 1; } }');
+
+    expect(root.descendantsOfType('with_expression')).toHaveLength(0);
   });
 
   it('parses init accessor', () => {

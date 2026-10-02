@@ -20,6 +20,17 @@ views, member reorganization and third-party IDE integrations are outside this p
 - `src/cleanup/`: cleanup settings, ordered transformations, lexical scanning and EditorConfig support.
 - `src/cleanup/syntax/`: C# tokenizer, syntax node model and recursive-descent parser.
 - `src/cleanup/transformations/`: cleanup rules expressed as source-text edits.
+- `src/cleanup/naming/`: `.editorconfig` naming rules - Roslyn naming style/rule ports, the
+  syntactic symbol and scope model, and the safe in-file renamer.
+- `src/cleanup/analysis.ts`: cleanup in analyze mode - runs the pipeline step by step and locates
+  each rule's changes (`lineDiff.ts` hunks mapped back to the original lines) and the violations
+  reported, and fixes one rule or one occurrence (kept only when the rest of the rule's fix still
+  gives the same file). Used by `commands/diagnostics.ts` (diagnostics, quick fixes, debounced and
+  versioned per document) and `src/cli/check.ts` (check mode, `scripts/check.ts`, no VS Code; the
+  `.codejanitor` reader is `cleanup/repositoryOverrides.ts` for that reason).
+- `src/cleanup/changedLines.ts` and `gitBaseline.ts`: `onlyChangedLines` - the lines changed since
+  `git show HEAD:<path>`, and a pipeline run that keeps each step's (or rule's) hunks on those
+  lines, skipping a unit whose change spans unchanged lines or whose dropped hunks it needs.
 - `src/ai/`: GitHub Copilot and custom endpoint clients.
 - `src/commands/`: commands, settings integration and cleanup-on-save.
 - `src/extension.ts`: extension activation.
@@ -30,6 +41,118 @@ The parser supports the transformations implemented here; it is not a replacemen
 compiler or semantic model. Text edits preserve surrounding source formatting. When changing a
 transformation, test comments, literals, preprocessor directives and line endings as well as the
 intended syntax. Document intentional differences from the Visual Studio implementation.
+
+### `.editorconfig`-driven categories
+
+`src/cleanup/editorconfig.ts` resolves the `.editorconfig` properties of a file and the effective
+severity of a diagnostic. `src/cleanup/editorConfigRegistry.ts` is the single registry of the
+settings cleanup applies and when each takes effect (always, while IDE0055 is enforced, or while
+the option's diagnostic is enforced); it lists the file's unsupported settings and tells
+`buildPipeline` which settings the `.editorconfig` decides. For those, the step of the conflicting
+Code Janitor setting is skipped or adjusted (the mapping is in the README). The naming, code-style
+and formatting categories run at the end of `buildPipeline` (`runCleanup.ts`), in that order,
+after every other step, whenever the file has `.editorconfig` properties. Issues reach the
+commands as `EditorConfigIssue`s (`{ kind, filePath, detail }`): `unresolved` violations
+(counted in the cleanup summary) and `unsupported` settings. `editorConfigIssueLog.ts` logs them
+for one run: violations per file, each unsupported setting once with its file count, and for
+single-file runs (cleanup on save, preview, Cleanup Active File) only for `.editorconfig`
+configurations not yet reported in the session. The preview (`pipeline.preview`) can leave out
+steps by index and `.editorconfig` rules by diagnostic id: the code-style converter implements
+`SourceTransformation.applyRules`, which reports how many places each rule changed. `lineDiff.ts`
+counts those places.
+
+- `oneTypePerFile.ts`: `SA1402`/`MA0048`/`SA1649` (explicit `dotnet_diagnostic` severity only).
+  Not a pipeline step: it creates files, so `commands/cleanupCore.ts` (`splitTypesForEditorConfig`)
+  runs it before the pipeline in the cleanup commands, using `topLevelTypeSplit.ts` with
+  `movableKinds` and `refuseFileNameCollisions`, and cleans the created files like the rest; a file
+  and its new files are written all or nothing (`writeFileGroup`). Cleanup on save only reports
+  (`reportOneTypePerFileOnSave`): VS Code can drop a save's edits, so it never creates files.
+- `transformations/editorConfigNaming.ts`: IDE1006. `naming/namingRules.ts` parses and orders
+  the rules (Roslyn `EditorConfigNamingStyleParser`), `naming/namingStyle.ts` checks names and
+  derives the fixed name (Roslyn `NamingStyle`), `naming/sourceModel.ts` collects declarations,
+  scopes and every identifier occurrence with its role, and `naming/renamer.ts` plans a rename
+  that is refused unless every occurrence in the symbol's scope is understood. Violations are
+  fixed in passes over the re-parsed text until none can be fixed; the rest are reported.
+  With `renamePublicSymbolsAcrossWorkspace`, `naming/workspaceScope.ts` reads the workspace's
+  project files (files, `ProjectReference`s, packaging, `InternalsVisibleTo`) and
+  `naming/workspaceRenamer.ts` plans the renames of types and non-private members across the
+  declaring project and the projects referencing it; `commands/workspaceRename.ts` previews them
+  and applies them as one WorkspaceEdit after batch cleanup.
+- `transformations/editorConfigCodeStyle.ts`: code-style rules in a fixed order, reusing the
+  existing converters (file-scoped namespaces, explicit access modifiers, readonly fields, `out`
+  variable inlining, using placement). Rule modules: `editorConfigQualification.ts` (`this.`),
+  `editorConfigVarPreference.ts` (`var`), `editorConfigBraces.ts` (braces),
+  `editorConfigExpressionPreferences.ts` (target-typed `new`, `default`, index/range, `is null`,
+  `nameof`, UTF-8 literals, implicit lambdas), `editorConfigStatementPreferences.ts` (`throw`
+  expressions, tuple swap, local functions, deconstruction, conditional assignment/return,
+  object and collection initializers, switch expressions, `is` patterns over `as`/casts), `editorConfigTypePreferences.ts` (`System.Threading.Lock`,
+  primary constructors), `editorConfigOperatorPreferences.ts` (parentheses, predefined types,
+  compound assignment, simplified booleans, `??`, `?.`, delegate calls, `is null`/`not`/combined
+  patterns, inferred names, explicit tuple names, simplified interpolation, extended property
+  patterns, method groups), `editorConfigPrecedence.ts` (shared precedence and null-check helpers), `editorConfigMemberPreferences.ts` (modifier order, `readonly`
+  structs and struct members, `static` local functions, auto properties; namespace/folder and unused parameters
+  reported) and `editorConfigExpressionBodies.ts` (expression-bodied members and lambdas),
+  `editorConfigSimplificationRules.ts` (IDE0035, IDE0080, IDE0082, IDE0100, IDE0110; IDE0050,
+  IDE0070, IDE0072, IDE0076, IDE0077 reported), `editorConfigCollectionExpressions.ts`
+  (IDE0300 - IDE0306), `editorConfigLanguageRules.ts` (IDE0001/0002, IDE0058/0059, IDE0064,
+  IDE0120/0121, IDE0240/0241, IDE0260, IDE0270, IDE0280, IDE0320, IDE0360, IDE0380; IDE0079,
+  IDE0210/0211, IDE0220, IDE0390/0391 reported) and `editorConfigBlankLineRules.ts` (IDE2000 -
+  IDE2006, run last). The rules run in passes until one changes nothing (at most three), and only
+  the last pass reports.
+  `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks, C# language
+  version, `<Nullable>` context and whether the runtime has `System.Index`/`Range`) for rules that
+  depend on it, through the static evaluator of `msbuildProperties.ts` (`Directory.Build.props`,
+  the project, resolvable imports, `Directory.Build.targets`; a value a `Condition`, `<Choose>`,
+  unknown import or property decides is unknown, never guessed); a rule whose rewrite needs a newer C# version or runtime is skipped and reported.
+  `typeFacts.ts` holds what the file proves about a type (reference types without `operator ==`,
+  non-nullable value types, plain null comparisons, variables, the written delegate type of a
+  lambda), shared by the code-style rules and the legacy converters.
+- `transformations/editorConfigQualityRules.ts`: the code-quality (CA) rules and the IDE rules
+  without a code-style option (`SUPPORTED_DIAGNOSTICS` in the registry), run by the code-style
+  stage before the member preferences, each gated on its diagnostic's severity (including the
+  category bulk severity). `editorConfigQualityRulesMembers.ts` (CA1822 `static`, IDE0051/IDE0052
+  unused/unread private members, repeated until stable), `editorConfigQualityRulesSealing.ts`
+  (CA1852), `editorConfigQualityRulesExpressions.ts` (CA1805, CA1825, CA1827-CA1829, CA1860, CA1507,
+  CA1834, CA1847, CA1865-CA1867, CA2249, IDE0004, IDE0005), `editorConfigQualityRulesSupport.ts`
+  (suppressions, generated code, `dotnet_code_quality` options, visibility, target-framework API
+  checks, declared-type lookup on the naming `SourceModel`) and `editorConfigQualityRulesProject.ts`
+  (facts from the project's other C# files - derived types, member-access names, interfaces,
+  `InternalsVisibleTo` - cached per file version; a project whose files cannot all be listed or read
+  makes CA1822/CA1852 report instead of fixing). `editorConfigQualityRulesCollections.ts` (CA1836,
+  CA1841, CA1854, CA1864, CA1868), `editorConfigQualityRulesStrings.ts` (CA1858, CA1862; CA1305,
+  CA1307, CA1310 reported) and `editorConfigQualityRulesCalls.ts` (CA1861, CA1869 - both add
+  `private static readonly` fields named by the naming rules -, CA2016, CA2263).
+- Severity sources: `editorconfig.ts` `loadEditorConfigProperties` merges the `.editorconfig` entries
+  over the project's global AnalyzerConfig files and attaches the project's `ProjectAnalysis`
+  (`analyzerConfig.ts`: `.globalconfig`/`GlobalAnalyzerConfigFiles` resolved by `global_level`;
+  `NoWarn`, `WarningsAsErrors`, `TreatWarningsAsErrors`, `CodeAnalysisTreatWarningsAsErrors`;
+  `AnalysisLevel`/`AnalysisMode` and their per-category variants). `msbuildProperties.ts` reads the
+  unconditional properties and items of the `.csproj` and the nearest `Directory.Build.props`/
+  `.targets`. `analyzerRules.ts` holds the CA rules' category, default severity and the SDK rule sets
+  (copied from .NET SDK 10.0.112 `analysislevel_*.globalconfig` and `analysislevelstyle_*`); the
+  registry's `SUPPORTED_DIAGNOSTICS` takes the CA entries from it. `resolveDiagnosticSeverity`
+  applies them in the compiler's order; `isDiagnosticEnforced` ignores a CA rule's implicit default
+  severity, so cleanup only rewrites what is enabled explicitly.
+- `transformations/editorConfigFormatting.ts`: core EditorConfig properties and using order, and the
+  C# formatting options gated on IDE0055, in this order: `editorConfigWrapping.ts` (single-line
+  blocks and statements, initializer and anonymous-type members), brace and keyword new lines,
+  `editorConfigSpacing.ts` (every `csharp_space_*` option, one horizontal gap at a time), query
+  clauses (aligned with `from` once spacing is final) and `editorConfigIndentation.ts` (re-indents
+  each line from the syntax tree to `indent_size`, following the `csharp_indent_*` options).
+- `transformations/editorConfigSupport.ts`: option/severity reading, indentation and line helpers,
+  and parse-error detection shared by the rules.
+
+Differences from the Visual Studio implementation, which applies Roslyn's code fixes: rules are
+implemented natively on the syntax tree, a subset of options is supported (see the README), and a
+rewrite happens only when it is certain from syntax. Otherwise the violation is passed to the
+pipeline's reporter, which logs it to the output channel and counts it in the cleanup summary.
+Members the parser only partially understood (`hasParseErrors`) are skipped, and a rule whose result
+parses worse than its input is discarded. Reported line numbers refer to the text at that point of
+the cleanup, after earlier steps.
+
+The Visual Studio naming fix renames a symbol across the solution; here a symbol is renamed only
+when all its references are in the file and each one is identified from the syntax (so types,
+non-private members and members of partial types are always reported, never renamed).
 
 ## Local development
 
@@ -78,6 +201,21 @@ source directory you are authorized to inspect:
 ```sh
 npm run smoke-test -- <source-directory>
 ```
+
+`npm run generate:editorconfig -- [path]` writes an `.editorconfig` (default `./.editorconfig`)
+with every C# code-style, formatting and naming option Microsoft documents at its documented
+default. Its severities come from the `.editorconfig` registry: what cleanup applies is a
+`warning`, the other documented style rules are `suggestion`s. The option data and its
+documentation links are in `scripts/editorConfigTemplate.ts`; `test/editorConfigTemplate.test.ts`
+checks that the file makes every supported setting take effect.
+
+`npm run verify:compile -- [<folder>[=<project file>] ...]` is the compile oracle (needs the .NET
+SDK; development only, the extension never runs .NET). For each project - by default the corpus
+under `test/oracle`, C# written to be tricky for the rules - it builds a copy with the generated
+`.editorconfig`, runs cleanup on it (one type per file included), builds again and fails on every
+new compiler error. For new errors it runs cleanup once per rule (each diagnostic of the registry,
+each boolean setting) and lists the rules that break the build. Add a case to `test/oracle` for
+every construct a rule mishandled.
 
 ## AI behavior
 

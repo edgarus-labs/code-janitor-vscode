@@ -1,5 +1,6 @@
 import { Node, TextEdit, applyEdits, parseCSharp, walk } from '../parser';
 import { CleanupSettings, SourceTransformation } from '../types';
+import { hasParseErrors, isRecoveredNode } from './editorConfigSupport';
 
 const TYPE_DECLARATIONS = new Set([
   'class_declaration',
@@ -41,9 +42,26 @@ export function createExplicitAccessModifierConverter(settings: AccessSettings):
       try {
         const edits: TextEdit[] = [];
 
+        // In a body the parser could not fully read, members can be misread (the modifier would
+        // land inside a type or name), so none of them is changed.
+        const unreadableBodies = new Map<number, boolean>();
+        const unreadable = (body: Node | null): boolean => {
+          if (!body) {
+            return false;
+          }
+
+          let result = unreadableBodies.get(body.startIndex);
+          if (result === undefined) {
+            result = body.namedChildren.some(isRecoveredNode);
+            unreadableBodies.set(body.startIndex, result);
+          }
+
+          return result;
+        };
+
         for (const node of walk(tree.rootNode)) {
           const insertion = accessModifierFor(node, settings);
-          if (!insertion) {
+          if (!insertion || hasParseErrors(node) || unreadable(node.parent)) {
             continue;
           }
 
@@ -62,7 +80,7 @@ export function createExplicitAccessModifierConverter(settings: AccessSettings):
 }
 
 function accessModifierFor(node: Node, settings: AccessSettings): string | undefined {
-  if (hasAnyModifier(node, ACCESS_MODIFIERS)) {
+  if (hasAnyModifier(node, ACCESS_MODIFIERS) || isFileLocalType(node)) {
     return undefined;
   }
 
@@ -211,6 +229,27 @@ function isInNonInterfaceType(node: Node): boolean {
   return owner !== undefined && owner.type !== 'interface_declaration';
 }
 
+/** Nested types default to `private`, except in interfaces where every member is `public`. */
 function defaultAccessFor(node: Node): string {
-  return declaringType(node) !== undefined ? 'private' : 'internal';
+  const owner = declaringType(node);
+  if (!owner) {
+    return 'internal';
+  }
+
+  return owner.type === 'interface_declaration' ? 'public' : 'private';
+}
+
+/**
+ * `file class C` (C# 11) has no access modifier and must not get one. The parser does not know the
+ * `file` modifier and leaves it behind as an unterminated field declaration in front of the type.
+ */
+function isFileLocalType(node: Node): boolean {
+  const previous = node.previousNamedSibling;
+
+  return (
+    TYPE_DECLARATIONS.has(node.type) &&
+    previous?.type === 'field_declaration' &&
+    /^file\b/.test(previous.text) &&
+    !previous.text.trimEnd().endsWith(';')
+  );
 }

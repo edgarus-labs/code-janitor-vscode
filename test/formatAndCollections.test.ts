@@ -149,3 +149,45 @@ describe('collectionExpressionConverter', () => {
     expect(collectionExpressionConverter.name).toBe('Collection Expression');
   });
 });
+
+describe('stringInterpolationConverter keeps the behavior of string.Format', () => {
+  const apply = (body: string): string => stringInterpolationConverter.apply(`class C { string M(bool f, int n) => ${body}; int A() => 1; int B() => 2; }`);
+  const unchanged = (body: string): void => {
+    const input = `class C { string M(bool f, int n) => ${body}; int A() => 1; int B() => 2; }`;
+
+    expect(stringInterpolationConverter.apply(input)).toBe(input);
+  };
+
+  it('parenthesizes a conditional expression: its colon would start a format specifier', () => {
+    expect(apply('string.Format("{0}", f ? "a" : "b")')).toContain('$"{(f ? "a" : "b")}"');
+  });
+
+  it('keeps the alignment and format of a parenthesized conditional', () => {
+    expect(apply('string.Format("{0,5:N1}", f ? 1.5 : 2.5)')).toContain('$"{(f ? 1.5 : 2.5),5:N1}"');
+  });
+
+  it.each([
+    ['an argument that is used twice', 'string.Format("{0}-{0}", A())'],
+    ['arguments used out of order', 'string.Format("{1}{0}", A(), B())'],
+    ['an argument that is never used', 'string.Format("{0}", 1, B())'],
+    ['an object creation used twice', 'string.Format("{0}{0}", new object())'],
+    ['an assignment used twice', 'string.Format("{0}{0}", n = 2)'],
+  ])('leaves %s alone: the call would run a different number of times or in another order', (_name, body) => {
+    unchanged(body);
+  });
+
+  it('still converts arguments that run once, in order', () => {
+    expect(apply('string.Format("{0}{1}", A(), B())')).toContain('$"{A()}{B()}"');
+    expect(apply('string.Format("{0}", n++)')).toContain('$"{n++}"');
+  });
+
+  it('converts a pure argument that is used twice, out of order or not at all', () => {
+    expect(apply('string.Format("{0}-{0}", n)')).toContain('$"{n}-{n}"');
+    expect(apply('string.Format("{1}{0}", n, f)')).toContain('$"{f}{n}"');
+    expect(apply('string.Format("{0}", n, 2)')).toContain('$"{n}"');
+  });
+
+  it('leaves a single array argument alone: it is the params array, not one value', () => {
+    unchanged('string.Format("{0}{1}", new object[] { 1, 2 })');
+  });
+});

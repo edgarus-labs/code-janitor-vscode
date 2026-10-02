@@ -44,8 +44,9 @@ export const returnThrowBlankLinePaddingConverter: SourceTransformation = {
       return source;
     }
 
-    const newline = source.includes('\r\n') ? '\r\n' : '\n';
-    const lines = source.split(newline);
+    // Split where the syntax tree counts rows ('\n'); with CRLF endings each line keeps its '\r'.
+    const blankLine = source.includes('\r\n') ? '\r' : '';
+    const lines = source.split('\n');
 
     for (const lineIndex of candidateLines.sort((a, b) => b - a)) {
       if (lineIndex <= 0 || lineIndex > lines.length - 1) {
@@ -56,10 +57,10 @@ export const returnThrowBlankLinePaddingConverter: SourceTransformation = {
         continue;
       }
 
-      lines.splice(lineIndex, 0, '');
+      lines.splice(lineIndex, 0, blankLine);
     }
 
-    return lines.join(newline);
+    return lines.join('\n');
   },
 };
 

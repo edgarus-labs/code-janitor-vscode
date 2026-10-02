@@ -1,10 +1,15 @@
-import { SourceTransformation } from './types';
+import { countChangedRegions } from './lineDiff';
+import { RuleChange, SourceTransformation } from './types';
 
 export interface PreviewStep {
   readonly index: number;
   readonly name: string;
   readonly included: boolean;
   readonly changed: boolean;
+  /** The number of separate places the step changed. */
+  readonly changes: number;
+  /** For a step made of several rules, what each rule did. */
+  readonly rules?: readonly RuleChange[];
 }
 
 export class PreviewResult {
@@ -47,9 +52,13 @@ export class SourceTransformationPipeline {
     return this.execute(source);
   }
 
-  preview(source: string, excludedTransformations?: ReadonlySet<number>): PreviewResult {
+  /**
+   * Runs the pipeline without the steps at `excludedTransformations` and without the rules whose
+   * id is in `excludedRules` (for steps made of rules), telling what each step changed.
+   */
+  preview(source: string, excludedTransformations?: ReadonlySet<number>, excludedRules: ReadonlySet<string> = new Set()): PreviewResult {
     const steps: PreviewStep[] = [];
-    const updatedSource = this.execute(source, excludedTransformations, steps);
+    const updatedSource = this.execute(source, excludedTransformations, { steps, excludedRules });
 
     return new PreviewResult(source, updatedSource, steps);
   }
@@ -57,7 +66,7 @@ export class SourceTransformationPipeline {
   private execute(
     source: string,
     excludedTransformations?: ReadonlySet<number>,
-    steps?: PreviewStep[]
+    preview?: { steps: PreviewStep[]; excludedRules: ReadonlySet<string> }
   ): string {
     if (!source) {
       return source;
@@ -67,12 +76,20 @@ export class SourceTransformationPipeline {
     for (let index = 0; index < this.transformations.length; index++) {
       const transformation = this.transformations[index];
       const included = excludedTransformations?.has(index) !== true;
-      const updated = included ? transformation.apply(current) ?? current : current;
-      steps?.push({
+      if (!preview) {
+        current = included ? transformation.apply(current) ?? current : current;
+        continue;
+      }
+
+      const ruled = included && transformation.applyRules ? transformation.applyRules(current, preview.excludedRules) : undefined;
+      const updated = ruled ? ruled.output : included ? transformation.apply(current) ?? current : current;
+      preview.steps.push({
         index,
         name: transformation.name,
         included,
         changed: current !== updated,
+        changes: countChangedRegions(current, updated),
+        ...(ruled ? { rules: ruled.rules } : {}),
       });
       current = updated;
     }

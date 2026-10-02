@@ -110,9 +110,16 @@ describe('nullCheckPatternMatchingConverter', () => {
     expect(apply(input)).toBe(input);
   });
 
-  it('converts member access targets', () => {
-    expect(apply('class C { bool M(C c) { return c.Inner.Value != null; } }')).toBe(
-      'class C { bool M(C c) { return c.Inner.Value is not null; } }'
+  it('leaves targets whose type is unknown or may overload == unchanged', () => {
+    const input =
+      'class V { public static bool operator ==(V a, V b) => true; public static bool operator !=(V a, V b) => false; }\nclass C { bool M(C c, V v, int i) { return c.Inner.Value != null || v == null || i == null; } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('converts fields and nullable value types', () => {
+    expect(apply('class C { string _name; bool M(int? n) { return this._name != null && n == null; } }')).toBe(
+      'class C { string _name; bool M(int? n) { return this._name is not null && n is null; } }'
     );
   });
 
@@ -149,20 +156,20 @@ describe('nullCheckPatternMatchingConverter', () => {
   });
 
   it('converts a block-bodied lambda even when passed to .Where(...)', () => {
-    expect(apply('class C { void M() { var r = source.Where(x => { return x.Name != null; }); } }')).toBe(
-      'class C { void M() { var r = source.Where(x => { return x.Name is not null; }); } }'
+    expect(apply('class C { void M(string s) { var r = source.Where(x => { return s != null; }); } }')).toBe(
+      'class C { void M(string s) { var r = source.Where(x => { return s is not null; }); } }'
     );
   });
 
   it('converts an async lambda even though it has an expression body', () => {
-    expect(apply('class C { void M() { Func<Foo, Task<bool>> f = async x => x.Bar != null; } }')).toBe(
-      'class C { void M() { Func<Foo, Task<bool>> f = async x => x.Bar is not null; } }'
+    expect(apply('class C { void M(string s) { Func<Foo, Task<bool>> f = async x => s != null; } }')).toBe(
+      'class C { void M(string s) { Func<Foo, Task<bool>> f = async x => s is not null; } }'
     );
   });
 
   it('converts an anonymous method regardless of what it is passed to', () => {
-    expect(apply('class C { void M() { source.Where(delegate(Foo x) { return x.Name != null; }); } }')).toBe(
-      'class C { void M() { source.Where(delegate(Foo x) { return x.Name is not null; }); } }'
+    expect(apply('class C { void M(string s) { source.Where(delegate(Foo x) { return s != null; }); } }')).toBe(
+      'class C { void M(string s) { source.Where(delegate(Foo x) { return s is not null; }); } }'
     );
   });
 
@@ -186,14 +193,20 @@ describe('nullCheckPatternMatchingConverter', () => {
   });
 
   it('still converts a null check inside a lambda body that is not passed to a query method', () => {
-    expect(apply('class C { void M() { Action<object> a = x => { var ok = x != null; }; } }')).toBe(
-      'class C { void M() { Action<object> a = x => { var ok = x is not null; }; } }'
+    expect(apply('class C { void M() { Action<object> a = (object x) => { var ok = x != null; }; } }')).toBe(
+      'class C { void M() { Action<object> a = (object x) => { var ok = x is not null; }; } }'
     );
   });
 });
 
 describe('returnThrowBlankLinePaddingConverter', () => {
   const apply = (source: string) => returnThrowBlankLinePaddingConverter.apply(source);
+
+  it('pads the return itself in a CRLF file whose verbatim strings hold bare LF line breaks', () => {
+    const input = 'class C\r\n{\r\n    string M()\r\n    {\r\n        string s = @"\na\nb";\r\n        return s;\r\n    }\r\n}\r\n';
+
+    expect(apply(input)).toBe('class C\r\n{\r\n    string M()\r\n    {\r\n        string s = @"\na\nb";\r\n\r\n        return s;\r\n    }\r\n}\r\n');
+  });
 
   it('inserts a blank line before a return preceded by other statements', () => {
     const input = 'class C\r\n{\r\n    int M()\r\n    {\r\n        int x = 1;\r\n        return x;\r\n    }\r\n}\r\n';

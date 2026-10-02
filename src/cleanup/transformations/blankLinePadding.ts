@@ -26,12 +26,16 @@ export function createBlankLinePaddingConverter(settings: PaddingSettings): Sour
       }
 
       const newline = source.includes('\r\n') ? '\r\n' : source.includes('\r') ? '\r' : '\n';
-      const lines = source.split(newline);
+      // Lines are split where the syntax tree counts rows (at '\n'): with CRLF endings each line keeps
+      // its '\r', so a file whose verbatim strings hold bare LF breaks still lines up with the tree.
+      const separator = newline === '\r' ? '\r' : '\n';
+      const blankLine = newline === '\r\n' ? '\r' : '';
+      const lines = source.split(separator);
       const wantBlankBefore = new Set<number>();
 
       const tree = parseCSharp(source);
       try {
-        collectDeclarationPadding(tree.rootNode, lines.length, settings, wantBlankBefore);
+        collectDeclarationPadding(tree.rootNode, lines, settings, wantBlankBefore);
         collectUsingBlockPadding(tree.rootNode, settings, wantBlankBefore);
       } finally {
         tree.delete();
@@ -41,11 +45,11 @@ export function createBlankLinePaddingConverter(settings: PaddingSettings): Sour
 
       for (const index of [...wantBlankBefore].sort((a, b) => b - a)) {
         if (!shouldSkipInsertion(lines, index)) {
-          lines.splice(index, 0, '');
+          lines.splice(index, 0, blankLine);
         }
       }
 
-      let result = lines.join(newline);
+      let result = lines.join(separator);
 
       if (settings.insertBlankLinePaddingBeforeCaseStatements) {
         result = result.replace(CASE_STATEMENT, (_m, indent, statement, caseIndent, caseKeyword) =>
@@ -146,7 +150,7 @@ function paddingFor(node: Node, settings: PaddingSettings): Padding | undefined 
 
 function collectDeclarationPadding(
   root: Node,
-  lineCount: number,
+  lines: readonly string[],
   settings: PaddingSettings,
   wantBlankBefore: Set<number>
 ): void {
@@ -156,14 +160,14 @@ function collectDeclarationPadding(
       continue;
     }
 
-    const startLine = paddingStartLine(node);
+    const startLine = paddingStartLine(node, lines);
     const endLine = node.endPosition.row;
 
     if (padding.before && startLine > 0) {
       wantBlankBefore.add(startLine);
     }
 
-    if (padding.after && endLine + 1 < lineCount) {
+    if (padding.after && endLine + 1 < lines.length) {
       wantBlankBefore.add(endLine + 1);
     }
   }
@@ -179,19 +183,24 @@ function* walkDeclarations(node: Node): Generator<Node> {
 }
 
 /**
- * A documentation comment belongs to the member below it, so padding goes above the comment rather
- * than between the comment and the declaration.
+ * Comments on the lines right above a member (documentation or not) belong to it, so padding goes
+ * above them rather than between them and the declaration. A comment that trails code on its line
+ * belongs to that code.
  */
-function paddingStartLine(node: Node): number {
-  let firstDocLine = node.startPosition.row;
+function paddingStartLine(node: Node, lines: readonly string[]): number {
+  let start = node.startPosition.row;
 
-  for (let sibling = node.previousNamedSibling; sibling?.type === 'comment'; sibling = sibling.previousNamedSibling) {
-    if (sibling.text.startsWith('///') || sibling.text.startsWith('/**')) {
-      firstDocLine = sibling.startPosition.row;
-    }
+  for (
+    let sibling = node.previousNamedSibling;
+    sibling?.type === 'comment' &&
+    sibling.endPosition.row === start - 1 &&
+    lines[sibling.startPosition.row].slice(0, sibling.startPosition.column).trim() === '';
+    sibling = sibling.previousNamedSibling
+  ) {
+    start = sibling.startPosition.row;
   }
 
-  return firstDocLine;
+  return start;
 }
 
 function collectRegionDirectivePadding(
@@ -286,7 +295,7 @@ function shouldSkipInsertion(lines: readonly string[], index: number): boolean {
     return true;
   }
 
-  if (!lines[index - 1].trim()) {
+  if (!lines[index - 1].trim() || !lines[index].trim()) {
     return true;
   }
 

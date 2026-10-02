@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile oracle corpus: the newest C# on netstandard2.0, whose library lacks System.Index/Range,
+       string.Contains(char), StartsWith(char), System.Threading.Lock and friends. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>OldFramework</RootNamespace>
+  </PropertyGroup>
+</Project>

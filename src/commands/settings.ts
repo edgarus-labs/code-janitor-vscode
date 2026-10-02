@@ -1,16 +1,14 @@
 import * as vscode from 'vscode';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { XmlDocRunOptions } from '../cleanup/xmlDocumentation';
+import { readRepoCleanupOverrides } from '../cleanup/repositoryOverrides';
 import { CleanupSettings, HeaderPosition, HeaderUpdateMode, createDefaultSettings } from '../cleanup/types';
-
-const REPOSITORY_CONFIG_NAMES = ['.codejanitor', '.code-janitor.json'];
+import { logInfo } from '../logging';
 
 /** Maps the `codeJanitor.cleanup.*` VS Code settings onto the cleanup pipeline's settings shape. */
 export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
   const cfg = vscode.workspace.getConfiguration('codeJanitor');
   const defaults = createDefaultSettings();
-  const repo = readRepoCleanupOverrides(workspaceRoot ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
+  const repo = readRepoCleanupOverrides(workspaceRoot ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, logInfo);
   const base = { ...defaults, ...repo };
 
   // Two VS Code toggles deliberately fan out to all per-kind flags of the original extension.
@@ -64,6 +62,8 @@ export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
     convertToVarWhenApparent: cfg.get('cleanup.convertToVarWhenApparent', base.convertToVarWhenApparent),
     makeFieldsReadonlyWhenSafe: cfg.get('cleanup.makeFieldsReadonlyWhenSafe', base.makeFieldsReadonlyWhenSafe),
     sealClassesWhenSafe: cfg.get('cleanup.sealClassesWhenSafe', base.sealClassesWhenSafe),
+    renamePublicSymbolsAcrossWorkspace: cfg.get('cleanup.renamePublicSymbolsAcrossWorkspace', base.renamePublicSymbolsAcrossWorkspace),
+    onlyChangedLines: cfg.get('cleanup.onlyChangedLines', base.onlyChangedLines),
     convertToCollectionExpressions: cfg.get('cleanup.convertToCollectionExpressions', base.convertToCollectionExpressions),
     reuseJsonSerializerOptionsForCA1869: cfg.get('cleanup.reuseJsonSerializerOptionsForCA1869', base.reuseJsonSerializerOptionsForCA1869),
     simplifySingleStatementLambdas: cfg.get('cleanup.simplifySingleStatementLambdas', base.simplifySingleStatementLambdas),
@@ -99,108 +99,6 @@ export function readCleanupSettings(workspaceRoot?: string): CleanupSettings {
         ? HeaderUpdateMode.Replace
         : HeaderUpdateMode.Insert,
   };
-}
-
-/** Reads the optional repository policy file. Invalid JSON, unknown keys and wrong value types are ignored. */
-export function readRepoCleanupOverrides(workspaceRoot?: string): Partial<CleanupSettings> {
-  if (!workspaceRoot) {
-    return {};
-  }
-
-  try {
-    const configPath = REPOSITORY_CONFIG_NAMES.map((name) => path.join(workspaceRoot, name)).find((file) => fs.existsSync(file));
-    if (!configPath) {
-      return {};
-    }
-
-    const file = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { cleanup?: Record<string, unknown> };
-    const defaults = createDefaultSettings();
-    const cleanup = file?.cleanup;
-    if (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup)) {
-      return {};
-    }
-
-    const overrides: Partial<CleanupSettings> = {};
-    applyBooleanAlias(cleanup, overrides, 'insertBlankLinePadding', [
-      'insertBlankLinePaddingBeforeClasses',
-      'insertBlankLinePaddingAfterClasses',
-      'insertBlankLinePaddingBeforeDelegates',
-      'insertBlankLinePaddingAfterDelegates',
-      'insertBlankLinePaddingBeforeEnumerations',
-      'insertBlankLinePaddingAfterEnumerations',
-      'insertBlankLinePaddingBeforeEvents',
-      'insertBlankLinePaddingAfterEvents',
-      'insertBlankLinePaddingBeforeFieldsMultiLine',
-      'insertBlankLinePaddingAfterFieldsMultiLine',
-      'insertBlankLinePaddingBeforeInterfaces',
-      'insertBlankLinePaddingAfterInterfaces',
-      'insertBlankLinePaddingBeforeMethods',
-      'insertBlankLinePaddingAfterMethods',
-      'insertBlankLinePaddingBeforeNamespaces',
-      'insertBlankLinePaddingAfterNamespaces',
-      'insertBlankLinePaddingBeforePropertiesMultiLine',
-      'insertBlankLinePaddingAfterPropertiesMultiLine',
-      'insertBlankLinePaddingBeforeStructs',
-      'insertBlankLinePaddingAfterStructs',
-      'insertBlankLinePaddingBeforeRegionTags',
-      'insertBlankLinePaddingAfterRegionTags',
-      'insertBlankLinePaddingBeforeEndRegionTags',
-      'insertBlankLinePaddingAfterEndRegionTags',
-      'insertBlankLinePaddingBeforeUsingStatementBlocks',
-      'insertBlankLinePaddingAfterUsingStatementBlocks',
-      'insertBlankLinePaddingBeforeCaseStatements',
-    ]);
-    applyBooleanAlias(cleanup, overrides, 'insertExplicitAccessModifiers', [
-      'insertExplicitAccessModifiersOnClasses',
-      'insertExplicitAccessModifiersOnDelegates',
-      'insertExplicitAccessModifiersOnEnumerations',
-      'insertExplicitAccessModifiersOnEvents',
-      'insertExplicitAccessModifiersOnFields',
-      'insertExplicitAccessModifiersOnInterfaces',
-      'insertExplicitAccessModifiersOnMethods',
-      'insertExplicitAccessModifiersOnProperties',
-      'insertExplicitAccessModifiersOnStructs',
-    ]);
-
-    for (const key of Object.keys(defaults) as (keyof CleanupSettings)[]) {
-      const value = cleanup[key];
-      if (key === 'fileHeaderPosition' || key === 'fileHeaderUpdateMode') {
-        const enumValue = value === 'afterUsings' || value === 'replace' ? value : value === 'documentStart' || value === 'insert' ? value : undefined;
-        if (enumValue !== undefined) {
-          (overrides as Record<string, unknown>)[key] = key === 'fileHeaderPosition'
-            ? enumValue === 'afterUsings' ? HeaderPosition.AfterUsings : HeaderPosition.DocumentStart
-            : enumValue === 'replace' ? HeaderUpdateMode.Replace : HeaderUpdateMode.Insert;
-        }
-
-        continue;
-      }
-
-      if (value === undefined || typeof value !== typeof defaults[key]) {
-        continue;
-      }
-
-      (overrides as Record<string, unknown>)[key] = value;
-    }
-
-    return overrides;
-  } catch {
-    return {};
-  }
-}
-
-function applyBooleanAlias(
-  config: Record<string, unknown>,
-  overrides: Partial<CleanupSettings>,
-  key: string,
-  targetKeys: readonly string[]
-): void {
-  if (typeof config[key] !== 'boolean') {
-    return;
-  }
-
-  for (const targetKey of targetKeys) {
-    (overrides as Record<string, unknown>)[targetKey] = config[key];
-  }
 }
 
 /** Maps the `codeJanitor.ai.xmlDoc.*` settings onto the documentation planner's options. */

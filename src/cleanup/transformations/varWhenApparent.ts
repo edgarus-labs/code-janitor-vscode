@@ -60,7 +60,8 @@ function initializerValue(declarator: Node): Node | undefined {
   return clause?.namedChildren.find((child) => Boolean(child)) ?? undefined;
 }
 
-function isTypeApparent(declaredType: Node, initializer: Node): boolean {
+/** True when `initializer` creates, casts to or converts to exactly the (textual) `declaredType`. */
+export function isTypeApparent(declaredType: Node, initializer: Node): boolean {
   const declaredText = declaredType.text;
 
   switch (initializer.type) {

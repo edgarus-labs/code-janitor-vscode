@@ -26,6 +26,20 @@ describe('blankLinePaddingConverter', () => {
     expect(result).toContain('int _x;\r\n\r\n    /// <summary>');
   });
 
+  it('keeps a line comment directly above a member attached to it', () => {
+    const source = 'class C\n{\n    int _x;\n    // Explains M.\n    void M() { }\n\n    int _y; // trailing\n    void N() { }\n}\n';
+
+    expect(apply(source, 'insertBlankLinePaddingBeforeMethods')).toBe(
+      'class C\n{\n    int _x;\n\n    // Explains M.\n    void M() { }\n\n    int _y; // trailing\n\n    void N() { }\n}\n'
+    );
+  });
+
+  it('does not add a second blank line after a member already followed by one', () => {
+    const source = 'class C\n{\n    void M()\n    {\n    }\n\n    int _x;\n}\n';
+
+    expect(apply(source, 'insertBlankLinePaddingAfterMethods')).toBe(source);
+  });
+
   it('returns the source unchanged when every setting is disabled', () => {
     const source = 'public class Foo { public void Bar() { } }';
 
@@ -151,6 +165,14 @@ describe('blankLinePaddingConverter', () => {
         'insertBlankLinePaddingBeforeCaseStatements'
       )
     ).toContain('break;\n\n            case 2:');
+  });
+
+  it('pads the right members of a CRLF file whose verbatim strings hold bare LF line breaks', () => {
+    const source = 'class C\r\n{\r\n    string _s = @"\na\nb";\r\n    int _x;\r\n    void M() { }\r\n}\r\n';
+
+    expect(apply(source, 'insertBlankLinePaddingBeforeMethods')).toBe(
+      'class C\r\n{\r\n    string _s = @"\na\nb";\r\n    int _x;\r\n\r\n    void M() { }\r\n}\r\n'
+    );
   });
 
   it('is named', () => {

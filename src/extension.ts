@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { registerAiActionCommands } from './commands/aiActionCommands';
 import { registerCleanupCommands } from './commands/cleanupCommands';
+import { registerCleanupDiagnostics } from './commands/diagnostics';
 import { registerEditorCommands } from './commands/editorCommands';
 import { registerFormatOnSave } from './commands/formatOnSave';
 import { registerGenerateXmlDocCommand } from './commands/generateXmlDoc';
@@ -17,6 +18,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   registerCleanupCommands(context);
+  registerCleanupDiagnostics(context);
   registerEditorCommands(context);
   registerFormatOnSave(context);
   registerGenerateXmlDocCommand(context);

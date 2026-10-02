@@ -159,6 +159,18 @@ describe('explicitAccessModifierConverter', () => {
     expect(result).not.toContain('private TKey');
   });
 
+  it('gives a type nested in an interface public, its default accessibility', () => {
+    expect(apply('internal interface IFoo\n{\n    class Nested { }\n}\n')).toBe(
+      'internal interface IFoo\n{\n    public class Nested { }\n}\n'
+    );
+  });
+
+  it('never adds an access modifier to a file-local type', () => {
+    const source = 'file class Helper\n{\n}\n';
+
+    expect(apply(source)).toBe(source);
+  });
+
   it('is named', () => {
     expect(converter().name).toBe('Explicit Access Modifiers');
   });

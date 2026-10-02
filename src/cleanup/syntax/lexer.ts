@@ -7,6 +7,8 @@
  * identifiers get grammar names (`identifier`, `string_literal`, `null_literal`).
  */
 
+import { memoizeBySource } from '../sourceCache';
+
 export interface Token {
   readonly type: string;
   readonly start: number;
@@ -67,7 +69,10 @@ const PREPROC_NAMES = new Set([
   'line', 'error', 'warning',
 ]);
 
-export function lex(source: string): LexResult {
+/** The tokens and trivia of `source`. Shared for the same text: callers must not modify them. */
+export const lex: (source: string) => LexResult = memoizeBySource(lexSource);
+
+function lexSource(source: string): LexResult {
   const tokens: Token[] = [];
   const trivia: Token[] = [];
   const length = source.length;
@@ -326,19 +331,28 @@ function scanStringLiteral(source: string, start: number): { type: string; end: 
   }
 
   if (quotes >= 3) {
-    return {
-      type: interpolated ? 'interpolated_string_expression' : 'raw_string_literal',
-      end: scanRawString(source, i, quotes),
-    };
+    const end = scanRawString(source, i, quotes);
+
+    return interpolated
+      ? { type: 'interpolated_string_expression', end }
+      : { type: 'raw_string_literal', end: withUtf8Suffix(source, end) };
   }
 
-  if (quotes === 2 && !verbatim) {
-    return { type: literalType(interpolated, verbatim), end: i + 2 };
-  }
+  const end =
+    quotes === 2 && !verbatim
+      ? i + 2
+      : verbatim
+        ? scanVerbatimString(source, i)
+        : scanRegularString(source, i, interpolated);
 
-  const end = verbatim ? scanVerbatimString(source, i) : scanRegularString(source, i, interpolated);
+  return { type: literalType(interpolated, verbatim), end: interpolated ? end : withUtf8Suffix(source, end) };
+}
 
-  return { type: literalType(interpolated, verbatim), end };
+/** A UTF-8 string literal (`"text"u8`) ends after its `u8` suffix. */
+function withUtf8Suffix(source: string, end: number): number {
+  return (source[end] === 'u' || source[end] === 'U') && source[end + 1] === '8' && !isIdentifierPart(source[end + 2] ?? ' ')
+    ? end + 2
+    : end;
 }
 
 function literalType(interpolated: boolean, verbatim: boolean): string {

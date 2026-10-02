@@ -1,5 +1,7 @@
+import { STRING, classifyCSharp } from '../csharpScanner';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { SourceTransformation } from '../types';
+import { lineStartAt, nextLineStartAt } from './editorConfigSupport';
 
 const NAMESPACE_TYPES = ['namespace_declaration', 'file_scoped_namespace_declaration'];
 
@@ -9,8 +11,48 @@ const NAMESPACE_TYPES = ['namespace_declaration', 'file_scoped_namespace_declara
  */
 export const moveUsingsOutsideNamespaceConverter: SourceTransformation = {
   name: 'Move using directives outside namespace',
-  apply: moveUsingsOutside,
+  apply: (source) => (usingsCanMoveOutside(source) ? moveUsingsOutside(source) : source),
 };
+
+const WELL_KNOWN_ROOTS: Record<string, true> = { System: true, Microsoft: true };
+
+/**
+ * True when a using directive names the same thing inside and outside the namespace: `global::`
+ * names, `System`/`Microsoft` names and names starting with the namespace's first segment. Other
+ * names may resolve relative to the enclosing namespace
+ * (https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/using-directive).
+ */
+export function isFullyQualifiedUsing(text: string, namespaceRoot: string | undefined): boolean {
+  const target = /^using\s+(?:static\s+)?(?:@?\w+\s*=\s*)?([\s\S]*?);$/.exec(text.trim())?.[1].trim();
+  if (!target) {
+    return false;
+  }
+
+  if (target.startsWith('global::')) {
+    return true;
+  }
+
+  const first = target.split(/[.<:\s]/)[0];
+
+  return WELL_KNOWN_ROOTS[first] === true || first === namespaceRoot;
+}
+
+/** True when the file has one namespace and every using inside it is fully qualified. */
+function usingsCanMoveOutside(source: string): boolean {
+  if (!source) {
+    return false;
+  }
+
+  const tree = parseCSharp(source);
+  try {
+    const namespaces = findAll(tree.rootNode, NAMESPACE_TYPES);
+    const root = namespaces[0]?.childForFieldName('name')?.text.split('.')[0];
+
+    return namespaces.length === 1 && directUsings(namespaces[0]).every((directive) => isFullyQualifiedUsing(directive.text, root));
+  } finally {
+    tree.delete();
+  }
+}
 
 export function moveUsingsOutside(source: string): string {
   if (!source) {
@@ -45,8 +87,8 @@ export function moveUsingsOutside(source: string): string {
     }
 
     const edits: TextEdit[] = namespaceUsings.map((directive) => ({
-      start: lineStart(source, directive.startIndex),
-      end: lineEnd(source, directive.endIndex),
+      start: lineStartAt(source, directive.startIndex),
+      end: nextLineStartAt(source, directive.endIndex),
       text: '',
     }));
 
@@ -80,7 +122,7 @@ function directUsings(namespaceNode: Node): Node[] {
  */
 function insertionPoint(root: Node, topUsings: readonly Node[], source: string): number {
   if (topUsings.length > 0) {
-    return lineEnd(source, topUsings[topUsings.length - 1].endIndex);
+    return nextLineStartAt(source, topUsings[topUsings.length - 1].endIndex);
   }
 
   const firstToken = root.namedChildren.find((child) => child && child.type !== 'comment');
@@ -90,18 +132,6 @@ function insertionPoint(root: Node, topUsings: readonly Node[], source: string):
 
 function usingKey(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
-}
-
-function lineStart(source: string, index: number): number {
-  const newlineIndex = source.lastIndexOf('\n', Math.max(0, index - 1));
-
-  return newlineIndex < 0 ? 0 : newlineIndex + 1;
-}
-
-function lineEnd(source: string, index: number): number {
-  const newlineIndex = source.indexOf('\n', index);
-
-  return newlineIndex < 0 ? source.length : newlineIndex + 1;
 }
 
 /**
@@ -155,7 +185,7 @@ export function convertToFileScoped(source: string): string {
     const header = current.slice(0, namespaceNode.startIndex);
     const body = current.slice(openBrace.endIndex, closeBrace.startIndex);
     const newline = body.includes('\r\n') ? '\r\n' : '\n';
-    const dedented = dedent(body, newline);
+    const dedented = dedent(current, openBrace.endIndex, closeBrace.startIndex);
 
     let result = `${header}namespace ${name};`;
     if (dedented.trim()) {
@@ -196,12 +226,29 @@ function findCloseBrace(namespaceNode: Node): Node | undefined {
   return undefined;
 }
 
-/** Removes one indentation level (four spaces or a tab) after trimming surrounding blank lines. */
-function dedent(body: string, newline: string): string {
-  const trimmed = body.replace(/^[\r\n]+/, '').replace(/[\r\n]+$/, '');
+/**
+ * `source` between `start` and `end` without its surrounding blank lines, with one indentation
+ * level (four spaces or a tab) removed from every line that starts in code. Lines that continue a
+ * string literal (verbatim, raw, multi-line interpolated) and every line break keep their text.
+ */
+function dedent(source: string, start: number, end: number): string {
+  const kinds = classifyCSharp(source);
+  const body = source.slice(start, end);
+  const first = body.search(/[^\r\n]/);
+  if (first < 0) {
+    return '';
+  }
 
-  return trimmed
-    .split(newline)
-    .map((line) => (line.startsWith('    ') ? line.slice(4) : line.startsWith('\t') ? line.slice(1) : line))
-    .join(newline);
+  let result = '';
+  let lineStart = first;
+  while (lineStart < body.length) {
+    const next = body.indexOf('\n', lineStart);
+    const lineEnd = next < 0 ? body.length : next + 1;
+    const line = body.slice(lineStart, lineEnd);
+    const inString = lineStart > 0 && kinds[start + lineStart - 1] === STRING;
+    result += inString ? line : line.startsWith('    ') ? line.slice(4) : line.startsWith('\t') ? line.slice(1) : line;
+    lineStart = lineEnd;
+  }
+
+  return result.replace(/[\r\n]+$/, '');
 }

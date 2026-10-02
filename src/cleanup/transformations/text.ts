@@ -1,4 +1,4 @@
-import { CODE, classifyCSharp } from '../csharpScanner';
+import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { SourceTransformation } from '../types';
 
 /** Strips the Unicode Byte Order Mark (U+FEFF) from the start of a source string. */
@@ -31,7 +31,10 @@ export const ensureFinalNewlineConverter: SourceTransformation = {
   },
 };
 
-/** Collapses runs of two or more consecutive blank lines down to one. */
+/**
+ * Collapses runs of two or more consecutive blank lines down to one. Blank lines that belong to a
+ * string literal (verbatim, raw or interpolated) are part of its value and are never touched.
+ */
 export const normalizeBlankLinesConverter: SourceTransformation = {
   name: 'Normalize blank lines',
   apply(source: string): string {
@@ -39,7 +42,16 @@ export const normalizeBlankLinesConverter: SourceTransformation = {
       return source;
     }
 
-    return source.replace(/\r?\n(?:[^\S\r\n]*\r?\n){2,}/g, (match) => {
+    const kinds = classifyCSharp(source);
+
+    return source.replace(/\r?\n(?:[^\S\r\n]*\r?\n){2,}/g, (match, offset: number) => {
+      // The run starts at the line break that ends a code line and may only contain blank code lines.
+      for (let i = offset; i < offset + match.length; i++) {
+        if (kinds[i] === STRING) {
+          return match;
+        }
+      }
+
       const nl = match.includes('\r\n') ? '\r\n' : '\n';
 
       return nl + nl;

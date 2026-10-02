@@ -349,3 +349,20 @@ describe('commentFormatConverter', () => {
     expect(apply('////oldCode();')).toBe('//// oldCode();');
   });
 });
+
+describe('normalizeBlankLinesConverter and multi-line string literals', () => {
+  const apply = (source: string) => normalizeBlankLinesConverter.apply(source);
+
+  it.each([
+    ['verbatim', 'class C { string S = @"a\n\n\n\nb"; }\n'],
+    ['raw', 'class C\n{\n    string S = """\n        a\n\n\n\n        b\n        """;\n}\n'],
+    ['interpolated verbatim', 'class C { string S(int n) => $@"a\n\n\n{n}\n\n\nb"; }\n'],
+    ['verbatim after a code line', 'class C\n{\n    int N;\n    string S = @"a\n\n\nb";\n}\n'],
+  ])('keeps the blank lines of a %s string', (_name, input) => {
+    expect(apply(input)).toBe(input);
+  });
+
+  it('still collapses blank lines in code next to a literal', () => {
+    expect(apply('class C\n{\n    string S = @"a\n\n\nb";\n\n\n\n    int N;\n}\n')).toBe('class C\n{\n    string S = @"a\n\n\nb";\n\n    int N;\n}\n');
+  });
+});

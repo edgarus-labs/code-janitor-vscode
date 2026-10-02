@@ -2,7 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CleanupSettings, createDefaultSettings } from '../cleanup/types';
-import { readRepoCleanupOverrides } from './settings';
+import { readRepoCleanupOverrides } from '../cleanup/repositoryOverrides';
+import { logInfo } from '../logging';
 
 export const REPOSITORY_CONFIG_FILE = '.codejanitor';
 
@@ -38,6 +39,18 @@ const BOOLEAN_GROUPS: Record<string, string[]> = {
 
 const GROUPED_SETTING_KEYS = new Set(Object.values(BOOLEAN_GROUPS).flat());
 
+/**
+ * Settings that exist only in `.codejanitor` (VS Code declares no setting for them): cleanup reads
+ * them from the file, so import leaves them there instead of writing an unregistered setting.
+ */
+const REPOSITORY_ONLY_SETTINGS: ReadonlySet<string> = new Set([
+  'insertBlankLinePaddingBeforeFieldsSingleLine',
+  'insertBlankLinePaddingAfterFieldsSingleLine',
+  'insertBlankLinePaddingBeforePropertiesSingleLine',
+  'insertBlankLinePaddingAfterPropertiesSingleLine',
+  'insertBlankLinePaddingBeforeSingleLineComments',
+]);
+
 export function registerRepositorySettingsCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codeJanitor.exportRepositorySettings', () => exportRepositorySettings()),
@@ -68,7 +81,7 @@ export async function exportRepositorySettings(workspaceRoot?: string): Promise<
   const config = vscode.workspace.getConfiguration('codeJanitor');
   const cleanup: Record<string, unknown> = {};
   const defaults = createDefaultSettings();
-  const effective = { ...defaults, ...readRepoCleanupOverrides(root) };
+  const effective = { ...defaults, ...readRepoCleanupOverrides(root, logInfo) };
 
   for (const key of Object.keys(defaults) as (keyof CleanupSettings)[]) {
     if (GROUPED_SETTING_KEYS.has(key)) {
@@ -113,11 +126,22 @@ export async function importRepositorySettings(workspaceRoot?: string): Promise<
     return;
   }
 
-  const overrides = readRepoCleanupOverrides(root);
+  const overrides = readRepoCleanupOverrides(root, logInfo);
   const config = vscode.workspace.getConfiguration('codeJanitor');
   let imported = 0;
+  let repositoryOnly = 0;
 
   for (const [key, value] of Object.entries(overrides) as [keyof CleanupSettings, unknown][]) {
+    // Grouped keys have no VS Code setting of their own; the group setting below imports them.
+    if (GROUPED_SETTING_KEYS.has(key)) {
+      continue;
+    }
+
+    if (REPOSITORY_ONLY_SETTINGS.has(key)) {
+      repositoryOnly++;
+      continue;
+    }
+
     const settingKey = IMPORTABLE_SETTINGS[key] ?? key;
     const importedValue = key === 'fileHeaderPosition'
       ? value === 1 ? 'afterUsings' : 'documentStart'
@@ -136,5 +160,6 @@ export async function importRepositorySettings(workspaceRoot?: string): Promise<
     }
   }
 
-  void vscode.window.showInformationMessage(`Code Janitor: imported ${imported} repository setting(s) into workspace settings.`);
+  const kept = repositoryOnly > 0 ? ` ${repositoryOnly} setting(s) have no VS Code setting and keep applying from ${REPOSITORY_CONFIG_FILE}.` : '';
+  void vscode.window.showInformationMessage(`Code Janitor: imported ${imported} repository setting(s) into workspace settings.${kept}`);
 }
