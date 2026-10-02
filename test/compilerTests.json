@@ -1,0 +1,9 @@
+{
+  "codestyle": ["test/codeStyleRulesCleanup.test.ts", "test/projectFactsCompile.test.ts", "test/dotnetHelper.test.ts"],
+  "preview": ["test/cleanupPreviewCompile.test.ts"],
+  "usings": ["test/usingPlacementCompile.test.ts"],
+  "reorganize": ["test/reorganizeCompile.test.ts"],
+  "naming": ["test/renamerScenarios.test.ts"],
+  "razor": ["test/razorOracle.test.ts"],
+  "testbed": ["test/testbed.test.ts"]
+}

@@ -24,8 +24,6 @@ const PREFERENCES: Record<string, Preference> = {
   when_on_single_line: 'single-line',
 };
 
-const TASK_TYPE = /^(?:System\.Threading\.Tasks\.)?(?:Task|ValueTask)$/;
-
 function accessorKeyword(accessor: Node): string | undefined {
   return accessor.children.find((child) => !child.isNamed && /^(?:get|set|init|add|remove)$/.test(child.type))?.type;
 }
@@ -40,7 +38,8 @@ function bodyKind(member: Node): 'value' | 'statement' | undefined {
         return undefined;
       }
 
-      return type === 'void' || (hasModifier(member, 'async') && TASK_TYPE.test(type)) ? 'statement' : 'value';
+      // An async method returns a value only through a generic task-like type (`Task<T>`, `UniTask<T>`).
+      return type === 'void' || (hasModifier(member, 'async') && !type.endsWith('>')) ? 'statement' : 'value';
     }
     case 'constructor_declaration':
       return 'statement';
@@ -84,6 +83,22 @@ function wants(preference: Preference, form: 'expression' | 'block', text: strin
   return preference === 'single-line' ? (form === 'expression') === !text.includes('\n') : preference === form;
 }
 
+/**
+ * Where a new body for `owner` starts (the end of the token before `body`) and what goes in front
+ * of it: a space, or a line break when a `//` comment ends the header and would swallow the body.
+ * Undefined when a preprocessor directive sits there.
+ */
+function headerEnd(source: string, owner: Node, body: Node, context: RuleContext): { start: number; separator: string } | undefined {
+  const before = owner.children[owner.children.indexOf(body) - 1];
+  if (!before || before.type.startsWith('preproc')) {
+    return undefined;
+  }
+
+  const separator = before.type === 'comment' && before.text.startsWith('//') ? `${newlineOf(source)}${lineIndentAt(source, owner.startIndex)}${context.indent}` : ' ';
+
+  return { start: before.endIndex, separator };
+}
+
 /** Methods, constructors, operators, local functions and accessors. */
 function convertBodies(source: string, root: Node, types: readonly string[], preference: Preference, context: RuleContext): TextEdit[] {
   const edits: TextEdit[] = [];
@@ -93,15 +108,16 @@ function convertBodies(source: string, root: Node, types: readonly string[], pre
   for (const member of findAll(root, types)) {
     const kind = bodyKind(member);
     const body = member.childForFieldName('body');
-    const before = body ? member.children[member.children.indexOf(body) - 1] : undefined;
-    if (!kind || !body || !before || hasParseErrors(member)) {
+    const header = body ? headerEnd(source, member, body, context) : undefined;
+    if (!kind || !body || !header || hasParseErrors(member)) {
       continue;
     }
 
+    const { start, separator } = header;
     if (body.type === 'block') {
       const expression = singleExpression(source, body, kind);
       if (expression !== undefined && wants(preference, 'expression', expression)) {
-        edits.push({ start: before.endIndex, end: member.endIndex, text: ` => ${expression};` });
+        edits.push({ start, end: member.endIndex, text: `${separator}=> ${expression};` });
       }
 
       continue;
@@ -114,11 +130,11 @@ function convertBodies(source: string, root: Node, types: readonly string[], pre
 
     const statement = statementFor(expression, kind);
     if (member.type === 'accessor_declaration') {
-      edits.push({ start: before.endIndex, end: member.endIndex, text: ` { ${statement} }` });
+      edits.push({ start, end: member.endIndex, text: `${separator}{ ${statement} }` });
     } else {
       const indent = lineIndentAt(source, member.startIndex);
-      const open = bracesOnNewLine ? `${newline}${indent}{` : ' {';
-      edits.push({ start: before.endIndex, end: member.endIndex, text: `${open}${newline}${indent}${context.indent}${statement}${newline}${indent}}` });
+      const open = bracesOnNewLine || separator !== ' ' ? `${newline}${indent}{` : ' {';
+      edits.push({ start, end: member.endIndex, text: `${open}${newline}${indent}${context.indent}${statement}${newline}${indent}}` });
     }
   }
 
@@ -133,10 +149,12 @@ function convertPropertyBodies(source: string, root: Node, type: string, prefere
   for (const property of findAll(root, type)) {
     const accessors = property.childForFieldName('accessors');
     const arrow = type === 'property_declaration' ? property.childForFieldName('value') : property.children.find((child) => child.type === 'arrow_expression_clause');
-    const before = accessors ?? arrow ? property.children[property.children.indexOf((accessors ?? arrow)!) - 1] : undefined;
-    if (!before || hasParseErrors(property)) {
+    const header = accessors ?? arrow ? headerEnd(source, property, (accessors ?? arrow)!, context) : undefined;
+    if (!header || hasParseErrors(property)) {
       continue;
     }
+
+    const { start, separator } = header;
 
     if (accessors) {
       const getter = accessors.namedChildCount === 1 ? accessors.namedChildren[0] : undefined;
@@ -151,7 +169,7 @@ function convertPropertyBodies(source: string, root: Node, type: string, prefere
               : undefined
           : undefined;
       if (expression !== undefined && wants(preference, 'expression', expression)) {
-        edits.push({ start: before.endIndex, end: property.endIndex, text: ` => ${expression};` });
+        edits.push({ start, end: property.endIndex, text: `${separator}=> ${expression};` });
       }
 
       continue;
@@ -163,7 +181,7 @@ function convertPropertyBodies(source: string, root: Node, type: string, prefere
     }
 
     const getter = wants(accessorPreference ?? 'expression', 'expression', expression.text) ? `get => ${expression.text};` : `get { ${statementFor(expression, 'value')} }`;
-    edits.push({ start: before.endIndex, end: property.endIndex, text: ` { ${getter} }` });
+    edits.push({ start, end: property.endIndex, text: `${separator}{ ${getter} }` });
   }
 
   return edits;

@@ -1,0 +1,10 @@
+{
+  "name": "pattern-matching-null-checks-expression-lambda-skip",
+  "description": "Expression-bodied lambda null checks are left unchanged, since the lambda's delegate type cannot be proven from syntax alone and could be Expression<Func<T, bool>>, where the `is` pattern-matching operator fails with CS8122.",
+  "input": "using System.Collections.Generic;\nusing System.Linq;\n\nclass C\n{\n    void M(IEnumerable<string> items)\n    {\n        var found = items.Any(x => x == null);\n    }\n}\n",
+  "settings": {
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["x == null"],
+  "mustNotContain": ["x is null"]
+}

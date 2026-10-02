@@ -20,7 +20,7 @@ export interface MSBuildProject {
   property(name: string): string | undefined;
   /** Whether {@link property} is the value MSBuild evaluates (set or unset); false when a condition or unknown import may change it. */
   isCertain(name: string): boolean;
-  /** Full paths of the unconditional `Include`s of an item type, in order. */
+  /** Full paths of the unconditional `Include`s of an item type, in order; relative ones are relative to the project, wherever they are defined. */
   items(type: string): readonly string[];
   /** Whether a `<PackageReference Include="...">` of this package id (case-insensitive) exists. */
   hasPackage(id: string): boolean;
@@ -108,14 +108,23 @@ function nearestAbove(directory: string, name: string): string | undefined {
 /**
  * Top-level elements in document order: property and item groups, imports (alone or in an
  * `<ImportGroup>`), `<Choose>` blocks, and `<Target>` bodies (which run at build time, not at
- * evaluation, so they are skipped).
+ * evaluation, so they are skipped). An opening tag never ends in `/>`, so that a self-closing
+ * element does not take the following elements as its body.
  */
 const ELEMENT =
-  /<(PropertyGroup|ItemGroup)(\s[^>]*)?>([\s\S]*?)<\/\1\s*>|<(PropertyGroup|ItemGroup)(\s[^>]*)?\/>|<Import\s([^>]*?)\/?>|<Choose\b[\s\S]*?<\/Choose\s*>|<Target\b[\s\S]*?<\/Target\s*>|<ImportGroup(\s[^>]*)?>([\s\S]*?)<\/ImportGroup\s*>/gi;
+  /<(PropertyGroup|ItemGroup)(\s[^>]*)?(?<!\/)>([\s\S]*?)<\/\1\s*>|<(PropertyGroup|ItemGroup)(\s[^>]*)?\/>|<Import\s([^>]*?)\/?>|<(?:Choose|Target)\b[^>]*\/>|<Choose\b[\s\S]*?<\/Choose\s*>|<Target\b[\s\S]*?<\/Target\s*>|<ImportGroup(\s[^>]*)?(?<!\/)>([\s\S]*?)<\/ImportGroup\s*>/gi;
 const PROPERTY = /<([A-Za-z_][\w.-]*)(\s[^>]*?)?(?:\/>|>([\s\S]*?)<\/\1\s*>)/g;
 const ITEM = /<([A-Za-z_][\w.-]*)\s([^>]*?)\/?>/g;
 const CONDITION = /\bCondition\s*=/i;
 const MAX_IMPORT_DEPTH = 8;
+/** Reserved properties the reader seeds; MSBuild rejects any attempt to set them. */
+const RESERVED_PROPERTIES: Record<string, true> = {
+  msbuildprojectdirectory: true,
+  msbuildprojectfullpath: true,
+  msbuildprojectfile: true,
+  msbuildprojectname: true,
+  msbuildprojectextension: true,
+};
 
 class EvaluationState {
   readonly properties: Map<string, string>;
@@ -127,10 +136,13 @@ class EvaluationState {
   private unknownImport = false;
   private readonly setAfterUnknownImport = new Set<string>();
   private readonly importing = new Set<string>();
+  /** Relative item paths are resolved here, even in imported files (only `<Import>` paths are relative to the importing file). */
+  private readonly projectDirectory: string;
 
   constructor(projectFile: string) {
+    this.projectDirectory = path.dirname(projectFile);
     this.properties = new Map([
-      ['msbuildprojectdirectory', path.dirname(projectFile)],
+      ['msbuildprojectdirectory', this.projectDirectory],
       ['msbuildprojectfullpath', projectFile],
       ['msbuildprojectfile', path.basename(projectFile)],
       ['msbuildprojectname', path.basename(projectFile, path.extname(projectFile))],
@@ -139,6 +151,11 @@ class EvaluationState {
   }
 
   isCertain(name: string): boolean {
+    // MSBuild does not let a project or an import set a reserved property (MSB4004).
+    if (Object.hasOwn(RESERVED_PROPERTIES, name)) {
+      return true;
+    }
+
     return !this.uncertain.has(name) && (!this.unknownImport || this.setAfterUnknownImport.has(name));
   }
 
@@ -185,7 +202,7 @@ class EvaluationState {
         } else if (element[6] !== undefined) {
           this.import(element[6], file, directory);
         } else if (element[1] !== undefined) {
-          this.group(element[1], element[2] ?? '', element[3], file, directory);
+          this.group(element[1], element[2] ?? '', element[3], file);
         }
       }
     } finally {
@@ -204,8 +221,8 @@ class EvaluationState {
     }
 
     const project = /\bProject\s*=\s*"([^"]*)"/i.exec(attributes)?.[1];
-    const target = project === undefined ? undefined : this.expand(project, file).value;
-    const resolved = target === undefined ? undefined : path.resolve(directory, target.replace(/\\/g, path.sep));
+    const target = project === undefined ? undefined : this.expand(project, file);
+    const resolved = target?.certain ? path.resolve(directory, target.value.replace(/\\/g, path.sep)) : undefined;
     const condition = /\bCondition\s*=\s*"([^"]*)"/i.exec(attributes)?.[1];
     if (!resolved || /[*?]/.test(resolved)) {
       this.markUnknownImport();
@@ -214,13 +231,13 @@ class EvaluationState {
 
     if (condition !== undefined) {
       const exists = /^\s*(!)?\s*Exists\s*\(\s*'([^']*)'\s*\)\s*$/i.exec(condition);
-      const checked = exists ? this.expand(exists[2], file).value : undefined;
-      if (checked === undefined) {
+      const checked = exists ? this.expand(exists[2], file) : undefined;
+      if (!checked?.certain) {
         this.markUnknownImport();
         return;
       }
 
-      if (fs.existsSync(path.resolve(directory, checked.replace(/\\/g, path.sep))) === (exists?.[1] === '!')) {
+      if (fs.existsSync(path.resolve(directory, checked.value.replace(/\\/g, path.sep))) === (exists?.[1] === '!')) {
         return;
       }
     }
@@ -233,7 +250,7 @@ class EvaluationState {
     this.evaluateFile(resolved);
   }
 
-  private group(kind: string, attributes: string, body: string, file: string, directory: string): void {
+  private group(kind: string, attributes: string, body: string, file: string): void {
     const conditionalGroup = CONDITION.test(attributes);
     if (kind.toLowerCase() === 'propertygroup') {
       for (const property of body.matchAll(PROPERTY)) {
@@ -274,9 +291,15 @@ class EvaluationState {
         continue;
       }
 
+      // An include only MSBuild can resolve (an unknown property) is skipped like a conditional one.
+      const expanded = this.expand(decode(include), file);
+      if (!expanded.certain) {
+        continue;
+      }
+
       const list = this.items.get(type) ?? [];
-      for (const part of this.expand(decode(include), file).value.split(';').map((entry) => entry.trim()).filter(Boolean)) {
-        list.push(path.resolve(directory, part.replace(/\\/g, path.sep)));
+      for (const part of expanded.value.split(';').map((entry) => entry.trim()).filter(Boolean)) {
+        list.push(path.resolve(this.projectDirectory, part.replace(/\\/g, path.sep)));
       }
 
       this.items.set(type, list);
@@ -286,8 +309,8 @@ class EvaluationState {
   /**
    * Substitutes `$(Property)` references and the `GetPathOfFileAbove`/`GetDirectoryNameOfFileAbove`
    * property functions; any other function, item or metadata reference, and any reference to an
-   * unset or uncertain property (other than `self`, the property being defined), makes the value
-   * uncertain.
+   * unset or uncertain property, makes the value uncertain. `self`, the property being defined, may
+   * be unset (it reads as empty) but not uncertain.
    */
   private expand(value: string, file: string, self?: string): { value: string; certain: boolean } {
     const directory = path.dirname(file);
@@ -306,7 +329,7 @@ class EvaluationState {
         return path.basename(file);
       }
 
-      if (lower !== self && (!this.properties.has(lower) || !this.isCertain(lower))) {
+      if (lower === self ? !this.isCertain(lower) : !this.properties.has(lower) || !this.isCertain(lower)) {
         certain = false;
       }
 
@@ -331,6 +354,10 @@ class EvaluationState {
     }
 
     const expanded = functions.replace(/\$\(([\w.-]+)\)/g, (_, name: string) => reference(name));
+    // What is left is a function only MSBuild evaluates, such as $(Name.Replace(' ', '_')).
+    if (/\$\(/.test(expanded)) {
+      certain = false;
+    }
 
     return { value: expanded, certain };
   }

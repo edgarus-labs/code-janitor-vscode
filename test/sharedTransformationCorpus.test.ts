@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { buildPipeline } from '../src/cleanup/runCleanup';
+import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
+import { EditorConfigRules, buildPipeline } from '../src/cleanup/runCleanup';
 import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
 
 /**
@@ -72,6 +73,28 @@ function applyFixtureSettings(settings: Record<string, unknown>): CleanupSetting
   return result as unknown as CleanupSettings;
 }
 
+/**
+ * Fixtures of the Visual Studio corpus this syntax-only engine intentionally does not satisfy. The
+ * shared JSON stays unchanged; the divergence is asserted here instead of being skipped silently.
+ */
+const KNOWN_DIVERGENCES: Readonly<Record<string, { reason: string; unchanged: string; notProduced: string }>> = {
+  'pattern-matching-null-checks-block-lambda-convert': {
+    reason: 'a block-lambda null check on a parameter of unknown type is not converted (no semantic model)',
+    unchanged: 'x == null',
+    notProduced: 'x is null',
+  },
+};
+
+/**
+ * The Visual Studio harness compiles the fixtures in a project on the latest C#; the cleanup here needs to
+ * be told so, because it only writes file-scoped namespaces for a project known to use C# 10 or newer.
+ */
+const CORPUS_RULES: EditorConfigRules = {
+  properties: resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n' }], '/repo/Sample.cs'),
+  report: () => undefined,
+  project: { directory: '/repo', languageVersion: 99 },
+};
+
 const corpusDirectory = resolveCorpusDirectory();
 const fixtureFiles = corpusDirectory
   ? fs.readdirSync(corpusDirectory).filter((name) => name.endsWith('.json')).sort()
@@ -86,9 +109,20 @@ suite('shared transformation corpus', () => {
     const normalize = (text: string): string => (lf ? text.replace(/\r\n/g, '\n') : text);
     const input = normalize(fixture.input);
 
+    const divergence = KNOWN_DIVERGENCES[fixture.name];
+
     it(fixture.name, () => {
       const settings = applyFixtureSettings(fixture.settings ?? {});
-      const output = buildPipeline(input, settings).run(input);
+      const output = buildPipeline(settings, CORPUS_RULES).run(input);
+
+      if (divergence) {
+        // Roslyn knows the lambda parameter's type; without a semantic model `x is null` could be
+        // CS0037 for a non-nullable value type, so this engine must leave the comparison alone.
+        expect(output, divergence.reason).toContain(divergence.unchanged);
+        expect(output, divergence.reason).not.toContain(divergence.notProduced);
+
+        return;
+      }
 
       for (const expected of fixture.mustContain ?? []) {
         expect(output, `expected output to contain: ${JSON.stringify(expected)}`).toContain(normalize(expected));

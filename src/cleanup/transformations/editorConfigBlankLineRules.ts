@@ -38,14 +38,18 @@ function withTree(source: string, collect: (root: Node) => TextEdit[]): string {
   }
 }
 
-/** Replaces each match of `pattern` whose first and last characters are code (not string or comment). */
+/**
+ * Replaces each match of `pattern` whose first and last characters are code (not string or comment).
+ * A `\r\n` counts by its `\n`: the scanner ends a `//` comment before the `\n`, so the `\r` is comment.
+ */
 function replaceInCode(source: string, pattern: RegExp, replace: (match: RegExpExecArray) => string): string {
   const kinds = classifyCSharp(source);
+  const isCode = (index: number): boolean => kinds[source[index] === '\r' && source[index + 1] === '\n' ? index + 1 : index] === CODE;
   const edits: TextEdit[] = [];
   for (const match of source.matchAll(pattern)) {
     const start = match.index;
     const end = start + match[0].length;
-    if (kinds[start] === CODE && kinds[end - 1] === CODE) {
+    if (isCode(start) && isCode(end - 1)) {
       edits.push({ start, end, text: replace(match as RegExpExecArray) });
     }
   }
@@ -58,9 +62,12 @@ function collapseMultipleBlankLines(source: string): string {
   return replaceInCode(source, /(\r?\n)(?:[ \t]*\r?\n){2,}/g, (match) => match[1] + match[1]);
 }
 
-/** IDE2002: no blank line between a closing brace and the closing brace on a following line. */
+/**
+ * IDE2002: no blank line between a closing brace and the closing brace on a following line. The
+ * following brace is only looked at, so it can start the next match of a chain of closing braces.
+ */
 function removeBlankLinesBetweenClosingBraces(source: string): string {
-  return replaceInCode(source, /\}([ \t]*)(\r?\n)(?:[ \t]*\r?\n)+([ \t]*)\}/g, (match) => `}${match[1]}${match[2]}${match[3]}}`);
+  return replaceInCode(source, /\}([ \t]*)(\r?\n)(?:[ \t]*\r?\n)+(?=[ \t]*\})/g, (match) => `}${match[1]}${match[2]}`);
 }
 
 const EMBEDDING_STATEMENTS = [
@@ -75,7 +82,8 @@ const EMBEDDING_STATEMENTS = [
 
 /**
  * IDE2001: an embedded statement written on the line of its `if (...)`, `else`, `while (...)`...
- * moves to its own line, one level deeper. `else if` stays together; a statement spanning several
+ * moves to its own line, one level deeper; an `else` that followed it on that line moves to its
+ * own line too, aligned with its `if`. `else if` stays together; a statement spanning several
  * lines is left as it is (its other lines would need re-indenting).
  */
 function moveEmbeddedStatements(source: string, context: RuleContext): string {
@@ -98,7 +106,15 @@ function moveEmbeddedStatements(source: string, context: RuleContext): string {
           continue;
         }
 
-        edits.push({ start: previous.endIndex, end: child.startIndex, text: `${newline}${lineIndentAt(source, previous.startIndex)}${context.indent}` });
+        // The moved statement sits one level deeper than the line its header starts on, not the
+        // header's last line (a wrapped condition) - for `else` that is the `else` line.
+        const headerStart = previous.type === 'else' ? previous.startIndex : statement.startIndex;
+        edits.push({ start: previous.endIndex, end: child.startIndex, text: `${newline}${lineIndentAt(source, headerStart)}${context.indent}` });
+
+        const next = children[i + 1];
+        if (next?.type === 'else' && next.startPosition.row === child.endPosition.row && source.slice(child.endIndex, next.startIndex).trim() === '') {
+          edits.push({ start: child.endIndex, end: next.startIndex, text: `${newline}${lineIndentAt(source, statement.startIndex)}` });
+        }
       }
     }
 
@@ -106,7 +122,35 @@ function moveEmbeddedStatements(source: string, context: RuleContext): string {
   });
 }
 
-const STATEMENT_LISTS = ['block', 'switch_section'];
+/**
+ * The statement lists of a file: each block's statements, and the statements of each switch
+ * section. The parser puts a section's `case`/`default` labels and statements directly under
+ * `switch_body`, so a section's statements are a run of statements between labels.
+ */
+function statementLists(root: Node): Node[][] {
+  const lists = findAll(root, 'block').map((block) => block.namedChildren);
+  for (const body of findAll(root, 'switch_body')) {
+    if (body.parent?.type !== 'switch_statement') {
+      continue;
+    }
+
+    let section: Node[] = [];
+    for (const child of body.children) {
+      if (child.isNamed && isStatement(child)) {
+        section.push(child);
+      } else if (section.length > 0) {
+        lists.push(section);
+        section = [];
+      }
+    }
+  }
+
+  return lists;
+}
+
+function isStatement(node: Node): boolean {
+  return node.type === 'block' || /_statement$/.test(node.type);
+}
 
 /** IDE2003: a statement right after a block (`}`) gets a blank line in front of it. */
 function separateStatementsAfterBlocks(source: string): string {
@@ -114,12 +158,10 @@ function separateStatementsAfterBlocks(source: string): string {
 
   return withTree(source, (root) => {
     const edits: TextEdit[] = [];
-    for (const list of findAll(root, STATEMENT_LISTS)) {
-      const statements = list.namedChildren;
+    for (const statements of statementLists(root)) {
       for (let i = 1; i < statements.length; i++) {
         const previous = statements[i - 1];
         const next = statements[i];
-        const isStatement = (node: Node): boolean => node.type === 'block' || /_statement$/.test(node.type);
         if (
           !isStatement(previous) ||
           !isStatement(next) ||

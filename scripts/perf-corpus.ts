@@ -58,81 +58,84 @@ if (!corpusArgument) {
 
 const corpus = path.resolve(corpusArgument);
 const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-perf-'));
-copyTree(corpus, copy);
-fs.writeFileSync(path.join(copy, '.editorconfig'), renderEditorConfig(), 'utf8');
-const output = outputArgument ? path.resolve(outputArgument) : undefined;
-const filter = process.env.PERF_FILTER;
+// The copy holds the whole corpus: it is removed even when a cleanup step throws.
+try {
+  copyTree(corpus, copy);
+  fs.writeFileSync(path.join(copy, '.editorconfig'), renderEditorConfig(), 'utf8');
+  const output = outputArgument ? path.resolve(outputArgument) : undefined;
+  const filter = process.env.PERF_FILTER;
 
-const files = csharpFiles(copy).filter((file) => !filter || file.includes(filter));
-const inputs = new Map(files.map((file) => [file, fs.readFileSync(file, 'utf8')]));
-const disqualified = discoverDisqualifiedTypeNames(inputs.values());
-const settings = createDefaultSettings();
-const stageTotals = new Map<string, number>();
-const fileTotals: { file: string; ms: number }[] = [];
-let notIdempotent = 0;
+  const files = csharpFiles(copy).filter((file) => !filter || file.includes(filter));
+  const inputs = new Map(files.map((file) => [file, fs.readFileSync(file, 'utf8')]));
+  const disqualified = discoverDisqualifiedTypeNames(inputs.values());
+  const settings = createDefaultSettings();
+  const stageTotals = new Map<string, number>();
+  const fileTotals: { file: string; ms: number }[] = [];
+  let notIdempotent = 0;
 
-function clean(source: string, file: string, issues: string[], timed: boolean): string {
-  const started = performance.now();
-  const pipeline = getCleanupPipeline(source, file, settings, disqualified, (issue) => issues.push(`${issue.kind}: ${issue.filePath}: ${issue.detail}`));
-  if (timed) {
-    stageTotals.set('(pipeline setup)', (stageTotals.get('(pipeline setup)') ?? 0) + performance.now() - started);
-  }
-
-  let current = source;
-  for (const step of pipeline.transformations) {
-    const before = performance.now();
-    current = step.apply(current) ?? current;
+  function clean(source: string, file: string, issues: string[], timed: boolean): string {
+    const started = performance.now();
+    const pipeline = getCleanupPipeline(file, settings, disqualified, (issue) => issues.push(`${issue.kind}: ${issue.filePath}: ${issue.detail}`));
     if (timed) {
-      stageTotals.set(step.name, (stageTotals.get(step.name) ?? 0) + performance.now() - before);
+      stageTotals.set('(pipeline setup)', (stageTotals.get('(pipeline setup)') ?? 0) + performance.now() - started);
     }
+
+    let current = source;
+    for (const step of pipeline.transformations) {
+      const before = performance.now();
+      current = step.apply(current) ?? current;
+      if (timed) {
+        stageTotals.set(step.name, (stageTotals.get(step.name) ?? 0) + performance.now() - before);
+      }
+    }
+
+    return current;
   }
 
-  return current;
-}
+  const started = performance.now();
+  for (const file of files) {
+    const input = inputs.get(file) as string;
+    const issues: string[] = [];
+    const fileStarted = performance.now();
+    const cleaned = clean(input, file, issues, true);
+    fileTotals.push({ file: path.relative(copy, file), ms: performance.now() - fileStarted });
 
-const started = performance.now();
-for (const file of files) {
-  const input = inputs.get(file) as string;
-  const issues: string[] = [];
-  const fileStarted = performance.now();
-  const cleaned = clean(input, file, issues, true);
-  fileTotals.push({ file: path.relative(copy, file), ms: performance.now() - fileStarted });
-
-  const second = clean(cleaned, file, [], false);
-  if (second !== cleaned) {
-    notIdempotent++;
-  }
-
-  if (output) {
-    const target = path.join(output, path.relative(copy, file));
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(`${target}.out`, cleaned, 'utf8');
-    fs.writeFileSync(`${target}.issues`, issues.map((issue) => issue.replace(copy, '<corpus>')).join('\n'), 'utf8');
+    const second = clean(cleaned, file, [], false);
     if (second !== cleaned) {
-      fs.writeFileSync(`${target}.second`, second, 'utf8');
+      notIdempotent++;
+    }
+
+    if (output) {
+      const target = path.join(output, path.relative(copy, file));
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(`${target}.out`, cleaned, 'utf8');
+      fs.writeFileSync(`${target}.issues`, issues.map((issue) => issue.replace(copy, '<corpus>')).join('\n'), 'utf8');
+      if (second !== cleaned) {
+        fs.writeFileSync(`${target}.second`, second, 'utf8');
+      }
     }
   }
-}
 
-const total = performance.now() - started;
-const cleanupTotal = fileTotals.reduce((sum, entry) => sum + entry.ms, 0);
-const lines = [
-  `files: ${files.length}, cleanup: ${cleanupTotal.toFixed(0)} ms (with the idempotence pass: ${total.toFixed(0)} ms), not idempotent: ${notIdempotent}`,
-  '',
-  'stage totals (first pass):',
-  ...[...stageTotals]
-    .sort((a, b) => b[1] - a[1])
-    .map(([name, ms]) => `  ${ms.toFixed(0).padStart(7)} ms  ${name}`),
-  '',
-  'slowest files:',
-  ...[...fileTotals]
-    .sort((a, b) => b.ms - a.ms)
-    .slice(0, 10)
-    .map((entry) => `  ${entry.ms.toFixed(0).padStart(7)} ms  ${entry.file}`),
-];
-console.log(lines.join('\n'));
-if (output) {
-  fs.writeFileSync(path.join(output, 'timings.txt'), `${lines.join('\n')}\n`, 'utf8');
+  const total = performance.now() - started;
+  const cleanupTotal = fileTotals.reduce((sum, entry) => sum + entry.ms, 0);
+  const lines = [
+    `files: ${files.length}, cleanup: ${cleanupTotal.toFixed(0)} ms (with the idempotence pass: ${total.toFixed(0)} ms), not idempotent: ${notIdempotent}`,
+    '',
+    'stage totals (first pass):',
+    ...[...stageTotals]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, ms]) => `  ${ms.toFixed(0).padStart(7)} ms  ${name}`),
+    '',
+    'slowest files:',
+    ...[...fileTotals]
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 10)
+      .map((entry) => `  ${entry.ms.toFixed(0).padStart(7)} ms  ${entry.file}`),
+  ];
+  console.log(lines.join('\n'));
+  if (output) {
+    fs.writeFileSync(path.join(output, 'timings.txt'), `${lines.join('\n')}\n`, 'utf8');
+  }
+} finally {
+  fs.rmSync(copy, { recursive: true, force: true });
 }
-
-fs.rmSync(copy, { recursive: true, force: true });

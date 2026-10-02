@@ -14,9 +14,10 @@ import {
   unparenthesized,
   withParentheses,
 } from './editorConfigPrecedence';
-import { EditorConfigIssueReporter, describeIssue, hasParseErrors, lineStartAt } from './editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, hasParseErrors } from './editorConfigSupport';
 import { NULLABLE_VALUE_TYPE, isNonNullableValueType, isPlainReferenceType, isVariable } from './typeFacts';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
+import { loadProjectFacts } from './editorConfigQualityRulesProject';
 
 /**
  * Operator, null-check and pattern preferences. Each rewrite keeps the evaluation of every operand
@@ -37,7 +38,7 @@ function rewrite(source: string, collect: Collect): string {
     const tree = parseCSharp(current);
     let edits: TextEdit[];
     try {
-      edits = collect(current, tree.rootNode);
+      edits = collect(current, tree.rootNode).map((edit) => separatedFromNeighbors(current, edit));
     } finally {
       tree.delete();
     }
@@ -51,6 +52,24 @@ function rewrite(source: string, collect: Collect): string {
   }
 
   return current;
+}
+
+/**
+ * `edit` with a space where it would join two words: `return(x)` and `return!(x is T)` lose the
+ * only thing between the keyword and the operand.
+ */
+function separatedFromNeighbors(source: string, edit: TextEdit): TextEdit {
+  const isWord = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}_]/u.test(c);
+  const before = source[edit.start - 1];
+  const after = source[edit.end];
+  if (edit.text === '') {
+    return isWord(before) && isWord(after) && !isWord(source[edit.start]) ? { ...edit, text: ' ' } : edit;
+  }
+
+  const prefix = isWord(before) && isWord(edit.text[0]) && !isWord(source[edit.start]) ? ' ' : '';
+  const suffix = isWord(after) && isWord(edit.text.at(-1)) && !isWord(source[edit.end - 1]) ? ' ' : '';
+
+  return prefix || suffix ? { ...edit, text: `${prefix}${edit.text}${suffix}` } : edit;
 }
 
 /** A rule for a boolean option that rewrites while the option is `true` and enforced. */
@@ -121,7 +140,6 @@ const PRIMARY_EXPRESSIONS: Record<string, true> = {
   member_access_expression: true,
   invocation_expression: true,
   element_access_expression: true,
-  parenthesized_expression: true,
   object_creation_expression: true,
   string_literal: true,
   verbatim_string_literal: true,
@@ -214,7 +232,8 @@ function unnecessaryParentheses(source: string, root: Node, values: Record<Paren
       continue;
     }
 
-    if (isUnnecessary(parenthesized, inner, values)) {
+    // `((a || b)) && c`: the outer pair is judged by what it finally encloses, since the inner pair goes too.
+    if (isUnnecessary(parenthesized, unparenthesized(inner), values)) {
       edits.push({ start: parenthesized.startIndex, end: inner.startIndex, text: '' }, { start: inner.endIndex, end: parenthesized.endIndex, text: '' });
     }
   }
@@ -331,6 +350,8 @@ const compoundAssignment: Collect = (source, root) => {
       (operator === '??' && !isVariable(left)) ||
       !operandLeft ||
       !operandRight ||
+      // `x ??= throw ...` does not compile (CS8115): a throw expression is only allowed after `??`.
+      unparenthesized(operandRight).type === 'throw_expression' ||
       normalized(operandLeft.text) !== normalized(left.text) ||
       hasParseErrors(assignment) ||
       hasComment(source, left.endIndex, operandRight.startIndex)
@@ -459,17 +480,64 @@ const coalesceExpressions: Collect = (_source, root) => {
     const coalesces =
       (normalized(value.text) === subject && isPlainReferenceType(type, root)) ||
       (valueAccess !== undefined && valueAccess !== null && normalized(valueAccess.text) === subject && NULLABLE_VALUE_TYPE.test(type ?? ''));
-    if (coalesces) {
+    if (coalesces && fallbackConverts(other, type!)) {
       edits.push({
         start: conditional.startIndex,
         end: conditional.endIndex,
-        text: withParentheses(`${test.subject.text} ?? ${withParentheses(other.text, precedenceOf(other), 2)}`, 2, requiredPrecedence(conditional)),
+        // A throw expression must stay bare after `??`: `x ?? (throw e)` does not compile (CS8115).
+        text: withParentheses(`${test.subject.text} ?? ${other.type === 'throw_expression' ? other.text : withParentheses(other.text, precedenceOf(other), 2)}`, 2, requiredPrecedence(conditional)),
       });
     }
   }
 
   return edits;
 };
+
+const OBJECT_TYPES: Record<string, true> = { object: true, Object: true, 'System.Object': true };
+const NUMERIC_TYPES = /^(?:byte|sbyte|short|ushort|int|uint|long|ulong|nint|nuint|float|double|decimal)$/;
+
+/**
+ * Whether `other` is known to convert to `type` (for `T?`, to `T`), so that `x ?? other` compiles
+ * where `x != null ? x : other` did: since C# 9 a conditional whose branches share no type takes
+ * the target's (`object v = s != null ? s : DBNull.Value`), but `??` never does (CS0019).
+ */
+function fallbackConverts(other: Node, type: string): boolean {
+  const value = unparenthesized(other);
+  const bare = type.replace(/\?$/, '');
+  if (value.type === 'null_literal' || value.type === 'throw_expression' || OBJECT_TYPES[bare] === true) {
+    return true;
+  }
+
+  if (value.type === 'default_expression') {
+    // `default` takes the type of `x`; `default(T)` has its own.
+    return value.namedChildCount === 0 || value.namedChildren[0].text.replace(/\s+/g, '').replace(/\?$/, '') === bare;
+  }
+
+  switch (value.type) {
+    case 'string_literal':
+    case 'verbatim_string_literal':
+    case 'raw_string_literal':
+    case 'interpolated_string_expression':
+      return STRING_TYPES.test(bare);
+    case 'boolean_literal':
+      return bare === 'bool';
+    case 'character_literal':
+      return bare === 'char';
+    // A non-negative `int` constant converts to every numeric type, or the type converts to `int`.
+    case 'integer_literal':
+      return NUMERIC_TYPES.test(bare) && !/[uUlL]$/.test(value.text) && Number(value.text.replace(/_/g, '')) <= 2147483647;
+    case 'this_expression': {
+      let owner = value.parent;
+      while (owner && !/^(?:class|struct|record)_declaration$/.test(owner.type)) {
+        owner = owner.parent;
+      }
+
+      return owner?.childForFieldName('name')?.text === bare && !owner.childForFieldName('type_parameters');
+    }
+    default:
+      return subjectTypeText(value)?.replace(/\s+/g, '').replace(/\?$/, '') === bare;
+  }
+}
 
 /** `x.HasValue` / `!x.HasValue`. */
 function hasValueTest(condition: Node): NullTest | undefined {
@@ -507,6 +575,16 @@ function receiverInChain(access: Node, subject: string): Node | undefined {
   }
 }
 
+/**
+ * True when a value of the declared `type` may be a `Nullable<T>`: its type is unknown (`var`), ends in `?`,
+ * names `Nullable<…>`, or is a plain name, which a `using` alias may bind to `Nullable<T>` (`using N = int?;`,
+ * also as a `global using` in another file or a project `<Using Alias>`). A generic or qualified name, such as
+ * `Lazy<string>`, never is: an alias is neither.
+ */
+function mayBeNullableValueType(type: string | undefined): boolean {
+  return type === undefined || type.endsWith('?') || /\bNullable\s*</.test(type) || /^@?[\p{L}_][\p{L}\p{N}_]*$/u.test(type);
+}
+
 /** `x != null ? x.Y : null` becomes `x?.Y`. */
 const nullPropagation: Collect = (source, root) => {
   const edits: TextEdit[] = [];
@@ -520,12 +598,15 @@ const nullPropagation: Collect = (source, root) => {
     const value = test.isNull ? parts.whenFalse : parts.whenTrue;
     const nullBranch = test.isNull ? parts.whenTrue : parts.whenFalse;
     const receiver = receiverInChain(value, normalized(test.subject.text));
+    const type = subjectTypeText(test.subject);
     if (
       unparenthesized(nullBranch).type !== 'null_literal' ||
       !receiver ||
       !/^[.[]/.test(source.slice(receiver.endIndex, receiver.endIndex + 1)) ||
       /\?[.[]/.test(value.text) ||
-      (!test.byPattern && !isPlainReferenceType(subjectTypeText(test.subject), root))
+      (!test.byPattern && !isPlainReferenceType(type, root)) ||
+      // Only `Nullable<T>` has these members, and on it `x?.M` binds `M` on `T`: `x?.Value` does not compile.
+      (/^\.\s*@?(?:Value|HasValue|GetValueOrDefault)\b/.test(source.slice(receiver.endIndex)) && mayBeNullableValueType(type) && !isPlainReferenceType(type, root))
     ) {
       continue;
     }
@@ -540,6 +621,60 @@ const nullPropagation: Collect = (source, root) => {
 // ---------------------------------------------------------------------------------------------
 // IDE1005 csharp_style_conditional_delegate_call
 // ---------------------------------------------------------------------------------------------
+
+/** Framework delegate types; `==` on a delegate is the built-in delegate equality. */
+const FRAMEWORK_DELEGATE_TYPES = /^(?:System\.)?(?:Action|Func|EventHandler|Predicate|Comparison|Converter)$/;
+
+/**
+ * True when `x != null` on `subject` cannot call a user-defined `!=`, so `x?.` keeps its meaning:
+ * a field-like event of the enclosing type (always of a delegate type), or a variable whose
+ * declared type is a framework delegate, a delegate the file declares, or a plain reference type.
+ */
+function comparesByReference(subject: Node, root: Node): boolean {
+  if (eventFieldType(subject) !== undefined) {
+    return true;
+  }
+
+  const type = subjectTypeText(subject);
+  const name = type?.replace(/\?$/, '').replace(/<.*>$/, '');
+  if (!name) {
+    return false;
+  }
+
+  const declarations = findAll(root, ['class_declaration', 'interface_declaration', 'struct_declaration', 'record_declaration', 'enum_declaration', 'delegate_declaration']).filter(
+    (declaration) => declaration.childForFieldName('name')?.text === name
+  );
+
+  return (
+    isPlainReferenceType(type, root) ||
+    (declarations.length > 0 ? declarations.every((declaration) => declaration.type === 'delegate_declaration') : FRAMEWORK_DELEGATE_TYPES.test(name))
+  );
+}
+
+/** The type of the field-like event `subject` (`E` or `this.E`) names, unless a local of that name hides it. */
+function eventFieldType(subject: Node): string | undefined {
+  const isThisMember = subject.type === 'member_access_expression' && subject.childForFieldName('expression')?.type === 'this_expression';
+  const name = subject.type === 'identifier' ? subject.text : isThisMember ? subject.childForFieldName('name')?.text : undefined;
+  let member = subject;
+  while (member.parent && member.parent.type !== 'declaration_list') {
+    member = member.parent;
+  }
+
+  const hidden =
+    subject.type === 'identifier' &&
+    (declaredNames(member).has(name ?? '') || member.descendantsOfType('lambda_expression').some((lambda) => lambda.childForFieldName('parameters')?.text === name));
+  if (!name || !member.parent || hidden) {
+    return undefined;
+  }
+
+  const types = member.parent.namedChildren
+    .filter((sibling) => sibling.type === 'event_field_declaration')
+    .map((event) => event.namedChildren.find((child) => child.type === 'variable_declaration'))
+    .filter((declaration) => declaration?.namedChildren.some((child) => child.type === 'variable_declarator' && child.childForFieldName('name')?.text === name))
+    .map((declaration) => declaration!.childForFieldName('type')?.text.replace(/\s+/g, ''));
+
+  return types.length === 1 ? types[0] : undefined;
+}
 
 /** `if (handler != null) handler(args);` becomes `handler?.Invoke(args);`. */
 const conditionalDelegateCalls: Collect = (source, root) => {
@@ -560,6 +695,10 @@ const conditionalDelegateCalls: Collect = (source, root) => {
       !invoked ||
       !args ||
       normalized(invoked.text) !== normalized(test.subject.text) ||
+      // `?.` never calls a user-defined `!=` (a destroyed Unity object equals null). A direct call
+      // `x(...)` needs a delegate, which cannot declare `!=`, unless `x` is `dynamic`; `x.Invoke(...)`
+      // may be any method.
+      (!test.byPattern && (invoked !== callee ? !comparesByReference(test.subject, root) : subjectTypeText(test.subject) === 'dynamic')) ||
       hasParseErrors(statement) ||
       hasComment(source, statement.startIndex, statement.endIndex)
     ) {
@@ -909,12 +1048,17 @@ function declaredNames(root: Node): Set<string> {
   return names;
 }
 
-/** `Int32 x`, `String.Empty` become `int x`, `string.Empty` (bare names only with `using System;`). */
-function predefinedTypes(forDeclarations: boolean, forMemberAccess: boolean): Collect {
+/**
+ * `Int32 x`, `String.Empty` become `int x`, `string.Empty`. A bare name only with `using System;`
+ * and when `projectDeclares` shows that no other file of the project declares a type or a global
+ * using alias of that name, either of which binds before the import. Without project facts, only
+ * `System.X` is changed.
+ */
+function predefinedTypes(forDeclarations: boolean, forMemberAccess: boolean, projectDeclares: ((name: string) => boolean) | undefined): Collect {
   return (_source, root) => {
     const edits: TextEdit[] = [];
     const declared = declaredNames(root);
-    const importsSystem = findAll(root, 'using_directive').some((using) => /^(?:global\s+)?using\s+System\s*;$/.test(using.text));
+    const importsSystem = projectDeclares !== undefined && findAll(root, 'using_directive').some((using) => /^(?:global\s+)?using\s+System\s*;$/.test(using.text));
 
     for (const identifier of findAll(root, 'identifier')) {
       const keyword = FRAMEWORK_TYPES[identifier.text];
@@ -932,7 +1076,7 @@ function predefinedTypes(forDeclarations: boolean, forMemberAccess: boolean): Co
 
         node = parent!;
         parent = parent!.parent;
-      } else if (!importsSystem) {
+      } else if (!importsSystem || projectDeclares!(identifier.text)) {
         continue;
       }
 
@@ -1133,7 +1277,29 @@ function topLevelParts(text: string): string[] {
   return parts;
 }
 
-/** `{ A: { B: p } }` becomes `{ A.B: p }` when the nested pattern has no type, designation or other member. */
+/** The innermost bracket (`{`, `[` or `(`) left open before `index`. */
+function enclosingBracket(text: string, index: number): string | undefined {
+  let depth = 0;
+  for (let i = index - 1; i >= 0; i--) {
+    if ('}])'.includes(text[i])) {
+      depth++;
+    } else if ('{[('.includes(text[i])) {
+      if (depth === 0) {
+        return text[i];
+      }
+
+      depth--;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * `{ A: { B: p } }` becomes `{ A.B: p }` when the nested pattern has no type, designation or other
+ * member. Only property patterns take dotted names: a named subpattern of a positional pattern
+ * (`Point(1, Name: { Length: 3 })`) stays.
+ */
 function extendPropertyPatterns(pattern: string): string {
   let current = pattern;
   for (let changed = true; changed; ) {
@@ -1154,7 +1320,7 @@ function extendPropertyPatterns(pattern: string): string {
       const parts = topLevelParts(inner);
       const member = parts.length === 1 ? /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*:\s*([\s\S]+?)\s*$/.exec(parts[0]) : null;
       const after = current.slice(close + 1).trimStart();
-      if (!member || !/^[,}]/.test(after)) {
+      if (!member || !/^[,}]/.test(after) || enclosingBracket(current, match.index + match[1].length) !== '{') {
         continue;
       }
 
@@ -1208,8 +1374,8 @@ function forwardedParameters(lambda: Node): { name: string; type?: string }[] | 
 /**
  * `x => M(x)` becomes `M` when `M` is the file's only method or local function of that name,
  * not generic, and its parameter and return types equal the delegate's (written as `Func`/`Action`
- * of the variable, or as the lambda's parameter types for a `void` method). Other lambdas that
- * only forward their parameters are reported.
+ * of the variable, or as the lambda's parameter types of a `var` local for a `void` method).
+ * `async`/`static` lambdas are kept; other lambdas that only forward their parameters are reported.
  */
 function methodGroups(report: EditorConfigIssueReporter): Collect {
   return (source, root) => {
@@ -1225,7 +1391,11 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
         args.length === parameters.length &&
         args.every((argument, index) => argument.text === parameters[index].name) &&
         (callee?.type === 'identifier' || callee?.type === 'member_access_expression');
-      const modifiers = /\b(?:async|static)\s*$/.test(source.slice(lineStartAt(source, lambda.startIndex), lambda.startIndex));
+      // `async x => M(x)` is a lambda holding `async` and the lambda it modifies; `static` comes first.
+      const modifiers =
+        lambda.children[0]?.type === 'static' ||
+        (lambda.children[0]?.type === 'identifier' && lambda.children[0].text === 'async') ||
+        (lambda.parent?.type === 'lambda_expression' && lambda.parent.childForFieldName('body') !== lambda);
       if (!forwards || modifiers || !callee || isInPossibleExpressionTree(lambda) || hasParseErrors(lambda)) {
         continue;
       }
@@ -1234,7 +1404,9 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
       const delegateTypes = delegateParameterTypes(declared ?? undefined)?.map((type) => type.replace(/\s+/g, ''));
       const typeArgs = declared?.namedChildren.find((child) => child.type === 'type_argument_list')?.namedChildren ?? [];
       const returns = declared?.namedChildren[0]?.text === 'Func' ? typeArgs[typeArgs.length - 1]?.text.replace(/\s+/g, '') : delegateTypes ? 'void' : undefined;
-      const parameterTypes = delegateTypes ?? (parameters!.every((parameter) => parameter.type) ? parameters!.map((parameter) => parameter.type!) : undefined);
+      // Without a written `Func`/`Action`, only `var` makes the lambda's own parameter types the delegate's:
+      // any other target (an argument, `Expression<...>`) may be an expression tree, which a method group cannot become.
+      const parameterTypes = delegateTypes ?? (declared?.text === 'var' && parameters!.every((parameter) => parameter.type) ? parameters!.map((parameter) => parameter.type!) : undefined);
       const candidates = callee.type === 'identifier' ? methods.filter((method) => method.childForFieldName('name')?.text === callee.text) : [];
       const method = candidates.length === 1 ? candidates[0] : undefined;
       const methodParameters = method?.childForFieldName('parameters')?.namedChildren.filter((child) => child.type === 'parameter') ?? [];
@@ -1242,6 +1414,8 @@ function methodGroups(report: EditorConfigIssueReporter): Collect {
       const matches =
         method !== undefined &&
         !method.namedChildren.some((child) => child.type === 'type_parameter_list' || child.type === 'attribute_list') &&
+        // A delegate to a partial method needs its implementation (CS0762), which may not exist.
+        !(method.childForFieldName('body') === null && method.namedChildren.some((child) => child.type === 'modifier' && child.text === 'partial')) &&
         parameterTypes !== undefined &&
         methodParameters.length === parameterTypes.length &&
         methodParameters.every(
@@ -1278,11 +1452,13 @@ export const OPERATOR_RULES: readonly Rule[] = [
   whenPreferred('dotnet_style_prefer_inferred_anonymous_type_member_names', inferredAnonymousNames),
   {
     option: 'dotnet_style_predefined_type_for_*',
-    apply: (source, { props }) => {
+    apply: (source, { props, project, filePath }) => {
       const forDeclarations = effectiveEditorConfigValue(props, 'dotnet_style_predefined_type_for_locals_parameters_members') === 'true';
       const forMemberAccess = effectiveEditorConfigValue(props, 'dotnet_style_predefined_type_for_member_access') === 'true';
+      const facts = project && (forDeclarations || forMemberAccess) ? loadProjectFacts(project, filePath) : undefined;
+      const projectDeclares = facts && !facts.incomplete ? (name: string) => facts.others.typeNames.has(name) || facts.others.globalUsingAliases.has(name) : undefined;
 
-      return forDeclarations || forMemberAccess ? rewrite(source, predefinedTypes(forDeclarations, forMemberAccess)) : source;
+      return forDeclarations || forMemberAccess ? rewrite(source, predefinedTypes(forDeclarations, forMemberAccess, projectDeclares)) : source;
     },
   },
   parenthesesRule(),

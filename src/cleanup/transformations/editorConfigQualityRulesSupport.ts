@@ -2,7 +2,7 @@ import { EditorConfigProperties } from '../editorconfig';
 import { SUPPORTED_DIAGNOSTICS, effectiveEditorConfigValue, isDiagnosticEnforced } from '../editorConfigRegistry';
 import { DeclaredSymbol, SourceModel, TypeInfo, spans, typeAt } from '../naming/sourceModel';
 import { Node, TextEdit } from '../parser';
-import { lex } from '../syntax/lexer';
+import { Token, lex } from '../syntax/lexer';
 import type { RuleContext } from './editorConfigCodeStyle';
 import { isRecoveredNode, lineEndAt, lineNumberAt, lineStartAt, modifiersOf } from './editorConfigSupport';
 
@@ -67,11 +67,110 @@ interface PragmaDirective {
   readonly ids: readonly string[];
 }
 
+/**
+ * An `[assembly: SuppressMessage(...)]` or `[module: SuppressMessage(...)]` attribute (what
+ * "Suppress in Suppression File" writes to `GlobalSuppressions.cs`).
+ */
+export interface GlobalSuppression {
+  /** The upper-cased diagnostic id of its check id (`"CA1822:Mark members as static"` -> `CA1822`). */
+  readonly id: string;
+  /**
+   * The simple names of the symbol its `Target` names, outermost first (`~M:App.Widget.Size~System.Int32`
+   * -> `App`, `Widget`, `Size`); `undefined` without a `Target`, which suppresses the whole module.
+   */
+  readonly target?: readonly string[];
+}
+
+/** The assembly- and module-level `SuppressMessage` attributes of `source` whose check id is a string literal. */
+export function globalSuppressionsOf(source: string): GlobalSuppression[] {
+  const tokens = lex(source).tokens;
+  const text = (index: number): string => source.slice(tokens[index].start, tokens[index].end);
+  const suppressions: GlobalSuppression[] = [];
+  for (let i = 0; i + 2 < tokens.length; i++) {
+    if (tokens[i].type !== '[' || !/^(?:assembly|module)$/.test(text(i + 1)) || tokens[i + 2].type !== ':') {
+      continue;
+    }
+
+    // Each `SuppressMessage(...)` of the attribute list, up to its closing `]`.
+    let depth = 0;
+    for (let j = i; j < tokens.length && tokens[j].type !== 'end'; j++) {
+      depth += tokens[j].type === '[' ? 1 : tokens[j].type === ']' ? -1 : 0;
+      if (depth === 0) {
+        i = j;
+        break;
+      }
+
+      if (tokens[j].type === 'identifier' && /^SuppressMessage(?:Attribute)?$/.test(text(j)) && tokens[j + 1]?.type === '(') {
+        const suppression = suppressionOf(tokens, text, j + 2);
+        if (suppression) {
+          suppressions.push(suppression);
+        }
+      }
+    }
+  }
+
+  return suppressions;
+}
+
+/**
+ * The check id and `Target` of the `SuppressMessage` arguments starting at `tokens[first]`. A
+ * `Target` that is not a string literal counts as none: the suppression then covers everything.
+ */
+function suppressionOf(tokens: readonly Token[], text: (index: number) => string, first: number): GlobalSuppression | undefined {
+  const literal = (index: number): string | undefined =>
+    tokens[index].type === 'string_literal' || tokens[index].type === 'verbatim_string_literal' ? text(index).replace(/^@?"|"$/g, '') : undefined;
+  const positional: (string | undefined)[] = [];
+  let target: string | undefined;
+  let depth = 0;
+  let start = first;
+  for (let k = first; k < tokens.length && tokens[k].type !== 'end'; k++) {
+    const type = tokens[k].type;
+    if (type === '(' || type === '[' || type === '{') {
+      depth++;
+    } else if (depth > 0 && (type === ')' || type === ']' || type === '}')) {
+      depth--;
+    } else if (depth === 0 && (type === ',' || type === ')')) {
+      const named = k - start === 3 && tokens[start].type === 'identifier' && tokens[start + 1].type === '=';
+      if (named && text(start) === 'Target') {
+        target = literal(start + 2);
+      } else if (!named) {
+        positional.push(k - start === 1 ? literal(start) : undefined);
+      }
+
+      if (type === ')') {
+        break;
+      }
+
+      start = k + 1;
+    }
+  }
+
+  const id = positional[1]?.split(':')[0].trim().toUpperCase();
+
+  return id ? { id, target: target === undefined ? undefined : targetNames(target) } : undefined;
+}
+
+/**
+ * The simple names of a suppression target: a documentation id (`~M:Ns.Type.Member(System.Int32)`,
+ * ``T:Ns.Outer`1``) or the older `Ns.Type.#Member(...)`. Constructors are `.ctor` and `.cctor`.
+ */
+function targetNames(target: string): string[] {
+  return target
+    .replace(/^~?[A-Z]:/, '')
+    .replace(/[(~][\s\S]*$/, '')
+    .replace(/#\.?(c?ctor)$/, '#$1')
+    .split(/[.+]/)
+    .map((segment) => (/^#c?ctor$/.test(segment) ? `.${segment.slice(1)}` : segment.replace(/`+\d+$/, '').replace(/^.*#/, '')))
+    .filter(Boolean);
+}
+
 /** `#pragma warning disable/restore` directives and `[SuppressMessage]` attributes of a file. */
 export class Suppressions {
   private readonly pragmas: PragmaDirective[] = [];
+  private readonly globals: readonly GlobalSuppression[];
 
-  constructor(source: string) {
+  /** `external`: the global suppressions of the project's other files. */
+  constructor(source: string, external: readonly GlobalSuppression[] = []) {
     for (const trivia of lex(source).trivia) {
       if (trivia.type !== 'preproc_pragma') {
         continue;
@@ -87,11 +186,16 @@ export class Suppressions {
         this.pragmas.push({ offset: trivia.start, disable: match[1] === 'disable', ids });
       }
     }
+
+    this.globals = [...globalSuppressionsOf(source), ...external];
   }
 
-  /** True when `diagnosticId` is suppressed at `node` (by a pragma, or an attribute on it or a containing declaration). */
+  /**
+   * True when `diagnosticId` is suppressed at `node`: by a pragma, an attribute on it or a containing
+   * declaration, or a global attribute targeting the module or (possibly) a declaration holding it.
+   */
   isSuppressed(diagnosticId: string, node: Node): boolean {
-    return this.isSuppressedAt(diagnosticId, node.startIndex) || hasSuppressMessageAttribute(node, diagnosticId);
+    return this.isSuppressedAt(diagnosticId, node.startIndex) || hasSuppressMessageAttribute(node, diagnosticId) || this.isGloballySuppressed(diagnosticId, node);
   }
 
   isSuppressedAt(diagnosticId: string, offset: number): boolean {
@@ -109,6 +213,90 @@ export class Suppressions {
 
     return disabled;
   }
+
+  /**
+   * Matches targets by simple names, ignoring their namespace part and overloads: a target naming
+   * another symbol of the same names suppresses too, so a fix is skipped rather than made against
+   * the analyzer's suppression.
+   */
+  private isGloballySuppressed(diagnosticId: string, node: Node): boolean {
+    const id = diagnosticId.toUpperCase();
+    const globals = this.globals.filter((suppression) => suppression.id === id);
+    if (globals.length === 0) {
+      return false;
+    }
+
+    const { namespaces, declarations } = enclosingNames(node);
+    const same = (targetName: string, name: string): boolean => name === '*' || targetName === name;
+
+    return globals.some(({ target }) => {
+      if (!target) {
+        return true;
+      }
+
+      // A namespace target holding the node, or a target ending with the node's outermost declarations.
+      if (target.length <= namespaces.length && target.every((name, index) => name === namespaces[index])) {
+        return true;
+      }
+
+      for (let count = 1; count <= Math.min(target.length, declarations.length); count++) {
+        const tail = target.slice(target.length - count);
+        if (tail.every((name, index) => same(name, declarations[index]))) {
+          return true;
+        }
+      }
+
+      return false;
+    });
+  }
+}
+
+const NAMED_DECLARATIONS: Record<string, true> = {
+  class_declaration: true,
+  struct_declaration: true,
+  record_declaration: true,
+  interface_declaration: true,
+  enum_declaration: true,
+  delegate_declaration: true,
+  method_declaration: true,
+  property_declaration: true,
+  event_declaration: true,
+  enum_member_declaration: true,
+};
+
+/**
+ * The namespace segments around `node` and the names of the declarations holding it, outermost
+ * first: constructors are `.ctor`/`.cctor`, fields and events their declarators' names, and
+ * declarations without a simple name (operators, indexers, destructors) `*`, matching any target name.
+ */
+export function enclosingNames(node: Node): { namespaces: string[]; declarations: string[] } {
+  const namespaces: string[] = [];
+  const declarations: string[] = [];
+  let root = node;
+  for (let current: Node | null = node; current; current = current.parent) {
+    root = current;
+    const name = current.childForFieldName('name')?.text.replace(/^@/, '');
+    if (current.type === 'namespace_declaration' || current.type === 'file_scoped_namespace_declaration') {
+      namespaces.unshift(...(name ?? '').replace(/\s+/g, '').split('.'));
+    } else if (current.type === 'constructor_declaration') {
+      declarations.unshift(modifiersOf(current).some((modifier) => modifier.text === 'static') ? '.cctor' : '.ctor');
+    } else if (current.type === 'field_declaration' || current.type === 'event_field_declaration') {
+      const declarators = current.descendantsOfType('variable_declarator');
+      declarations.unshift(declarators.length === 1 ? (declarators[0].childForFieldName('name')?.text ?? '*') : '*');
+    } else if (NAMED_DECLARATIONS[current.type] === true) {
+      declarations.unshift(name ?? '*');
+    } else if (/^(?:indexer|operator|conversion_operator|destructor)_declaration$/.test(current.type)) {
+      declarations.unshift('*');
+    }
+  }
+
+  // A file-scoped namespace is a sibling of the declarations it holds.
+  const fileScoped = root.namedChildren.find((child) => child.type === 'file_scoped_namespace_declaration');
+  if (fileScoped && namespaces.length === 0) {
+    namespaces.push(...(fileScoped.childForFieldName('name')?.text ?? '').replace(/\s+/g, '').split('.'));
+  }
+
+  return { namespaces, declarations };
 }
 
 function hasSuppressMessageAttribute(node: Node, diagnosticId: string): boolean {
@@ -519,6 +707,10 @@ export class DeclaredTypes {
       return local ?? undefined;
     }
 
+    if (this.mayDeclareInMember(name, offset)) {
+      return undefined;
+    }
+
     for (let type = typeAt(this.model, offset); type; type = type.parent) {
       if (type.memberNames.has(name)) {
         return this.fieldOrProperty(type, name);
@@ -531,6 +723,27 @@ export class DeclaredTypes {
     }
 
     return undefined;
+  }
+
+  /**
+   * True when the member containing `offset` may declare `name` in a way the source model does not
+   * record as a scoped local: pattern designations (`o is T name`, `case T name`, switch-expression
+   * arms, property patterns), query `let`/`join`/`into` names, deconstructions (`var (a, b) = ...`,
+   * `(T a, var b) = ...`, `foreach (var (a, b) in ...)`, which the parser reads as expressions), or
+   * anything the parser could not structure. Such a name may shadow a field or property, so the
+   * member is not a safe fallback.
+   */
+  private mayDeclareInMember(name: string, offset: number): boolean {
+    return (this.model.occurrencesByName.get(name) ?? []).some(
+      (occurrence) =>
+        occurrence.memberRoot !== undefined &&
+        occurrence.memberRoot.startIndex <= offset &&
+        offset < occurrence.memberRoot.endIndex &&
+        (((occurrence.role.kind === 'unknown' || occurrence.role.kind === 'declaration') &&
+          // Recorded declarations are either members (the fallback itself) or locals `localDeclaration` already scoped.
+          (occurrence.node === undefined || !this.model.symbolByNameNode.has(occurrence.node))) ||
+          (occurrence.node !== undefined && isDeconstructionTarget(occurrence.node)))
+    );
   }
 
   /**
@@ -588,6 +801,33 @@ export class DeclaredTypes {
 
     return initializer ? this.typeOf(initializer, depth + 1) : undefined;
   }
+}
+
+/** Nodes a deconstruction's left side is made of, as the parser reads it: `var (a, b)` is a call of `var`, `(T a, var b)` a tuple. */
+const DECONSTRUCTION_PARTS: Record<string, true> = { tuple_expression: true, invocation_expression: true, argument_list: true, argument: true, declaration_expression: true };
+
+/**
+ * True when `node` is inside the left side of a deconstruction: of an assignment
+ * (`var (a, b) = t`, `(T a, var b) = t`; a plain `(a, b) = t` too, which only makes the lookup
+ * more careful) or of a `foreach` (`foreach (var (a, b) in ts)`).
+ */
+function isDeconstructionTarget(node: Node): boolean {
+  let child = node;
+  for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (parent.type === 'assignment_expression') {
+      return child !== node && parent.childForFieldName('left') === child;
+    }
+
+    if (parent.type === 'for_each_statement') {
+      return child !== node && parent.namedChildren[0] === child;
+    }
+
+    if (DECONSTRUCTION_PARTS[parent.type] !== true) {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 export function unwrapParentheses(node: Node): Node {

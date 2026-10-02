@@ -147,7 +147,7 @@ suite('Code Janitor extension (real VS Code host)', () => {
         if (type === 'array') {
           assert.ok(Array.isArray(value), `"${key}" should be an array, got ${typeof value}.`);
         } else if (type) {
-          assert.equal(typeof value, type, `"${key}" should be a ${type}, got ${typeof value}.`);
+          assert.equal(typeof value, type === 'integer' ? 'number' : type, `"${key}" should be a ${type}, got ${typeof value}.`);
         }
 
         if (schema.enum) {

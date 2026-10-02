@@ -1,3 +1,4 @@
+import { STRING, classifyCSharp } from '../csharpScanner';
 import { TextEdit } from '../parser';
 import { Node } from '../syntax/node';
 import {
@@ -8,8 +9,10 @@ import {
   SourceModel,
   TypeInfo,
   identifierName,
+  namePath,
   spans,
   typeAt,
+  wordPattern,
 } from './sourceModel';
 
 /**
@@ -43,6 +46,9 @@ const RESERVED_KEYWORDS = new Set([
 const IDENTIFIER = /^[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}\p{Cf}]*$/u;
 
 class RenameRefused extends Error {}
+
+/** Lexical classification of a model's source, computed once for every rename planned in it. */
+const KINDS = new WeakMap<SourceModel, Uint8Array>();
 
 export function planRename(model: SourceModel, symbol: DeclaredSymbol, newName: string, targetName: TargetNameLookup): RenamePlan {
   try {
@@ -152,9 +158,7 @@ class Planner {
       refuse('it is not declared in a type');
     }
 
-    const declarations = this.model.symbols.filter(
-      (other) => other.category === 'member' && other.type === type && other.name === symbol.name
-    );
+    const declarations = this.symbolsNamed(symbol.name).filter((other) => other.category === 'member' && other.type === type);
     for (const declaration of declarations) {
       if (declaration.blocker) {
         refuse(`another member named '${symbol.name}' cannot be renamed (${declaration.blocker})`);
@@ -172,6 +176,7 @@ class Planner {
     }
 
     this.scopes.push(type.node);
+    this.refuseStrings(type.node);
     this.refuseCollisions(type.node, `'${this.newName}' is already used in ${type.name}`);
 
     const body = type.node.childForFieldName('body');
@@ -218,8 +223,14 @@ class Planner {
             refuse(`'${this.oldName}' is set in a target-typed object initializer`);
           }
 
-          if (role.creation.type === 'object_creation_expression' && typeName(role.creation.childForFieldName('type')) === type.name) {
+          if (role.creation.type === 'with_expression') {
+            if (this.withTargets(occurrence, role.creation, type)) {
+              this.edit(occurrence);
+            }
+          } else if (this.createsType(role.creation, type)) {
             this.edit(occurrence);
+          } else {
+            this.refuseInitializerOfDerivedType(role.creation, type);
           }
 
           break;
@@ -245,6 +256,7 @@ class Planner {
     this.refuseCollisions(region, `'${this.newName}' is already used in the scope of '${symbol.name}'`);
     this.refuseEnclosingDeclarations(region);
     this.scopes.push(region);
+    this.refuseStrings(region);
     this.renameInScope(symbol, region, false);
   }
 
@@ -274,6 +286,7 @@ class Planner {
       this.refuseCollisions(region, `'${this.newName}' is already used in the scope of '${symbol.name}'`);
       this.refuseEnclosingDeclarations(region);
       this.scopes.push(region);
+      this.refuseStrings(parameter.owner ?? region);
       this.renameInScope(parameter, region, false);
       this.renameDocNames(parameter.owner ?? region, ['param', 'paramref']);
     }
@@ -295,6 +308,7 @@ class Planner {
     this.refuseCollisions(region, `'${this.newName}' is already used in the scope of '${symbol.name}'`);
     this.refuseEnclosingDeclarations(region);
     this.scopes.push(region);
+    this.refuseStrings(region);
     this.renameInScope(symbol, region, true);
     this.renameDocNames(region, ['typeparam', 'typeparamref']);
     for (const comment of this.model.docComments) {
@@ -354,13 +368,13 @@ class Planner {
     }
 
     const ownerName = owner.type === 'method_declaration' ? owner.childForFieldName('name')?.text : undefined;
-    const owners = this.model.symbols
-      .filter((other) => other.category === 'parameter' && other.type === type && other.owner && other.name === symbol.name)
-      .filter(
-        (other) =>
-          other.owner?.type === owner.type &&
-          (owner.type === 'constructor_declaration' || other.owner.childForFieldName('name')?.text === ownerName)
-      );
+    const owners = this.symbolsNamed(symbol.name).filter(
+      (other) =>
+        other.category === 'parameter' &&
+        other.type === type &&
+        other.owner?.type === owner.type &&
+        (owner.type === 'constructor_declaration' || other.owner.childForFieldName('name')?.text === ownerName)
+    );
 
     return owners.length > 0 ? owners : [symbol];
   }
@@ -399,12 +413,19 @@ class Planner {
   private callTargetsConstructor(call: Node, occurrence: Occurrence, type: TypeInfo | undefined): boolean {
     switch (call.type) {
       case 'object_creation_expression':
-        return typeName(call.childForFieldName('type')) === type?.name;
+        return type !== undefined && this.createsType(call, type);
       case 'implicit_object_creation_expression':
         refuse(`named argument '${this.oldName}:' is passed to a target-typed 'new'`);
         break;
-      case 'constructor_initializer':
-        return call.children.some((child) => child.type === 'this') && typeAt(this.model, occurrence.start) === type;
+      case 'constructor_initializer': {
+        const inner = typeAt(this.model, occurrence.start);
+        if (call.children.some((child) => child.type === 'base')) {
+          this.refuseBaseInNestedType(inner, type, `named argument '${this.oldName}:' is passed to base(...)`);
+          return false;
+        }
+
+        return call.children.some((child) => child.type === 'this') && inner === type;
+      }
     }
 
     return false;
@@ -444,6 +465,7 @@ class Planner {
 
     if (receiver) {
       if (receiver.type === 'base_expression') {
+        this.refuseBaseInNestedType(typeAt(this.model, occurrence.start), type, `named argument '${this.oldName}:' is passed to a base.${calleeName} call`);
         return false;
       }
 
@@ -455,14 +477,8 @@ class Planner {
     }
 
     // Innermost local function named like the callee, if the call is inside its scope.
-    const localFunction = this.model.symbols
-      .filter(
-        (other) =>
-          other.kind === 'local_function' &&
-          other.name === calleeName &&
-          other.region &&
-          spans(other.region, occurrence.start, occurrence.end)
-      )
+    const localFunction = this.symbolsNamed(calleeName)
+      .filter((other) => other.kind === 'local_function' && other.region && spans(other.region, occurrence.start, occurrence.end))
       .sort((a, b) => (b.region?.startIndex ?? 0) - (a.region?.startIndex ?? 0))[0];
 
     if (owner.type === 'local_function_statement') {
@@ -478,9 +494,8 @@ class Planner {
 
   /** A simple-name reference inside the type resolves to the type's member unless shadowed. */
   private resolvesToMember(occurrence: Occurrence, type: TypeInfo): boolean {
-    for (const declaration of this.model.symbols) {
+    for (const declaration of this.symbolsNamed(this.oldName)) {
       if (
-        declaration.name === this.oldName &&
         declaration.category !== 'member' &&
         declaration.region &&
         spans(declaration.region, occurrence.start, occurrence.end) &&
@@ -514,20 +529,31 @@ class Planner {
 
   private memberAccessTargets(occurrence: Occurrence, receiver: Receiver, type: TypeInfo): boolean {
     switch (receiver.kind) {
-      case 'this':
-        return typeAt(this.model, occurrence.start) === type;
+      case 'this': {
+        const inner = typeAt(this.model, occurrence.start);
+        if (inner !== type && inner?.hasBaseList) {
+          refuse(`'${this.oldName}' is accessed through this in nested type ${inner.name}, which may derive from ${type.name}`);
+        }
+
+        return inner === type;
+      }
       case 'base':
+        this.refuseBaseInNestedType(typeAt(this.model, occurrence.start), type, `'${this.oldName}' is accessed through base`);
         return false;
       case 'conditional':
         refuse(`'${this.oldName}' is accessed through a conditional access whose target cannot be resolved`);
         break;
       case 'expression':
-        if (receiver.name === type.name || receiver.qualifiedName === type.name) {
+        if (receiver.name !== undefined && (receiver.name === type.name || this.receiverIsDeclaredAs(occurrence, receiver.name, type.name))) {
           return true;
         }
 
-        if (receiver.name !== undefined && this.receiverIsDeclaredAs(occurrence, receiver.name, type.name)) {
-          return true;
+        if (receiver.qualifiedName === type.name) {
+          if (receiver.path && designatesType(receiver.path, type)) {
+            return true;
+          }
+
+          this.refuseQualified(type);
         }
 
         refuse(`'${this.oldName}' is accessed through another expression whose type cannot be resolved syntactically`);
@@ -536,12 +562,66 @@ class Planner {
     return false;
   }
 
+  /** `value with { Name = ... }` sets the member of the value's type: ours on `this` or a value declared with the type. */
+  private withTargets(occurrence: Occurrence, withExpression: Node, type: TypeInfo): boolean {
+    const receiver = withExpression.namedChildren[0];
+    if (receiver?.type === 'this_expression' && typeAt(this.model, occurrence.start) === type) {
+      return true;
+    }
+
+    if (receiver?.type === 'identifier' && this.receiverIsDeclaredAs(occurrence, identifierName(receiver.text), type.name)) {
+      return true;
+    }
+
+    refuse(`'${this.oldName}' is set in a 'with' expression on a value whose type cannot be resolved syntactically`);
+  }
+
+  /**
+   * `new T(...)` or `new T { ... }` creates the type when `T` names it: a simple name, or a qualified
+   * name ending with the names of its containing types and namespaces. Another qualified `T` refuses.
+   */
+  private createsType(creation: Node, type: TypeInfo): boolean {
+    if (creation.type !== 'object_creation_expression') {
+      return false;
+    }
+
+    const typeSyntax = creation.childForFieldName('type');
+    if (typeName(typeSyntax) !== type.name) {
+      return false;
+    }
+
+    const path = namePath(typeSyntax);
+    if (path && designatesType(path, type)) {
+      return true;
+    }
+
+    this.refuseQualified(type);
+  }
+
+  /** Within `type`, an initializer of a type of the file that may derive from it reaches its private members. */
+  private refuseInitializerOfDerivedType(creation: Node, type: TypeInfo): void {
+    const created = creation.type === 'object_creation_expression' ? typeName(creation.childForFieldName('type')) : undefined;
+    if (created !== undefined && this.model.types.some((candidate) => candidate.name === created && candidate.hasBaseList)) {
+      refuse(`'${this.oldName}' is set in an object initializer of ${created}, which may derive from ${type.name}`);
+    }
+  }
+
+  private refuseQualified(type: TypeInfo): never {
+    refuse(`'${this.oldName}' is used through a qualified name that may designate another type named ${type.name}`);
+  }
+
+  /** A type nested in `type` that derives from it reaches its private members and constructors through `base`. */
+  private refuseBaseInNestedType(inner: TypeInfo | undefined, type: TypeInfo | undefined, use: string): void {
+    if (inner !== type) {
+      refuse(`${use} in nested type ${inner?.name}, which may derive from ${type?.name}`);
+    }
+  }
+
   /** The receiver is a local or parameter explicitly declared with the containing type. */
   private receiverIsDeclaredAs(occurrence: Occurrence, receiverName: string, typeName: string): boolean {
-    const declaration = this.model.symbols
+    const declaration = this.symbolsNamed(receiverName)
       .filter(
         (symbol) =>
-          symbol.name === receiverName &&
           (symbol.category === 'local' || symbol.category === 'parameter') &&
           symbol.regionPrecise &&
           symbol.region &&
@@ -555,10 +635,9 @@ class Planner {
 
   /** An inner declaration of the same name (lambda parameter, nested local) hides the symbol. */
   private shadowedWithin(occurrence: Occurrence, symbol: DeclaredSymbol, region: Node): boolean {
-    for (const declaration of this.model.symbols) {
+    for (const declaration of this.symbolsNamed(this.oldName)) {
       if (
         declaration !== symbol &&
-        declaration.name === this.oldName &&
         declaration.category !== 'member' &&
         declaration.region &&
         declaration.region !== region &&
@@ -596,9 +675,8 @@ class Planner {
 
   /** A local may not take the name of a local, parameter or type parameter of an enclosing scope. */
   private refuseEnclosingDeclarations(region: Node): void {
-    for (const declaration of this.model.symbols) {
+    for (const declaration of this.symbolsNamed(this.newName)) {
       if (
-        declaration.name === this.newName &&
         declaration.category !== 'member' &&
         declaration.region &&
         spans(declaration.region, region.startIndex, region.endIndex)
@@ -668,8 +746,9 @@ class Planner {
     );
     for (const match of text.matchAll(pattern)) {
       const qualifier = match[2];
-      const lastSegment = qualifier.slice(0, -1).split('.').pop()?.replace(/\{.*$/, '');
-      if (qualifier && lastSegment !== type.name) {
+      // A qualified cref names a member of our type only when its qualifier designates the type.
+      const path = qualifier.slice(0, -1).split('.').map((segment) => segment.replace(/\{.*$/, ''));
+      if (qualifier && (path[path.length - 1] !== type.name || !designatesType(path, type))) {
         continue;
       }
 
@@ -701,8 +780,40 @@ class Planner {
     return this.model.occurrencesByName.get(name) ?? [];
   }
 
+  private symbolsNamed(name: string): readonly DeclaredSymbol[] {
+    return this.model.symbolsByName.get(name) ?? [];
+  }
+
   private occurrencesIn(region: Node, name: string): Occurrence[] {
     return this.occurrences(name).filter((occurrence) => spans(region, occurrence.start, occurrence.end));
+  }
+
+  /**
+   * Refuses when the old name is the text of a string in `scope` (outside the interpolation holes the
+   * model already resolved): reflection, `nameof`-like attribute arguments (`CallerArgumentExpression`,
+   * `NotNullIfNotNull`, `MemberNotNull`, `DebuggerDisplay`) and the like name the symbol there.
+   */
+  private refuseStrings(scope: Node): void {
+    const source = this.model.source;
+    const text = scope.text;
+    if (!text.includes(this.oldName)) {
+      return;
+    }
+
+    let kinds = KINDS.get(this.model);
+    if (!kinds) {
+      kinds = classifyCSharp(source);
+      KINDS.set(this.model, kinds);
+    }
+
+    const resolvedEnds = new Set(this.occurrencesIn(scope, this.oldName).map((occurrence) => occurrence.end));
+    for (const match of text.matchAll(wordPattern(this.oldName, 'gu'))) {
+      const start = scope.startIndex + (match.index ?? 0);
+      if (kinds[start] === STRING && !resolvedEnds.has(start + match[0].length)) {
+        const line = source.slice(0, start).split('\n').length;
+        refuse(`'${this.oldName}' appears in a string on line ${line}, which may name it`);
+      }
+    }
   }
 
   private edit(occurrence: Occurrence): void {
@@ -724,11 +835,32 @@ function typeName(node: Node | null): string | undefined {
     return typeName(node.namedChildren[0] ?? null);
   }
 
-  if (node.type === 'qualified_name') {
+  if (node.type === 'qualified_name' || node.type === 'alias_qualified_name') {
     return typeName(node.childForFieldName('name'));
   }
 
   return undefined;
+}
+
+/**
+ * Whether the names `path` (`A.B.C`) may designate `type`: they end the chain of the namespaces and
+ * types declaring it (`App.Settings` and `Settings` for `namespace App { class Settings }`).
+ */
+function designatesType(path: readonly string[], type: TypeInfo): boolean {
+  const chain: string[] = [];
+  for (let current: TypeInfo | undefined = type; current; current = current.parent) {
+    chain.unshift(current.name);
+  }
+
+  for (let node = type.node.parent; node; node = node.parent) {
+    if (node.type === 'namespace_declaration' || node.type === 'file_scoped_namespace_declaration') {
+      chain.unshift(...(namePath(node.childForFieldName('name')) ?? ['']));
+    }
+  }
+
+  const offset = chain.length - path.length;
+
+  return offset >= 0 && path.every((name, index) => name === chain[offset + index]);
 }
 
 /** `///` lines directly above `offset` (a declaration start). */

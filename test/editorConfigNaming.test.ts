@@ -234,15 +234,14 @@ dotnet_naming_style.s_prefix.capitalization = camel_case
     );
   });
 
-  it('updates nameof, interpolations, same-type receivers and XML documentation but not strings or comments', () => {
+  it('updates nameof, interpolations, same-type receivers and XML documentation but not comments', () => {
     const source = [
       'class C',
       '{',
       '    /// <summary>Uses <see cref="m_Value"/> and <see cref="C.Compute(int)"/>.</summary>',
       '    private int m_Value;',
       '    public bool Same(C other) => other.m_Value == m_Value;',
-      '    public string Show() => $"{m_Value,5:N0} {nameof(m_Value)} {{m_Value}}"; // m_Value',
-      '    public string Raw() => "m_Value";',
+      '    public string Show() => $"{m_Value,5:N0} {nameof(m_Value)}"; // m_Value',
       '    /// <param name="Input">The input.</param>',
       '    /// <returns><paramref name="Input"/> doubled.</returns>',
       '    private int Compute(int Input) => Input * 2;',
@@ -256,8 +255,7 @@ dotnet_naming_style.s_prefix.capitalization = camel_case
         '    /// <summary>Uses <see cref="_value"/> and <see cref="C.Compute(int)"/>.</summary>',
         '    private int _value;',
         '    public bool Same(C other) => other._value == _value;',
-        '    public string Show() => $"{_value,5:N0} {nameof(_value)} {{m_Value}}"; // m_Value',
-        '    public string Raw() => "m_Value";',
+        '    public string Show() => $"{_value,5:N0} {nameof(_value)}"; // m_Value',
         '    /// <param name="input">The input.</param>',
         '    /// <returns><paramref name="input"/> doubled.</returns>',
         '    private int Compute(int input) => input * 2;',
@@ -408,6 +406,173 @@ dotnet_naming_style.t_prefix.capitalization = pascal_case
     expect(projectionResult.output).toBe(projection);
     expect(projectionResult.issues).toEqual([expect.stringMatching(/'Size' should be named '_size'.*anonymous type/)]);
   });
+
+  it('renames a member set in a with expression only on a value of its own type, and never the target of a local', () => {
+    const otherRecord = 'record Other(int Count);\nclass C\n{\n    private int Count;\n    Other M(Other o) => o with { Count = 1 };\n    int G() => Count;\n}\n';
+    const ownRecord = 'record R\n{\n    private int Count;\n    R M() => this with { Count = 1 };\n    R N(R other) => other with { Count = Count };\n}\n';
+    const local = 'class C\n{\n    Other M(Other o)\n    {\n        var Count = 1;\n        return o with { Count = Count };\n    }\n}\n';
+
+    const otherResult = clean(otherRecord);
+    expect(otherResult.output).toBe(otherRecord);
+    expect(otherResult.issues).toEqual([expect.stringMatching(/'Count' should be named '_count'.*'with' expression/)]);
+    expect(clean(ownRecord)).toEqual({ output: ownRecord.replaceAll('Count', '_count'), issues: [] });
+    expect(clean(local)).toEqual({ output: local.replace('var Count', 'var count').replace('Count = Count', 'Count = count'), issues: [] });
+  });
+
+  it('refuses a member reached through a qualified name that may designate another type of the same simple name', () => {
+    const app = (body: string, member = 'private static int Level;', library = 'public static int Level = 1;') =>
+      `namespace Lib { public class Settings { ${library} } }\nnamespace App\n{\n    class Settings\n    {\n        ${member}\n        ${body}\n    }\n}\n`;
+    const accesses = [
+      app('int M() => Lib.Settings.Level + Level;'),
+      app('object N() => new Lib.Settings { Level = 1 };'),
+      app('string S() => $"{Lib.Settings.Level}";'),
+    ];
+    const nested = 'class Outer\n{\n    class Inner\n    {\n        private static int Level;\n        int M() => Outer.Inner.Level + Inner.Level + Level;\n    }\n}\n';
+    const constructor = app('object N() => new Lib.Settings(Seed: 1);', 'private Settings(int Seed) { }', 'public Settings(int Seed) { }');
+
+    for (const source of accesses) {
+      const result = clean(source);
+      expect(result.output).toBe(source);
+      expect(result.issues).toEqual([expect.stringMatching(/'Level' should be named '_level'/)]);
+    }
+
+    expect(clean(nested)).toEqual({ output: nested.replaceAll('Level', '_level'), issues: [] });
+    const constructorResult = clean(constructor);
+    expect(constructorResult.output).toBe(constructor);
+    expect(constructorResult.issues).toContainEqual(expect.stringMatching(/line 6: parameter 'Seed' should be named 'seed'.*qualified/));
+  });
+
+  it('refuses a member a nested derived type reaches through base', () => {
+    const access = 'class C\n{\n    private int Count;\n    private int Get() => Count;\n    class D : C\n    {\n        int M() => base.Count + base.Get();\n    }\n}\n';
+    const constructor = 'class C\n{\n    private C(int Seed) { }\n    class Nested : C\n    {\n        Nested() : base(Seed: 3) { }\n    }\n}\n';
+
+    const accessResult = clean(access);
+    expect(accessResult.output).toBe(access);
+    expect(accessResult.issues).toEqual([expect.stringMatching(/'Count' should be named '_count'.*base/)]);
+    const constructorResult = clean(constructor);
+    expect(constructorResult.output).toBe(constructor);
+    expect(constructorResult.issues).toEqual([expect.stringMatching(/parameter 'Seed' should be named 'seed'.*base/)]);
+  });
+
+  it('refuses a member a nested derived type reaches through this or an object initializer', () => {
+    const access = 'class C\n{\n    private int Count;\n    private int Get() => Count;\n    class D : C\n    {\n        int M() => this.Count;\n    }\n}\n';
+    const initializer = 'class C\n{\n    private int Count;\n    private int Get() => Count;\n    class D : C\n    {\n        static D Make() => new D { Count = 1 };\n    }\n}\n';
+
+    for (const source of [access, initializer]) {
+      const result = clean(source);
+      expect(result.output).toBe(source);
+      expect(result.issues).toEqual([expect.stringMatching(/'Count' should be named '_count'/)]);
+    }
+  });
+
+  it('gives types and delegates nested in an interface public accessibility', () => {
+    const editorConfig = `[*.cs]
+dotnet_naming_rule.public_types.severity = warning
+dotnet_naming_rule.public_types.symbols = public_types
+dotnet_naming_rule.public_types.style = pascal_case
+dotnet_naming_symbols.public_types.applicable_kinds = class, delegate
+dotnet_naming_symbols.public_types.applicable_accessibilities = public
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+`;
+    const source = 'interface IHost\n{\n    class options { }\n    delegate void handler();\n}\n';
+
+    const issues = clean(source, editorConfig).issues;
+
+    expect(issues).toHaveLength(2);
+    expect(issues).toContainEqual(expect.stringMatching(/class 'options' should be named 'Options'/));
+    expect(issues).toContainEqual(expect.stringMatching(/delegate 'handler' should be named 'Handler'/));
+  });
+
+  it('skips discard-like names: _, _1 and any run of underscores', () => {
+    const source = 'class C\n{\n    void M()\n    {\n        Func<int, int, int> f = (a, __) => a;\n        Action<int> g = ___ => { };\n        Action<int, int> h = (_, _1) => { };\n    }\n}\n';
+
+    expect(clean(source)).toEqual({ output: source, issues: [] });
+  });
+
+  it('does not report members that implement an interface member of the file, or override events', () => {
+    const source = [
+      'interface IApi { void onEvent(); }',
+      'class Api : IApi',
+      '{',
+      '    public void onEvent() { }',
+      '}',
+      'class B { public virtual event Action changed; }',
+      'class D : B',
+      '{',
+      '    public override event Action changed;',
+      '}',
+      '',
+    ].join('\n');
+
+    const issues = clean(source).issues;
+
+    expect(issues).toHaveLength(2);
+    expect(issues).toContainEqual(expect.stringMatching(/line 1: method 'onEvent'/));
+    expect(issues).toContainEqual(expect.stringMatching(/line 6: event 'changed'/));
+  });
+
+  it('does not rename attributed members, whose name a serializer or framework may read', () => {
+    const source = [
+      'using System.Runtime.Serialization;',
+      '[DataContract]',
+      'class Dto',
+      '{',
+      '    [DataMember] private int count;',
+      '    public int Get() => count;',
+      '}',
+      'class Settings',
+      '{',
+      '    [JsonInclude] private int total;',
+      '    [UnityEngine.SerializeField] private float m_Speed;',
+      '    public int Sum() => total + (int)m_Speed;',
+      '}',
+      '[Serializable]',
+      'class State',
+      '{',
+      '    private int m_Value;',
+      '    public int Get() => m_Value;',
+      '}',
+      '',
+    ].join('\n');
+
+    const { output, issues } = clean(source);
+
+    expect(output).toBe(source);
+    expect(issues).toContainEqual(expect.stringMatching(/field 'count' should be named '_count'; not renamed because \[DataMember\] makes the name part of a serialized format/));
+    expect(issues).toContainEqual(expect.stringMatching(/field 'total' should be named '_total'; not renamed because it has attributes/));
+    expect(issues).toContainEqual(expect.stringMatching(/field 'm_Speed' should be named '_speed'; not renamed because it has attributes/));
+    expect(issues).toContainEqual(expect.stringMatching(/field 'm_Value' should be named '_value'; not renamed because \[Serializable\]/));
+  });
+
+  it('does not rename a symbol whose old name appears in a string in its scope', () => {
+    const source = [
+      'using System.Reflection;',
+      'using System.Runtime.CompilerServices;',
+      '[DebuggerDisplay("{m_Label}")]',
+      'class C',
+      '{',
+      '    private int count;',
+      '    private string m_Label;',
+      '    public object Read() => typeof(C).GetField("count", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(this);',
+      '    private string Check(bool Condition, [CallerArgumentExpression("Condition")] string expr = null) { if (Condition) { return expr; } return m_Label; }',
+      '    public string Text() => $"{{count}} {count}";',
+      '}',
+      '',
+    ].join('\n');
+
+    const { output, issues } = clean(source);
+
+    expect(output).toBe(source);
+    expect(issues).toContainEqual(expect.stringMatching(/field 'count' should be named '_count'; not renamed because 'count' appears in a string on line 8/));
+    expect(issues).toContainEqual(expect.stringMatching(/field 'm_Label' should be named '_label'; not renamed because 'm_Label' appears in a string on line 3/));
+    expect(issues).toContainEqual(expect.stringMatching(/parameter 'Condition' should be named 'condition'; not renamed because 'Condition' appears in a string on line 9/));
+  });
+
+  it('still renames a name used in an interpolation hole', () => {
+    const source = 'class C\n{\n    private int count;\n    public string Text() => $"{count} items";\n}\n';
+
+    expect(clean(source).output).toBe(source.replace(/\bcount\b/g, '_count'));
+  });
 });
 
 describe('code the parser misreads', () => {
@@ -464,6 +629,22 @@ describe('naming rules in the cleanup pipeline', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("drops the this. a rename no longer needs in the same run, so a second cleanup changes nothing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-naming-'));
+    try {
+      fs.writeFileSync(path.join(root, '.editorconfig'), `${template}\ndotnet_style_qualification_for_field = false:warning\n`);
+      const filePath = path.join(root, 'Sample.cs');
+      const source = 'public class Sample\n{\n    private readonly int table;\n\n    public Sample(int table)\n    {\n        this.table = table;\n    }\n\n    public int Get() => table;\n}\n';
+
+      const once = runCleanup(source, filePath, createDefaultSettings());
+
+      expect(once).toContain('        _table = table;\n');
+      expect(runCleanup(once, filePath, createDefaultSettings())).toBe(once);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('naming rules', () => {
@@ -510,6 +691,15 @@ describe('naming style (Roslyn NamingStyle port)', () => {
     expect(new NamingStyle('', 'Async', '', 'pascal_case').makeCompliant('loadAsy')).toBe('LoadAsync');
   });
 
+  it("falls back to Roslyn's second candidate when the first is not compliant", () => {
+    const kPrefix = new NamingStyle('k', '', '', 'pascal_case');
+    const interfacePrefix = new NamingStyle('I', '', '', 'pascal_case');
+
+    expect(kPrefix.makeCompliant('k_max')).toBe('kMax');
+    expect(interfacePrefix.makeCompliant('I_Foo')).toBe('IFoo');
+    expect(clean('interface I_Foo { }\n').issues).toEqual([expect.stringMatching(/interface 'I_Foo' should be named 'IFoo'/)]);
+  });
+
   it('checks compliance like Roslyn', () => {
     const underscoreCamel = new NamingStyle('_', '', '', 'camel_case');
     const pascal = new NamingStyle('', '', '', 'pascal_case');
@@ -522,5 +712,12 @@ describe('naming style (Roslyn NamingStyle port)', () => {
     expect(pascal.isCompliant('doWork')).toBe(false);
     expect(new NamingStyle('', '', '_', 'all_upper').isCompliant('MAX_count')).toBe(false);
     expect(new NamingStyle('', '', '_', 'first_word_upper').isCompliant('Max_count')).toBe(true);
+  });
+
+  it('treats characters without a simple case mapping as uncased, like .NET', () => {
+    const pascal = new NamingStyle('', '', '', 'pascal_case');
+
+    expect(pascal.isCompliant('ßeta')).toBe(true);
+    expect(new NamingStyle('', '', '', 'camel_case').isCompliant('ßeta')).toBe(true);
   });
 });

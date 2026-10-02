@@ -53,7 +53,8 @@ function applyNamingRules(
 
     const targets = new Map(violations.map((violation) => [violation.symbol, violation.newName]));
     const targetName = (symbol: DeclaredSymbol) => targets.get(symbol);
-    const accepted: Footprint[] = [];
+    // Scopes of the accepted renames, by the old and new names they touch.
+    const acceptedScopes = new Map<string, Node[]>();
     const edits: TextEdit[] = [];
     const unresolved: { readonly violation: NamingViolation; readonly reason: string }[] = [];
 
@@ -68,12 +69,23 @@ function applyNamingRules(
 
       // Renames with disjoint names or disjoint scopes commute; the rest are retried on the
       // renamed source, where they are checked again against the names already applied.
-      const footprint: Footprint = { names: [violation.symbol.name, violation.newName], scopes: plan.scopes };
-      if (accepted.some((other) => conflicts(other, footprint))) {
+      const names = [violation.symbol.name, violation.newName];
+      const overlaps = names.some((name) =>
+        (acceptedScopes.get(name) ?? []).some((x) => plan.scopes.some((y) => x.startIndex < y.endIndex && y.startIndex < x.endIndex))
+      );
+      if (overlaps) {
         continue;
       }
 
-      accepted.push(footprint);
+      for (const name of names) {
+        const scopes = acceptedScopes.get(name);
+        if (scopes) {
+          scopes.push(...plan.scopes);
+        } else {
+          acceptedScopes.set(name, [...plan.scopes]);
+        }
+      }
+
       edits.push(...plan.edits);
     }
 
@@ -91,18 +103,6 @@ function applyNamingRules(
   }
 
   return current;
-}
-
-interface Footprint {
-  readonly names: readonly string[];
-  readonly scopes: readonly Node[];
-}
-
-function conflicts(a: Footprint, b: Footprint): boolean {
-  return (
-    a.names.some((name) => b.names.includes(name)) &&
-    a.scopes.some((x) => b.scopes.some((y) => x.startIndex < y.endIndex && y.startIndex < x.endIndex))
-  );
 }
 
 export function findNamingViolations(model: SourceModel, rules: readonly NamingRule[], props: EditorConfigProperties): NamingViolation[] {
@@ -140,9 +140,9 @@ export function isWorkspaceRenameCandidate(violation: NamingViolation): boolean 
   return symbol.category === 'type' || (symbol.category === 'member' && symbol.accessibility !== 'private');
 }
 
-/** Roslyn skips `_`, `_1`, ... (discards and discard-like names). */
+/** Roslyn `IsSymbolWithSpecialDiscardName`: skips `_`, `_` followed by a uint (`_1`), and any run of `_` (`__`). */
 function isDiscardName(name: string): boolean {
-  return /^_\d*$/.test(name);
+  return /^_+$/.test(name) || (/^_\d+$/.test(name) && Number(name.slice(1)) <= 0xffffffff);
 }
 
 /** `IDE1006 (naming rule '...', warning) line N: field 'x' should be named 'X'; not renamed because <reason>.` */

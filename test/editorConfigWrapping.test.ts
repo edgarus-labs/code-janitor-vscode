@@ -119,6 +119,109 @@ describe('editorconfig formatting: new lines', () => {
     );
   });
 
+  it('leaves statements in a block that stays on one line together', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    void M() { A(); B(); }',
+      '    event Action E { add { a(); b(); } remove { } }',
+      '    void N()',
+      '    {',
+      '        F(x => { A(x); if (x) B(x); });',
+      '    }',
+      '}'
+    );
+
+    expect(format(source, 'csharp_preserve_single_line_statements = false')).toBe(source);
+    expect(format(source, 'csharp_preserve_single_line_statements = false\ncsharp_preserve_single_line_blocks = false')).toBe(
+      lines(
+        'class C',
+        '{',
+        '    void M()',
+        '    {',
+        '        A();',
+        '        B();',
+        '    }',
+        '    event Action E { add { a(); b(); } remove { } }',
+        '    void N()',
+        '    {',
+        '        F(x => { A(x); if (x) B(x); });',
+        '    }',
+        '}'
+      )
+    );
+  });
+
+  it('puts a switch label that follows a statement on a line of its own', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    void M()',
+      '    {',
+      '        switch (x)',
+      '        {',
+      '            case 1: { A(); } break; case 2: B(); break; default: break;',
+      '        }',
+      '    }',
+      '}'
+    );
+
+    expect(format(source, 'csharp_preserve_single_line_statements = false\ncsharp_preserve_single_line_blocks = false')).toBe(
+      lines(
+        'class C',
+        '{',
+        '    void M()',
+        '    {',
+        '        switch (x)',
+        '        {',
+        '            case 1:',
+        '                {',
+        '                    A();',
+        '                }',
+        '                break;',
+        '            case 2:',
+        '                B();',
+        '                break;',
+        '            default:',
+        '                break;',
+        '        }',
+        '    }',
+        '}'
+      )
+    );
+  });
+
+  it('puts the members and accessor bodies of an expanded body on their own lines', () => {
+    const source = lines('class C { int a; int b; void A() { } int Q { get { return 1; } set { _q = value; } } }');
+
+    expect(format(source, 'csharp_preserve_single_line_blocks = false')).toBe(
+      lines(
+        'class C',
+        '{',
+        '    int a;',
+        '    int b;',
+        '    void A()',
+        '    {',
+        '    }',
+        '    int Q',
+        '    {',
+        '        get',
+        '        {',
+        '            return 1;',
+        '        }',
+        '        set',
+        '        {',
+        '            _q = value;',
+        '        }',
+        '    }',
+        '}'
+      )
+    );
+    expect(format(lines('class C', '{', '    int a; int b;', '}'), 'csharp_preserve_single_line_statements = false')).toBe(
+      lines('class C', '{', '    int a;', '    int b;', '}')
+    );
+  });
+
   it('puts the members of multi-line object initializers and anonymous types on their own lines', () => {
     const source = lines(
       'class C',

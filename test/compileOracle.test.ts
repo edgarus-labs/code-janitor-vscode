@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createDefaultSettings } from '../src/cleanup/types';
-import { compilerErrors, editorConfigVariant, newCompilerErrors, settingsVariant } from '../scripts/compileOracle';
+import { cleanupBuildErrors, compilerErrors, editorConfigVariant, newCompilerErrors, settingsVariant } from '../scripts/compileOracle';
 
 const OUTPUT = [
   '/tmp/copy/Src/A.cs(16,22): error CS0060: Inconsistent accessibility [/tmp/copy/Src/Src.csproj]',
@@ -63,5 +63,29 @@ describe('compile oracle helpers', () => {
     expect(settings.sealClassesWhenSafe).toBe(true);
     expect(settings.removeRegions).toBe(false);
     expect(Object.entries(settings).filter(([key, value]) => value === true && key !== 'sealClassesWhenSafe')).toEqual([]);
+  });
+
+  it('reads Razor compiler errors too', () => {
+    const output = '/tmp/copy/Web/Pages/Index.razor(3,1): error RZ1034: Found a malformed tag helper [/tmp/copy/Web/Web.csproj]';
+
+    expect(compilerErrors(output, '/tmp/copy')).toEqual([{ code: 'RZ1034', file: 'Web/Pages/Index.razor', line: 3, message: 'Found a malformed tag helper' }]);
+  });
+
+  it('counts a build that fails only after cleanup, without a compiler error, as a new error', () => {
+    const baseline = { output: '', errors: [], ok: true };
+    const after = { output: 'restoring\nerror MSB3021: Unable to copy file\n', errors: [], ok: false };
+
+    expect(cleanupBuildErrors(baseline, after)).toEqual([
+      { code: 'BUILD', file: '', line: 0, message: 'the build failed after cleanup without a compiler error:\nrestoring\nerror MSB3021: Unable to copy file' },
+    ]);
+    expect(cleanupBuildErrors(baseline, { ...after, ok: true })).toEqual([]);
+  });
+
+  it('counts only the new compiler errors when the build reports some', () => {
+    const known = { code: 'CS0103', file: 'B.cs', line: 2, message: 'y' };
+    const added = { code: 'CS0176', file: 'C.cs', line: 1, message: 'z' };
+
+    expect(cleanupBuildErrors({ output: '', errors: [known], ok: false }, { output: '', errors: [known, added], ok: false })).toEqual([added]);
+    expect(cleanupBuildErrors({ output: '', errors: [known], ok: false }, { output: '', errors: [known], ok: false })).toEqual([]);
   });
 });

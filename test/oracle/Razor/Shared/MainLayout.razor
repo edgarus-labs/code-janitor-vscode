@@ -1,0 +1,15 @@
+@inherits LayoutComponentBase
+
+<div class="page">
+	<main>
+		@Body
+	</main>
+	@if(ShowFooter){
+		<footer>@Footer()</footer>
+	}
+</div>
+
+@functions{
+	private bool ShowFooter=>true;
+	private string Footer(){return $"Year {DateTime.Today.Year}";}
+}

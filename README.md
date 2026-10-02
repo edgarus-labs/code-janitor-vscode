@@ -81,9 +81,7 @@ For a team-wide cleanup policy, add a `.codejanitor` JSON file to the repository
 }
 ```
 
-The repository file is loaded automatically. Explicit VS Code settings take precedence over it,
-so each developer can still adjust the policy locally. Invalid JSON, unknown properties and values
-with the wrong type are ignored.
+The repository file is found from the cleaned file's folder upwards and the nearest `.codejanitor` (or `.code-janitor.json`) wins as a whole, so nested folders and multi-root workspaces can carry their own policy. A key it lists wins over the user's VS Code setting for files below it (`.editorconfig` wins over both where it enforces the option); a key it does not list follows the setting. Invalid JSON, unknown keys and values of the wrong type are ignored.
 
 A `.codejanitor` written for the Visual Studio extension works here too, with two differences:
 
@@ -97,9 +95,11 @@ Each of these keys is listed in the **Code Janitor** output channel as ignored, 
 Code, and the Visual Studio extension ignores them.
 
 You can create or synchronize this file without editing JSON by opening **Code Janitor: Open
-Settings** and using **Export .codejanitor** or **Import .codejanitor**. Export writes the current
-cleanup configuration to the repository root; import copies the repository values into VS Code's
-workspace settings so they can be reviewed or adjusted in the settings panel.
+Settings** and using **Export .codejanitor** or **Import .codejanitor**. Export writes the cleanup
+settings set in VS Code (in any scope) to the repository root, plus the values the overwritten file
+already listed; a setting left at its default is not written, so it keeps following each user's
+setting. Import copies the repository values into VS Code's workspace settings. While the file lists
+a key, the settings panel shows it as *Overridden by .codejanitor* and disables its control.
 
 ### Diagnostics and quick fixes
 
@@ -123,22 +123,30 @@ own steps (outside `.editorconfig`) are not shown as diagnostics.
 
 `npm run check -- [--root <repository root>] <file or folder>...`, from a clone of this
 repository, runs the cleanup as a dry run over the C# files of the given paths (`bin` and `obj`
-excluded) with each file's `.editorconfig` and the `.codejanitor` of the root (default: the
+excluded) with each file's `.editorconfig` and the nearest `.codejanitor` of each file (default root: the
 current folder). It needs neither VS Code nor the .NET SDK, prints one line per finding,
 `file:line: rule (severity): message`, and exits with 1 when cleanup would change a file or an
 enforced `.editorconfig` rule is violated in a way cleanup cannot fix (2 on a usage error).
-Workspace-wide renames are not checked. For example, in GitHub Actions:
+Workspace-wide renames are not checked. For example, in GitHub Actions (with a read-only token, no
+credentials left in `.git/config`, and Code Janitor pinned to a release tag or commit, so that a push to
+its repository never changes what your CI runs):
 
 ```yaml
 jobs:
   code-janitor:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: <owner>/code-janitor-vscode
+          ref: <release tag or commit SHA>
           path: .code-janitor
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -172,7 +180,7 @@ applies, the rule is enforced. Code Janitor settings keep applying to everything
 | Inline `out` variable declarations | `csharp_style_inlined_variable_declaration`; `csharp_style_var_*` = `false` | Inlining only for `true`; with explicit types preferred, `out T x` instead of `out var x`. |
 | Insert explicit access modifiers | `dotnet_style_require_accessibility_modifiers` | Modifiers are added or removed as the option says. |
 | File header | `file_header_template` (with IDE0073 enforced) | The template is used. |
-| Sort usings | `dotnet_sort_system_directives_first`, `dotnet_separate_import_directive_groups` | Whenever the option is set, usings are sorted (`System` first only for `true`), even with the setting off; groups get a blank line between them (`true`) or none (`false`). |
+| Sort usings | `dotnet_sort_system_directives_first`, `dotnet_separate_import_directive_groups` | Whenever the option is set, usings are sorted in Roslyn's order (name by name, ignoring case first, `System` first only for `true`), even with the setting off; groups get a blank line between them (`true`) or none (`false`). |
 | Remove end-of-line whitespace | `trim_trailing_whitespace` | Trailing whitespace is removed only for `true`. |
 | Remove byte order mark | `charset` | `utf-8` removes it, `utf-8-bom` keeps it. |
 | (final newline, always added) | `insert_final_newline` | Added for `true`, removed for `false`. |
@@ -182,8 +190,8 @@ applies, the rule is enforced. Code Janitor settings keep applying to everything
 The other settings (regions, blank lines and padding, sealing, `nameof`, string interpolation,
 pattern-matching null checks, accessor and single-line method layout, comment formatting) have no
 `.editorconfig` counterpart and always apply as configured. The CA1869 setting (`new
-JsonSerializerOptions()` arguments become `null`) also applies as configured; the CA1869 rule
-below caches configured options in a field.
+JsonSerializerOptions()` arguments become `default(JsonSerializerOptions)`, or `null` when passed as
+`options:`) also applies as configured; the CA1869 rule below caches configured options in a field.
 
 Settings in the `.editorconfig` that cleanup does not implement are never ignored silently: each
 one that would take effect (an enforced rule, or an EditorConfig property without a severity) is
@@ -214,7 +222,7 @@ evaluate and is ignored. In order of precedence:
 
 1. `NoWarn` turns a rule off whatever the files say.
 2. `dotnet_diagnostic.<ID>.severity` from `.editorconfig`, else from the global AnalyzerConfig files:
-   `.globalconfig` in the folders above the file and above the project (unless
+   `.globalconfig` in the folders above every compile item of the project, the file and the project (unless
    `DiscoverGlobalAnalyzerConfigFiles` is `false`) and `<GlobalAnalyzerConfigFiles>` items. Between
    global files the higher `global_level` wins (`.globalconfig` defaults to 100, other files to 0);
    two at the same level that disagree cancel each other, as in the compiler. Any other key of a
@@ -250,7 +258,7 @@ Supported code-style options:
 | `csharp_style_var_for_built_in_types`, `csharp_style_var_when_type_is_apparent`, `csharp_style_var_elsewhere` | IDE0007, IDE0008 | Local declarations only. The type must follow from the initializer (literal, `new T()`, `(T)x`, `x as T`, `default(T)`, `new T[n]`). Other declarations are reported: for `false`, the `var` locals whose type is not known without a compiler get one line per file, with their line numbers. |
 | `csharp_prefer_braces` | IDE0011 | `true` and `when_multiline` add braces; `false` never removes them. |
 | `dotnet_style_qualification_for_field`, `_property`, `_method`, `_event` | IDE0003, IDE0009 | Adds or removes `this.` for members declared in the same type in the file, unless a local, parameter or type parameter of the same name exists in the member. `this.` on other members is reported. |
-| `csharp_using_directive_placement` | IDE0065 | `outside_namespace` moves usings whose name starts with `global::`, `System`, `Microsoft` or the namespace's first segment; other usings, and `inside_namespace`, are reported. |
+| `csharp_using_directive_placement` | IDE0065 | `outside_namespace` / `inside_namespace` move the using directives, only when the declarations of the project prove that every name binds as before (see the limitations table); otherwise they are reported. |
 | `csharp_style_inlined_variable_declaration` | IDE0018 | Inlines `T x;` into the following `out x` as `out T x` when the variable keeps its scope. |
 | `file_header_template` | IDE0073 | Inserts or replaces the leading `//` header; `{fileName}` is supported. |
 | `dotnet_style_readonly_field` | IDE0044 | Adds `readonly` to private fields assigned only in constructors. |
@@ -270,7 +278,7 @@ Supported code-style options:
 | `csharp_style_prefer_unbound_generic_type_in_nameof` | IDE0340 | `nameof(List<int>)` becomes `nameof(List<>)`. |
 | `csharp_style_prefer_primary_constructors` | IDE0290 | Reported only: `true` lists classes and structs whose only constructor just assigns its parameters, `false` lists those declared with a primary constructor. |
 | `dotnet_style_parentheses_in_arithmetic_binary_operators`, `_relational_binary_operators`, `_other_binary_operators`, `_other_operators` | IDE0047, IDE0048 | `always_for_clarity` adds parentheses around an operator of another precedence in the same group (`a + (b * c)`); `never_if_unnecessary` removes parentheses that group nothing (around primary expressions, whole initializers, returns and arguments, and inner operators that bind tighter). |
-| `dotnet_style_predefined_type_for_locals_parameters_members`, `_for_member_access` | IDE0049 | `Int32`/`System.String` become `int`/`string` in type positions and member access (`string.Empty`); bare names only with `using System;` and when the file declares no symbol of that name. `false` is not supported. |
+| `dotnet_style_predefined_type_for_locals_parameters_members`, `_for_member_access` | IDE0049 | `Int32`/`System.String` become `int`/`string` in type positions and member access (`string.Empty`); bare names only with `using System;`, in a file of a project whose files could all be read, when neither the file nor the project declares a type or a global using alias of that name. `false` is not supported. |
 | `dotnet_style_prefer_compound_assignment` | IDE0054, IDE0074 | `x = x + y` becomes `x += y` (`x = x ?? y` becomes `x ??= y`) for a side-effect-free `x`. |
 | `dotnet_style_prefer_simplified_boolean_expressions` | IDE0075 | `c ? true : false` becomes `c`, `c ? false : true` becomes `!c`, and `c ? true : y` / `c ? y : false` become `c \|\| y` / `c && y` when both sides are provably `bool`. |
 | `dotnet_style_coalesce_expression` | IDE0029, IDE0030, IDE0270 | `x != null ? x : y` becomes `x ?? y` when `x` is declared as `string`, `object`, an array or an interface or base-less class of the file without `operator ==`; `x.HasValue ? x.Value : y` becomes `x ?? y` for nullable built-in value types. IDE0270: `T x = e; if (x == null) throw ...;` becomes `T x = e ?? throw ...;` under the same type condition for `T`. |
@@ -280,28 +288,28 @@ Supported code-style options:
 | `csharp_style_prefer_not_pattern` | IDE0083 | `!(x is T)` becomes `x is not T` for type and constant patterns without a designation. |
 | `csharp_style_prefer_pattern_matching` | IDE0078 | `x == 1 \|\| x == 2` becomes `x is 1 or 2`, `x >= 0 && x <= 9` becomes `x is >= 0 and <= 9`, for a value declared as `int`, `long`, `float`, `double`, `decimal`, `char`, `string` or `bool` compared with literals of its type. |
 | `dotnet_style_prefer_inferred_tuple_names`, `dotnet_style_prefer_inferred_anonymous_type_member_names` | IDE0037 | `(x: x, y)` becomes `(x, y)` and `new { X = p.X }` becomes `new { p.X }` when C# infers the same, unique name. |
-| `dotnet_style_prefer_conditional_expression_over_assignment`, `_over_return` | IDE0045, IDE0046 | `if (c) x = a; else x = b;` becomes `x = c ? a : b;` (a preceding `T x;` takes the initializer), `if (c) return a; [else] return b;` becomes `return c ? a : b;`, when the type is `bool`, `int`, `long`, `decimal` or `string` (for other types the conditional could change a value's type) and the result fits on one line. |
+| `dotnet_style_prefer_conditional_expression_over_assignment`, `_over_return` | IDE0045, IDE0046 | `if (c) x = a; else x = b;` becomes `x = c ? a : b;` (a preceding `T x;` takes the initializer, unless a comment or directive sits in between), `if (c) return a; [else] return b;` becomes `return c ? a : b;`, when the type is `bool`, `int`, `long`, `decimal` or `string` (for other types the conditional could change a value's type) and the result fits on one line. Before C# 9 a conditional that needs a target type (`c ? 1 : null`, mixed numeric literals) is left unchanged. |
 | `dotnet_style_object_initializer`, `dotnet_style_collection_initializer` | IDE0017, IDE0028 | Member assignments (`c.A = 1;`) and `Add` calls on `List`, `HashSet`, `SortedSet`, `Collection`, `ObservableCollection`, `Dictionary`, `SortedDictionary`, `SortedList` right after `var c = new T(...);` move into an initializer, as long as they do not use `c`. |
 | `dotnet_style_prefer_auto_properties` | IDE0032 | A property that only returns (and sets) a private field used nowhere else becomes an auto property, with the field initializer; a field used elsewhere is reported. |
 | `csharp_style_expression_bodied_methods`, `_constructors`, `_operators`, `_properties`, `_indexers`, `_accessors`, `_local_functions` | IDE0021 – IDE0027, IDE0061 | `true` turns a body holding a single `return`, expression or `throw` statement into `=> ...;`, `false` does the reverse, `when_on_single_line` only for one-line expressions (lambdas: see IDE0053). |
-| `csharp_style_prefer_readonly_struct` | IDE0250 | Adds `readonly` to non-partial structs with only `readonly` instance fields, no settable auto property or field-like event, that never assign `this` outside a constructor. |
+| `csharp_style_prefer_readonly_struct` | IDE0250 | Adds `readonly` to non-partial structs with only `readonly` instance fields, no settable auto property or field-like event, no write to a primary-constructor parameter, that never assign `this` outside a constructor. |
 | `csharp_prefer_static_local_function` | IDE0062 | Adds `static` to local functions that use no `this`, instance member, local or parameter of the enclosing code (types with a base class are skipped: inherited members are unknown). |
 | `csharp_preferred_modifier_order` | IDE0036 | Reorders modifiers to the listed order (`partial` stays last); declarations with a modifier outside the list are left alone. |
 | `csharp_style_prefer_switch_expression` | IDE0066 | A `switch` whose sections only `return` (or `throw`), or only assign one variable and `break`, becomes a switch expression (`case 1: case 2:` gives `1 or 2`); without `default`, a `return` right after the switch becomes the `_` arm. Only for the target types of IDE0045 and enums declared in the file. |
-| `csharp_style_pattern_matching_over_as_with_null_check` | IDE0019, IDE0260 | `var s = o as T; if (s != null ...)` becomes `if (o is T s ...)` when `s` is used only inside the `if` and never assigned. IDE0260: `(o as T) != null` becomes `o is T` and `(o as T) == null` becomes `o is not T` for a class `T` of the BCL or the file; `(o as T)?.Member` is reported. |
-| `csharp_style_pattern_matching_over_is_with_cast_check` | IDE0020 | `if (o is T) { var t = (T)o; ... }` becomes `if (o is T t) { ... }` when `t` is never assigned. |
+| `csharp_style_pattern_matching_over_as_with_null_check` | IDE0019, IDE0260 | `var s = o as T; if (s != null ...)` becomes `if (o is T s ...)` when `s` is used only inside the `if` and never assigned, and `T` cannot define its own `!=` (a class of the BCL or of the file without `operator ==`; `s is not null` always qualifies). IDE0260: `(o as T) != null` becomes `o is T` and `(o as T) == null` becomes `o is not T` for a class `T` of the BCL or the file; `(o as T)?.Member` is reported. |
+| `csharp_style_pattern_matching_over_is_with_cast_check` | IDE0020 | `if (o is T) { var t = (T)o; ... }` becomes `if (o is T t) { ... }` when `t` is never assigned and the name `t` is not used outside the `if` body (the pattern variable would capture it). |
 | `dotnet_style_explicit_tuple_names` | IDE0033 | `t.Item1` becomes `t.count` when `t` is declared in the file with a named tuple type. |
 | `dotnet_style_prefer_simplified_interpolation` | IDE0071 | `{x.ToString()}` becomes `{x}` and `{x.ToString("N2")}` becomes `{x:N2}` in `$"..."` strings that are provably `string` (a `var`/`string` initializer, a `string` return, a `+` operand), when `x` is declared as a built-in value type or an enum; other receivers are reported. |
 | `csharp_style_prefer_extended_property_pattern` | IDE0170 | `{ A: { B: p } }` becomes `{ A.B: p }` in `is` patterns. |
 | `csharp_style_prefer_method_group_conversion` | IDE0200 | `x => M(x)` becomes `M` when `M` is the file's only method of that name and its parameter and return types match the written `Func`/`Action` type (or the lambda's parameter types, for a `void` method); other forwarding lambdas are reported. |
 | `csharp_style_expression_bodied_lambdas` | IDE0053 | `x => { return e; }` becomes `x => e`; lambdas whose conversion could change the delegate type they bind to are reported. |
-| `csharp_style_prefer_readonly_struct_member` | IDE0251 | Adds `readonly` to struct methods and get-only properties that assign nothing but their locals, pass nothing by reference, and call only `static`/`readonly` members of the struct or methods of reference-type fields. |
+| `csharp_style_prefer_readonly_struct_member` | IDE0251 | Adds `readonly` to struct methods and get-only properties that assign nothing but their locals, pass nothing by reference, take no `ref` to the instance, and call only `static`/`readonly` members of the struct or methods of reference-type fields; `ref`-returning members are skipped. |
 | `dotnet_style_namespace_match_folder` | IDE0130 | Reported only: a namespace other than the project's `RootNamespace` (or project file name) plus the file's folders. |
 | `dotnet_code_quality_unused_parameters` | IDE0060 | Reported only: parameters a method, constructor or local function never uses (overrides, virtual, abstract, partial, event handlers, methods that only throw, and public methods of types with a base list are skipped). |
 | `dotnet_style_prefer_collection_expression` | IDE0300 - IDE0306 | `true`, `when_types_exactly_match` and `when_types_loosely_match` turn `new T[] { ... }`, `new[] { ... }`, `{ ... }` array initializers, `new List<T> { ... }` (and other BCL collections), `Array.Empty<T>()`, `ImmutableArray.Create(...)`/`ImmutableList.Create(...)` (.NET 8 or later) and `xs.ToList()`/`ToArray()` into `[...]`, `[]` or `[.. xs]`, only where the target's written type is the created type (not `var`, not arguments). `CreateBuilder` sequences (IDE0304) and receivers that may be null are reported. Needs C# 12. |
-| `csharp_prefer_static_anonymous_function` | IDE0320 | Adds `static` to lambdas and anonymous methods that capture nothing: no `this`/`base`, local, parameter or instance member (in types with a base class, only names declared in the function itself). Needs C# 9. |
+| `csharp_prefer_static_anonymous_function` | IDE0320 | Adds `static` to lambdas and anonymous methods that capture nothing: no `this`/`base`, local, parameter or instance member (in partial types and types with a base class, only names declared in the function itself; a base list of interfaces declared in the file, the project or the .NET library does not count). Needs C# 9. |
 | `csharp_style_prefer_simple_property_accessors` | IDE0360 | `get { return field; }`/`get => field;` become `get;` and `set { field = value; }`/`set => field = value;` become `set;` (C# 14), unless the type declares a member named `field`. |
-| `csharp_style_unused_value_expression_statement_preference` | IDE0058 | `discard_variable`: a statement calling a method of the file (declared once) whose value is not used becomes `_ = M();`. `unused_local_variable` is reported: the variable would need a name. |
+| `csharp_style_unused_value_expression_statement_preference` | IDE0058 | `discard_variable`: a statement calling a method of the calling type (declared once; not in partial types, types with a base class or interfaces with base interfaces) whose value is not used becomes `_ = M();`. `unused_local_variable` is reported: the variable would need a name. |
 | `csharp_style_unused_value_assignment_preference` | IDE0059 | `T x = <literal>;` directly followed by an assignment to `x` that does not read it loses its initializer; other initializers, which may have side effects, are reported. |
 | `csharp_style_prefer_top_level_statements` | IDE0210, IDE0211 | Reported only: `true` lists a `Main` that top-level statements could replace, `false` lists top-level statements. |
 | `dotnet_style_prefer_foreach_explicit_cast_in_source` | IDE0220 | Reported only: `foreach (T x in items)` over elements declared `object`, where the compiler inserts a cast. |
@@ -323,7 +331,7 @@ to the unsupported-settings list too.
 
 Formatting: `indent_style` (with `tab_width`/`indent_size`), `end_of_line`, `insert_final_newline`,
 `trim_trailing_whitespace` and `charset` (`utf-8` removes a byte order mark, `utf-8-bom` keeps
-one) always apply, as do `dotnet_sort_system_directives_first` (sorts usings, `System` first for
+one) always apply, as do `dotnet_sort_system_directives_first` (sorts usings in Roslyn's order, `System` first for
 `true`) and `dotnet_separate_import_directive_groups` (a blank line between groups for `true`, none
 for `false`), which have no diagnostic of their own.
 As in Visual Studio, the C# formatting options have no severity of their own and apply only while
@@ -343,7 +351,7 @@ inside interpolations), comments or preprocessor directives; lines the parser ca
 keep their spacing, and their relative indentation (logged to the output channel).
 
 Not supported (reported when enforced): `dotnet_style_prefer_non_hidden_explicit_cast_in_source`
-(IDE0221), moving usings into a namespace, adding a byte order mark, renaming symbols other files
+(IDE0221), moves of using directives that cannot be proven safe, adding a byte order mark, renaming symbols other files
 may reference, and other code-style options. Unlike the
 Visual Studio extension, fixes from third-party analyzers are not applied: their
 `dotnet_diagnostic.<ID>.severity` entries (e.g. Roslynator's `RCS1079`) are listed as third-party
@@ -356,8 +364,8 @@ Each code-style rewrite, and each Code Janitor setting that does the same kind o
 | Rule | Documentation | C# constraints guarded |
 | --- | --- | --- |
 | Every rule | [C# language version defaults](https://learn.microsoft.com/dotnet/csharp/language-reference/configure-language-version#c-language-version-reference), [version history](https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-version-history) | The project's C# version is taken from its `<LangVersion>`, then from `Directory.Build.props`, then from its target framework's default (.NET Framework and .NET Standard 2.0 default to 7.3). A rewrite that needs newer syntax (switch expressions, `is not null`, `new()`, file-scoped namespaces, `u8`, `nameof(List<>)`, ...) is skipped and reported. Index, range and UTF-8 literal rewrites also need a target whose runtime has `System.Index`, `System.Range` and `ReadOnlySpan<byte>`. A rewrite whose result the parser reads less completely than its input is discarded. |
-| IDE0160, IDE0161 | [IDE0160/IDE0161](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0160-ide0161) | Only files with a single namespace are converted. When converting to a block-scoped namespace, two cases are reported: multi-line string literals, which cannot be re-indented, and an `#if` opened before a file-scoped namespace that ends after it, because the closing brace would land inside the conditional group. |
-| IDE0065, Move usings outside namespace | [IDE0065](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0065), [using directive](https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/using-directive) | Inside a namespace, a using's name is resolved relative to that namespace first. Only `global::` names, `System`/`Microsoft` names and names starting with the namespace's first segment are moved. Files with several namespaces are left alone. |
+| IDE0160, IDE0161 | [IDE0160/IDE0161](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0160-ide0161) | Only files with a single namespace (no nested or sibling namespaces, no types or attributes outside it) are converted. File-scoped namespaces are written only for a project known to use C# 10 or newer; an unknown language version keeps the namespace block-scoped and is reported. Lines inside multi-line string literals are never re-indented. A `#if` or `#region` block that starts outside the namespace braces and ends inside them (or the reverse) is reported and the namespace is not converted. Using directives inside the namespace stay there; they move only with the using directive placement. |
+| IDE0065, Move usings outside/inside namespace | [IDE0065](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0065), [using directive](https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/using-directive) | Without Roslyn's semantic model the move relies on an index of the namespaces, types and extension methods declared by the project and the projects it references, plus the public surface of the .NET reference assemblies. A directive moves only when that index proves that every name of the file binds as before; it is written fully qualified (`using Company.App.Services;`) or `global::`-qualified when its meaning would otherwise change, and keeps its text when it means the same at its new place (`System...`, `global::`, `using static`, aliases of special types, `extern alias` qualified names). Packages are not indexed: a namespace of a referenced package is assumed not to reuse a name the project or the framework declares for something the file uses. The file is left unchanged, with the reason in the output, when a directive cannot be resolved, a used name or extension method would bind to another symbol (a same-named type or extension method of an enclosing namespace, another directive, a `global using`), merging the directives would make a name ambiguous, the directives are interleaved with `#if`/`#region`/`#nullable`/`#pragma`, an extern alias declared inside the namespace is used, a directive shares its line with code, or the file is not part of exactly one C# project (files compiled from outside the project folder make the index incomplete). Inwards, files without a single namespace, with types, top-level statements or `[assembly: ...]` outside it are left alone without a report. `global using` and `extern alias` directives stay at file level. |
 | IDE0040, Insert explicit access modifiers | [IDE0040](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0040), [access modifiers](https://learn.microsoft.com/dotnet/csharp/programming-guide/classes-and-structs/access-modifiers) | No modifier is added to explicit interface implementations (including those of generic interfaces), static constructors or finalizers. Partial types and interface members are reported. Nothing changes in a type body the parser could not fully read, because a misread member would receive the modifier inside its type or name. |
 | IDE0007, IDE0008, Convert to `var` when apparent | [IDE0007/IDE0008](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0007-ide0008), [implicitly typed locals](https://learn.microsoft.com/dotnet/csharp/language-reference/statements/declarations#implicitly-typed-local-variables) | `var` is used only when the initializer has exactly the declared type. `null` initializers and array initializers (`int[] a = { 1 }`) are kept, since they have no type of their own. |
 | IDE0003, IDE0009 | [IDE0003/IDE0009](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0003-ide0009) | `this.` is added only to instance members of the same type that no local, parameter or type parameter hides. Static members are never qualified ([CS0176](https://learn.microsoft.com/dotnet/csharp/misc/cs0176)). |
@@ -385,7 +393,7 @@ Each code-style rewrite, and each Code Janitor setting that does the same kind o
 | IDE0270, IDE0260 | [IDE0270](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0029-ide0030-ide0270), [IDE0260](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0078-ide0260) | `x == null` and `(o as T) != null` equal the `??`/`is` forms only when `T` cannot define its own `==`: classes of the BCL or of the file without `operator ==`. `(o as T)?.Member` needs the member's type for a property pattern and is reported. |
 | IDE0001, IDE0002 | [IDE0001](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0001), [IDE0002](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0002), [name lookup](https://learn.microsoft.com/dotnet/csharp/language-reference/language-specification/basic-concepts#77-name-lookup) | A shortened name must bind to the same symbol. It must not be declared by the file or the project (a type, member, local or parameter), every imported namespace must be a .NET one, and names that exist in several .NET namespaces (`Timer`, `Path`, ...) are kept. Files outside a readable project are left alone. |
 | IDE0035 | [IDE0035](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0035), [`goto`](https://learn.microsoft.com/dotnet/csharp/language-reference/statements/jump-statements#the-goto-statement) | Code after a jump is reachable through a label, and a local function after it can be called from before it; such blocks are kept, as are blocks with comments or directives. |
-| IDE0058, IDE0059 | [IDE0058](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0058), [IDE0059](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0059), [discards](https://learn.microsoft.com/dotnet/csharp/fundamentals/functional/discards) | Only calls whose return type is written in the file (one declaration, not `void`, `dynamic` or awaitable) get `_ =`, and not where a local of the method's name hides it. An initializer is removed only when it is a literal (no side effects) and the next statement assigns the variable without reading it. |
+| IDE0058, IDE0059 | [IDE0058](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0058), [IDE0059](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0059), [discards](https://learn.microsoft.com/dotnet/csharp/fundamentals/functional/discards) | Only calls to a method of the calling type whose return type is written there (one declaration, not `void`, `dynamic` or awaitable) get `_ =`, and not where a local of the method's name hides it; partial types and types with a base class are skipped, because overloads may be declared elsewhere. An initializer is removed only when it is a literal (no side effects) and the next statement assigns the variable without reading it. |
 | IDE0080, IDE0100, IDE0110 | [IDE0080](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0080), [IDE0100](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0100), [IDE0110](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0110) | `x == true` equals `x` only for `bool` (not `bool?` or a type with its own operators). `T _` becomes a type pattern only when no value named `T` could turn it into a constant pattern. `!` is removed only where the value is never null. |
 | IDE0082, IDE0280 | [IDE0082](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0082), [IDE0280](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0280), [`nameof`](https://learn.microsoft.com/dotnet/csharp/language-reference/operators/nameof) | `nameof` gives the name as written: generic types (`List`1`), type parameters and aliases have another runtime name. Parameter names in attributes need C# 11. |
 | IDE0064, IDE0380, IDE0240 | [IDE0064](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0064), [IDE0380](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0380), [IDE0240](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0240) | Assigning `this` overwrites `readonly` fields ([CS0191](https://learn.microsoft.com/dotnet/csharp/language-reference/compiler-messages/cs0191)). `unsafe` stays wherever pointer syntax, `stackalloc`, `fixed` or `sizeof` appears. The nullable context under `#if` depends on symbols, so directives there are kept. A `<Nullable>` set under an MSBuild `Condition`, by an unresolved import or to another property is unknown: a directive that may repeat it is reported and kept. |
@@ -406,9 +414,9 @@ they add).
 | Diagnostic | Behavior |
 | --- | --- |
 | CA1822 | Makes methods and non-auto, get-only properties `static` when they use no instance data (no `this`/`base`, instance member, member of `object` or primary-constructor parameter) and drops `this.` from their calls in the file, repeating until nothing more changes. Follows Roslyn's exclusions (virtual, override, abstract, interface implementations, test methods, `[Obsolete]`, event handlers, members that only throw, members used as delegates) and `dotnet_code_quality.api_surface` (default: all). Reported instead: public API (a breaking change), members used through another instance or through a member access in another project file, members of partial types, uses of names that may be inherited from an unknown base type, public members that may implement an interface declared outside the project, `readonly` members, properties with setters and members with other attributes. |
-| CA1852 | Seals classes and records that are not visible outside the assembly and that no type of the project derives from or uses as a generic constraint. With `InternalsVisibleTo` the rule is off unless `dotnet_code_quality.CA1852.ignore_internalsvisibleto = true`, and then only reported. Partial types, types with `virtual` or `protected` members, files without a project and projects whose files cannot all be read are reported. |
+| CA1852 | Seals classes and records that are not visible outside the assembly and that no type of the project derives from or uses as a generic constraint. With `InternalsVisibleTo` the rule is off unless `dotnet_code_quality.CA1852.ignore_internalsvisibleto = true`, and then only reported. Partial types, types with `virtual` or `protected` members, types the project casts to or tests with `as`, `is` or a pattern (sealing can make a conversion from an interface a compile error), files without a project and projects whose files cannot all be read are reported. |
 | CA1805 | Removes field and auto-property initializers that assign the default value (`0`, `false`, `'\0'`, `null`, `default`); instance fields of structs are skipped, as in Roslyn. Reported: `0` for a type it cannot resolve (an enum?) and fields nothing else assigns (removing the initializer would raise CS0649). |
-| CA1825 | `new T[0]` and `new T[] { }` become `Array.Empty<T>()` (`System.Array` without `using System` or implicit usings); attributes are skipped. Reported: an unknown target framework, or a lambda that may be an expression tree. |
+| CA1825 | `new T[0]` and `new T[] { }` become `Array.Empty<T>()` (`System.Array` without `using System` or implicit usings, or when a member, local or parameter named `Array` may be in scope); attributes are skipped. Reported: an unknown target framework, or a lambda that may be an expression tree. |
 | CA1827, CA1828 | `Count()`/`LongCount()` compared with `0` or `1` becomes `Any()`; an awaited `CountAsync()`/`LongCountAsync()` becomes `AnyAsync()` in files using Entity Framework. Receivers of unknown type are reported. |
 | CA1829, CA1860 | `Count()` becomes `Length`/`Count` and `Any()` becomes `Length != 0`/`Count != 0` (`== 0` for `!Any()`) on arrays, strings and the .NET collections. |
 | CA1507 | A string literal naming a parameter in scope, passed as `paramName` (`ArgumentException`, `ArgumentNullException`, `ArgumentOutOfRangeException`, their `ThrowIf` helpers, any `paramName:` argument), or a property of the type passed as `propertyName` (`PropertyChangedEventArgs`, `PropertyChangingEventArgs`, `propertyName:`), becomes `nameof(...)`. |
@@ -431,7 +439,7 @@ they add).
 | IDE0005 | Removes duplicate using directives and file-level usings of the file's own namespace or of one containing it. Other unnecessary usings need the compiler's binding and are neither removed nor reported. |
 | IDE0051 | Removes private fields, properties, methods and events that no identifier in the file refers to, with their doc comments, repeating until nothing more changes. Reported: members of partial types, members with attributes, names that appear in a string literal or comment, fields of structs and `[Serializable]` types, and initializers that may have side effects. |
 | IDE0052 | Reported only: private fields and properties that are assigned but never read. |
-| IDE0001, IDE0002 | IDE0001: in type positions, `System.IO.FileInfo` becomes `FileInfo` when the file imports `System.IO`, imports only `System*`/`Microsoft*` namespaces, and nothing named `FileInfo` is declared in the file or the project (and the name is not one the .NET namespaces share, like `Timer`). IDE0002: inside type `C`, `C.Member` becomes `Member` for a static member of `C` that no local or parameter hides. |
+| IDE0001, IDE0002 | IDE0001: in type positions, `System.IO.FileInfo` becomes `FileInfo` when the file imports `System.IO`, imports only .NET namespaces the library index knows, `System.IO` is the only imported namespace that declares `FileInfo`, and nothing named `FileInfo` is declared in the file or the project (and the name is not one the .NET namespaces share, like `Timer`). IDE0002: inside type `C`, `C.Member` becomes `Member` for a static member of `C` that no local or parameter hides. |
 | IDE0035 | Removes statements after a `return`, `throw`, `break` or `continue` in the same block, unless they hold a label, a local function, a comment or a preprocessor directive, or declare a name used elsewhere. |
 | IDE0064 | In a non-`readonly` struct that assigns `this` outside a constructor, instance fields lose `readonly`. |
 | IDE0080 | Removes `!` after literals, `new` expressions and `this`, and before `is`. |
@@ -441,7 +449,7 @@ they add).
 | IDE0120, IDE0121 | `x.Where(p).Any()` becomes `x.Any(p)` (also `Count`, `First`, `Last`, `Single` and their `OrDefault` forms); `x.Where(a => a is T).Cast<T>()` and `x.Select(a => (T)a)` after such a `Where` become `x.OfType<T>()`. |
 | IDE0240, IDE0241 | Removes a `#nullable enable`/`disable`/`restore` that sets the context already in effect (starting from the project's `<Nullable>`, unknown after `#nullable ... annotations`/`warnings` or inside `#if`). When the project's `<Nullable>` is unknown, directives that may repeat it are reported. IDE0241 is reported only: `#nullable disable` in front of enums only. |
 | IDE0280 | `[NotNullIfNotNull("p")]` and `[CallerArgumentExpression("p")]` naming a parameter become `nameof(p)` (C# 11). |
-| IDE0380 | Removes `unsafe` from declarations whose code holds no pointer syntax (`*`, `&`, `->`, `stackalloc`, `fixed`, `sizeof`); `partial` and `extern` declarations are skipped. |
+| IDE0380 | Removes `unsafe` from declarations whose code holds no pointer syntax (`*`, `&`, `->`, `stackalloc`, `fixed`, `sizeof`) and uses only members declared in the file without pointer types; a use of a member declared elsewhere is reported. `partial` and `extern` declarations are skipped. |
 | IDE0050, IDE0072, IDE0076, IDE0077, IDE0079, IDE0390, IDE0391 | Reported only: anonymous types a tuple could replace (IDE0050); switch expressions over an enum of the file that miss members (IDE0072); global `[SuppressMessage]` with an invalid scope (IDE0076) or a legacy target (IDE0077); `#pragma warning disable` of IDE/CA rules the configuration sets to `none` or `silent`, except those in `dotnet_remove_unnecessary_suppression_exclusions` (IDE0079); `async` methods without `await` (IDE0390; IDE0391 for overrides and interface implementations). |
 
 The rules that depend on a receiver's type need it from the file: a literal, `new T(...)`, or a
@@ -497,7 +505,7 @@ syntax: private members (explicitly or by default) of non-partial types, locals,
 parameters of lambdas, local functions and private methods or constructors (including named
 arguments and `<param>`/`<paramref>` documentation), and type parameters. References through
 `this.`, the type name, `nameof`, interpolated strings, `<see cref>` and parameters or locals
-declared with the containing type are updated; strings and comments are not. Everything else is
+declared with the containing type are updated; comments are not. Everything else is
 reported instead of renamed, for example:
 
 - types, namespaces and non-private members or their parameters, which other files may use;
@@ -505,7 +513,10 @@ reported instead of renamed, for example:
 - a new name that is already used where it would change what another reference means;
 - a member read through an expression whose type is not evident (`GetOther().field`);
 - names used in `switch` sections, switch expressions, patterns, deconstruction or code the
-  cleanup parser cannot fully structure, and variables declared inside expressions (`out var`).
+  cleanup parser cannot fully structure, and variables declared inside expressions (`out var`);
+- a name that also appears in a string in its scope (reflection, `CallerArgumentExpression`,
+  `DebuggerDisplay`), and members with attributes or of serialized types, whose name a serializer or
+  framework may read.
 
 With `codeJanitor.cleanup.renamePublicSymbolsAcrossWorkspace` (off by default; `.codejanitor` key
 `renamePublicSymbolsAcrossWorkspace`), **Cleanup Selected Files** and **Cleanup Workspace** also
@@ -526,7 +537,10 @@ only made when:
   outside the workspace;
 - the member is not virtual, abstract, an override, `new`, extern, partial, an interface member,
   or annotated with attributes, and no serialization attribute (`[DataContract]`, `[JsonProperty]`,
-  ...) makes the name part of a data format; attribute classes are not renamed.
+  ...) makes the name part of a data format; attribute classes are not renamed;
+- for an extension method, the type it extends and that type's whole hierarchy are declared in the
+  workspace (so no instance member with the new name can take over its calls); extension methods
+  of `string`, `int`, other outside types or type parameters are reported.
 
 Top-level statements are not parsed reliably, so a name they use is not renamed. Everything
 refused is reported in the Code Janitor output channel with the reason.
@@ -558,6 +572,68 @@ namespaces, or a type is partial or a struct, the type stays and the violation i
 names are compared up to the first dot, so `Form.Designer.cs` and `View.xaml.cs` match `Form` and
 `View`.
 
+## Code Style rules
+
+In `.codejanitor`, `codeStyle` sets the Code Style rules (keys are `.editorconfig` option names): a string value (matched ignoring case, so `"True"` works; JSON booleans and invalid values are ignored) enables the rule with that value, `null` disables it, and a rule it does not list follows the `codeJanitor.cleanup.codeStyleRules` setting. **Export .codejanitor** writes only the enabled rules (an empty `codeStyle` when none is enabled; add `null` entries by hand to pin a rule off); **Import .codejanitor** applies the file's rules over the Workspace value of the setting, writing `null` for a rule the file turns off that your User settings enable.
+
+VS Code merges `codeJanitor.cleanup.codeStyleRules` across the User and Workspace settings, so a rule enabled in the User settings is turned off for one workspace with `null` in its Workspace value (`{ "csharp_prefer_braces": null }`); the settings panel writes it when you clear such a rule in Workspace scope.
+
+`codeJanitor.cleanup.codeStyleRules` lists the Roslyn code-style options Code Janitor can apply when the repository's `.editorconfig` does not enforce them: modifiers (`csharp_preferred_modifier_order`, static local and anonymous functions, `readonly` structs and struct members), blocks (`csharp_prefer_braces`, simple `using`, method group conversion), expression-bodied members, pattern matching, null checking, modern expressions (primary constructors, target-typed `new()`, index and range operators, UTF-8 literals, tuple swap, deconstruction, unused value assignments, `default` literal, auto-properties, compound assignment, simplified boolean expressions and interpolation, object and collection initializers, tuple names), `this.` qualification, language keywords vs. framework type names and parentheses - 53 rules, all off by default. An entry enables the rule with its value (`{ "csharp_prefer_braces": "when_multiline" }`); the settings panel (`Code Janitor: Open Settings`) shows them as a switch and a value per rule, grouped as in the Visual Studio Options page. Naming rules (`dotnet_naming_*`) are configured in `.editorconfig` only.
+
+- **Precedence.** A rule `.editorconfig` enforces keeps its `.editorconfig` value: the panel shows *Overridden by .editorconfig: <key> in <path>* and disables the rule. Otherwise the `.codejanitor` `codeStyle` entry decides, and otherwise the setting.
+- **How it applies.** The enabled rules are added on top of the file's `.editorconfig` in memory (each as `suggestion`, with the severity of its diagnostics raised to `suggestion`), and the `.editorconfig` rule engine applies them with the same safety rules: a rewrite whose result the parser reads worse than the input is discarded, and what cannot be fixed safely is reported as unresolved (primary constructors and unused value assignments are only reported; `dotnet_style_predefined_type_for_* = false` is not implemented and is reported). Nothing is written to `.editorconfig`.
+- **Rules sharing a diagnostic.** Options that report the same diagnostic (every `dotnet_style_qualification_for_*` option reports IDE0003/IDE0009, the four parentheses options IDE0047/IDE0048) apply one at a time: enabling one does not apply the others unless `.editorconfig` enforces them.
+
+### .editorconfig resolution, as in Visual Studio
+
+- A severity of `none` after the option (`csharp_prefer_braces = true:none`) stops the rule whatever `dotnet_diagnostic.<id>.severity` or a category/global severity says; `silent` (and `refactoring`) never enforce. The same suffix works on the plain options (`indent_style = tab:warning`, `dotnet_sort_system_directives_first = true:none`).
+- `dotnet_analyzer_diagnostic.severity` and `dotnet_analyzer_diagnostic.category-*.severity` enable CA1852 (bulk-configurable), but not CA1307 and CA1867 (disabled by default): only `dotnet_diagnostic.<id>.severity` or a rule set enables those.
+- `dotnet_style_allow_multiple_blank_lines_experimental` (IDE2000) and `csharp_style_allow_blank_lines_between_consecutive_braces_experimental` (IDE2002) are inverted: `false` turns *Remove multiple consecutive blank lines* / *Remove blank lines after opening brace / before closing brace* on, `true` turns them off; a severity only (no option) leaves them off.
+- `csharp_style_expression_bodied_lambdas = when_on_single_line` keeps *Simplify single-statement lambdas* on (`false` turns it off). An enforced `csharp_style_prefer_null_check_over_type_check` / `dotnet_style_prefer_is_null_check_over_reference_equality_method` = `false` turns *Convert to pattern-matching null checks* off.
+- `file_header_template` defines the C# file header whatever the severity of IDE0073 (each template line is a `//` comment, `\n` separates lines, `{fileName}` is the file name); `unset` or an empty template means no header and replaces the `.codejanitor` and user header.
+- `dotnet_separate_import_directive_groups = true` (or `dotnet_sort_system_directives_first = false`) turns *Organize usings* off; `dotnet_sort_system_directives_first = true` turns it on.
+- A rule enforced only by severity (no option) uses Roslyn's default value for the setting it decides: inline `out` variables, read-only fields, collection expressions, explicit access modifiers, lambdas, CA1507/CA1869, block-scoped namespaces (`convertToFileScopedNamespace` off) and using placement outside the namespace; `convertToVarWhenApparent` is off.
+
+### Override notes in the settings panel
+
+Under each cleanup option the open workspace's `.editorconfig` decides, a note *Overridden by .editorconfig: <key> in <path>* is shown and the control is disabled; a setting the workspace's `.codejanitor` lists (and `.editorconfig` does not decide) shows *Overridden by .codejanitor: <key> in <path>* the same way. The note is evaluated for a C# file in the first workspace folder (`.editorconfig` files nested below it are not considered; a key that is not enforced or has an unrecognized value shows no note; nothing is shown or locked without a workspace). Affected settings: explicit access modifiers, var, inline out variables, collection expressions, read-only fields, file-scoped namespaces, usings outside the namespace, file header, trailing whitespace, lambdas, null checks, sealed classes, `nameof`, JSON options, the blank-line removals and the Code Style rules. The notes are read when the panel opens and whenever a setting changes.
+
+## Cleanup preview and navigation
+
+**Cleanup preview (multi-file).** `Preview Cleanup (Selected Files / Open Files / Changed Files / Workspace)` builds a plan with the ordinary cleanup pipeline without writing files or calling AI. A Quick Pick lists every file with an explicit status (`N changes`, `No changes`, `Skipped: not a C# file / too large / excluded / not UTF-8`, `Error: ...`); files with changes are checked. Moving through the list (or the Show Diff button) opens a native `vscode.diff` of the original and the updated text from virtual documents (no temporary files). The Choose Rules button lists the file's rules as Changed / No change / Excluded; each change of the selection is recomputed from the file's original text. Enter applies the checked files through one `WorkspaceEdit` (one undo step; when VS Code rejects it, each file is checked again and applied on its own): a file whose text (editor buffer or disk) changed since the plan is refused and reported; nothing is saved (closed files are edited as unsaved buffers). A result with more syntax problems than the original is never offered. With `onlyChangedLines`, Changed Files previews the lines changed since HEAD as one result. The preview covers the deterministic C# text pipeline only: type splits (one type per file), workspace-wide renames, AI and encoding changes are not part of it (a note says so). Settings: `codeJanitor.preview.maxFileSizeKB`, `codeJanitor.cleanup.showOptionsDialog` (Cleanup Selected Files first asks `Start Cleanup` / `Preview C# Text Changes`; default off).
+
+**Navigation and workflow commands** (ports of the Visual Studio commands): `Switch to Related File` (`.cs`/`.designer.cs`, `.xaml`/`.xaml.cs`, `.razor`/`.razor.cs`/`.razor.css`, `.cshtml`/`.cshtml.cs`, `.aspx`/`.ascx`/`.master` with code-behind, `.h`/`.c`/`.cpp`, `.ts`/`.html`/`.css`; groups in `codeJanitor.switching.relatedFileExtensions`), `Toggle Read-Only (Session)` (built-in session read-only toggle; VS Code has no command for the file attribute), `Close All Read-Only Editors` (files marked read-only on disk or on read-only file systems, without unsaved changes; `files.readonlyInclude` patterns are not detectable through the API), `Find in Explorer` (reveals the active file), `Collapse Explorer` (built-in), `Collapse Selected in Explorer` (collapses the focused Explorer folder; VS Code cannot collapse a selection recursively).
+
+## Reorganize
+
+**Reorganize Active File** / **Reorganize (Selected Files)** reorder the members of every type by the configured member type order
+(default: fields, constructors, destructors, delegates, events, enums, interfaces, properties, indexers, methods, structs, classes),
+then access level (public, internal, protected internal, protected, private protected, private - or reversed, or access first), then
+constants, static and read-only fields, then alphabetically. Comments directly above a member, its attributes, XML documentation (also when a
+blank line separates it from the member), its trailing comment and the `#if` block around it move with it. Fields and properties whose
+initializers depend on the order they are declared in (an initializer that reads another field or runs code, including a user-defined operator,
+indexer or conversion) keep their relative order, and so do the instance fields of a struct, which are its memory layout unless it is marked
+`[StructLayout(LayoutKind.Auto)]`, so the behaviour of the code does not change.
+Regions can be kept, sorted across, removed, or generated per group (optionally with the access level, for methods only, and even when
+empty). Settings: `codeJanitor.reorganize.*` (section "Reorganizing"). **Insert Region Around Selection** wraps the selected lines in
+`#region New Region` and selects the name; **Remove Region** removes the region under the cursor (keeping the regions nested in it) or the
+regions in the selection.
+**Sort Lines** sorts the selected lines like the Visual Studio extension (empty lines dropped, culture-aware order).
+
+## Razor and Blazor
+
+**Razor and Blazor formatter.** `Code Janitor: Format Razor` (active `.razor` / `.cshtml` file, or the selected
+files and folders in the explorer) and, with `codeJanitor.cleanup.formatRazorComponents` (off by default, as in the Visual Studio
+extension), the regular cleanup lay out the C# of `@code` / `@functions` blocks and of the control blocks `@if`, `@else if`, `@else`,
+`@for`, `@foreach`, `@while`, `@switch`, `@try`, `@catch` and `@finally` (headers normalized, braces on their own lines, statements
+one per line, `else` / `catch` / `finally` on a line of their own). Markup is moved with its block but never reformatted;
+Razor comments, HTML comments, `<script>`, `<style>`, `<pre>` and `<textarea>` content and `@{ }` blocks are never touched.
+Only whitespace ever changes - the result is checked token by token - and anything the formatter cannot read with certainty
+(C# that does not parse, unbalanced blocks, `catch ... when` filters, and blocks whose markup shares a line with a brace where a
+line break would be rendered) stays as authored. Formatting twice is a no-op.
+Indentation: `codeJanitor.razor.indentSize` (4) and `codeJanitor.razor.indentStyle` (`auto` follows the file).
+Implemented in TypeScript with no Roslyn or .NET at runtime: `src/razor/`.
+
 ## AI features (optional)
 
 Generating XML documentation, explaining code, reviewing it, refactoring it, generating unit
@@ -578,6 +654,67 @@ markdown report with the highest-risk gaps and the tests to add first.
 **Generate Tests From Coverage Gaps (AI)** uses the same coverage reports, lets you pick a source
 file referenced by the report, and opens a generated C# test class focused on the uncovered code.
 
+## Differences from the Visual Studio extension
+
+Both extensions share the cleanup concepts, the `.codejanitor` policy file and the transformation
+fixtures in `shared/tests/transformations/`. They do not share an engine: the Visual Studio
+extension runs on Roslyn and its semantic model inside Visual Studio; this extension is TypeScript
+with its own C# parser, with no .NET at runtime. Where Roslyn's semantic model decides, this
+extension changes code only when the syntax proves the result is the same, and otherwise leaves it
+unchanged and reports it in the **Code Janitor** output channel.
+
+Legend: **Same** = equivalent behavior; **Approx.** = same goal, narrower or more conservative;
+**No** = not available; **n/a** = no counterpart in that IDE.
+
+| Area | Visual Studio | VS Code | Status |
+|---|---|---|---|
+| Deterministic text rules (whitespace, blank lines, padding, regions, BOM, file header, comment format, access modifiers, `var`, readonly, sealed, `nameof`, `out var`, collection expressions, lambdas, null checks, interpolation, CA1869) | Roslyn syntax and semantics | Own parser, same shared fixtures | **Same** for the syntactic cases; **Approx.** where a type must be known (e.g. block-lambda null checks are left unchanged) |
+| `.editorconfig` rules and severities | Evaluated by Roslyn | Own evaluator of `.editorconfig`, `.globalconfig`, `.csproj`, `Directory.Build.*`, `AnalysisMode` | **Approx.** (static; a `Condition` or unknown import leaves a value unknown) |
+| Code-style code fixes | Roslyn code fixes of Visual Studio and project analyzers | Native rewrites for the supported rules (README list); the rest are reported | **Approx.** |
+| Third-party analyzer fixes (NuGet analyzers) | Yes | No | **No** |
+| Compiler errors checked before applying a fix | Roslyn compiles the changed project(s) | A rewrite whose result parses worse than the input is discarded | **Approx.** |
+| Code Style opt-in rules (53) and `.codejanitor` `codeStyle` | Yes | Yes, applied by the same native engine | **Same** settings, **Approx.** fixes |
+| Naming rules (`dotnet_naming_*`) | Rename across the solution | Rename inside the file; types and non-private members are reported; opt-in workspace rename | **Approx.** |
+| Using placement (outside / inside namespace) | Semantic model, all `#if` variants, every target framework | Index of project and referenced-project declarations plus .NET reference assemblies; skips on any `#if`/`#region`/`#nullable`/`#pragma` in the way and when the index is incomplete | **Approx.** (stricter, moves fewer files) |
+| File-scoped / block-scoped namespace | Language version from the Roslyn workspace | Language version from the nearest `.csproj`; unknown version keeps block scope | **Approx.** |
+| Remove and sort usings (IDE0005), Visual Studio Format Document (IDE0055) | Visual Studio services | Using order and the formatting options of `.editorconfig`; only duplicate usings and usings of the file's own namespace are removed, other unused usings need the compiler and are neither removed nor reported | **Approx.** |
+| Settings precedence | `.editorconfig` > `.codejanitor` > user settings | The same | **Same** |
+| `.codejanitor` discovery | Nearest file, walking up | The same | **Same** |
+| `.codejanitor` keys `applyEditorConfig*`, `applyAnalyzerCodeFixes` | Opt-in keys | Ignored (logged once); `.editorconfig` always applies | **No** (intentional) |
+| Override notes in settings UI | WPF options pages | Settings panel notes and locked controls | **Same** |
+| Cleanup preview | Options dialog, side-by-side diff | Quick Pick, native diff, per-file rule selection, stale-text protection; no type splitting or workspace rename in the preview | **Approx.** |
+| Cleanup scopes (file, selection, open, changed, workspace) | Yes | Yes | **Same** |
+| Cleanup on save | Yes | Yes | **Same** |
+| Reorganize members, generate/remove regions | DTE code model | Syntax tree; fields with order-dependent initializers keep their order; `#if` blocks move as one unit; `private protected` has its own rank; with access first, a member type order of 10 or more no longer outweighs one access level | **Approx.** |
+| Code tree window (Spade): move above/below/into, search, name sort | Yes | No (VS Code has Outline) | **No** |
+| Sort Lines, Join Lines, Insert/Remove Region | Yes | Yes | **Same** |
+| Razor / Blazor formatter | `RazorFormatterLogic` | Port; whitespace only, markup layout kept, idempotent; `.cshtml` and indent options added | **Approx.** |
+| Switch File, Find in Explorer, Collapse, Read-only | Solution Explorer | Equivalent commands on VS Code's Explorer and editors | **Approx.** |
+| Build progress in toolbar and taskbar | Yes | No | **No** |
+| Split top-level types into files | Yes | Yes (explicit command, never on save) | **Same** |
+| Fix namespace | Yes | Yes | **Same** |
+| XML documentation generation (AI) | Yes | Yes | **Same** |
+| Explain / review / refactor / unit tests (AI) | Yes | Yes | **Same** |
+| Coverage-report analysis and tests from gaps (AI) | Target-coverage loop (`AiCoverageTargetLogic`) | Coverage-report analysis and test generation | **Approx.** |
+| GitHub Copilot access | Session endpoint, model discovery | VS Code language model API | **Approx.** |
+| Secret storage | DPAPI | VS Code secret storage | **n/a** |
+| Diagnostics and quick fixes in the editor | Roslyn / Visual Studio | Native diagnostics from the cleanup rules | **Approx.** |
+| Check mode for CI | n/a | `npm run check` (no VS Code, no .NET) | VS Code only |
+| Platforms | Windows, Visual Studio 2026 | Windows, macOS, Linux | n/a |
+
+### What is verified, and how
+
+- Unit tests (Vitest) for every rule family; the shared fixtures run against both engines. One
+  fixture (`pattern-matching-null-checks-block-lambda-convert`) is an intentional divergence: Roslyn
+  knows the parameter's type, this engine does not, so the code is left unchanged.
+- Real-compiler tests: the cleanup output is built with `dotnet build` before and after, and
+  any new `CSxxxx`/`RZxxxx` error fails the test (`test/oracle/*`, `npm run verify:compile`).
+  These need the .NET SDK on the development machine only.
+- Tests in a real VS Code host (`npm run test:e2e`).
+- There is no line-coverage measurement in the repository, so "every line is tested" is not
+  claimed. Rule modules are exercised through the cleanup pipeline and the compiler corpora rather
+  than by one test file each.
+
 ## Scope and review
 
 The C# cleanup engine uses a TypeScript parser, without Roslyn semantic analysis. Syntax
@@ -588,6 +725,10 @@ AI actions send the selected code or report context to the provider you configur
 appropriate for the source code you are working with, and review generated output before use.
 
 ## Development and support
+
+Every cleanup option is tested on deliberately bad C# in the [testbed repository](https://github.com/edgarus-labs/code-janitor-testbed)
+(`npm run test:testbed`): each option must fix its own bad code, and the cleaned solution must still build and behave the same.
+
 
 See [the development guide](PLAN.md) for architecture and verification commands and
 [CHANGELOG.md](CHANGELOG.md) for release history. Report reproducible problems in

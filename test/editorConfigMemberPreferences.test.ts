@@ -86,6 +86,85 @@ describe('IDE0250 csharp_style_prefer_readonly_struct', () => {
 
     expect(codeStyle(source, 'csharp_style_prefer_readonly_struct = true:warning').output).toBe(source);
   });
+
+  it('leaves structs that change a primary constructor parameter alone', () => {
+    const setting = 'csharp_style_prefer_readonly_struct = true:warning';
+    for (const write of ['count++', '--count', 'count += 1', '(count, _) = (1, 2)', 'Set(ref count)', 'Set(out count)']) {
+      const source = lines('public struct Counter(int count)', '{', `    public void Change() => ${write};`, '    public int Value => count;', '}');
+
+      expect(codeStyle(source, setting).output).toBe(source);
+    }
+
+    const reader = lines('public struct Point(int x)', '{', '    public int X => x;', '    public int Twice() => Read(in x) * 2;', '}');
+    expect(codeStyle(reader, setting).output).toBe(reader.replace('public struct', 'public readonly struct'));
+  });
+
+  it('leaves structs that write or call through a member of a primary constructor parameter alone', () => {
+    const setting = 'csharp_style_prefer_readonly_struct = true:warning';
+    for (const write of ['p.X = 5', 'p.X++', 'p.Inner.X += 1', 'p.Increment()', 'p.Inner.Increment()', 'Set(ref p.X)']) {
+      const source = lines('public struct Holder(Point p)', '{', `    public void Move() => ${write};`, '}');
+
+      expect(codeStyle(source, setting).output).toBe(source);
+    }
+
+    const reader = lines('public struct Holder(Point p, List<int> items)', '{', '    public int X => p.X;', '    public void Add() => items.Add(1);', '}');
+    expect(codeStyle(reader, setting).output).toBe(reader.replace('public struct', 'public readonly struct'));
+  });
+});
+
+describe('IDE0251 csharp_style_prefer_readonly_struct_member through field chains', () => {
+  it('leaves members that call methods on a struct reached through a struct field alone', () => {
+    const source = lines(
+      'struct S',
+      '{',
+      '    private Outer _o;',
+      '    private int[] _items;',
+      '    public void Touch() { _o.A.Bump(); }',
+      '    public void TouchThis() { this._o.A.Bump(); }',
+      '    public void TouchParenthesized() { (_o.A).Bump(); }',
+      '    public void TouchIndexed() { _o[0].A.Bump(); }',
+      '    public int First() { return _items[0].A.GetHashCode(); }',
+      '}'
+    );
+
+    expect(codeStyle(source, 'csharp_style_prefer_readonly_struct_member = true:warning').output).toBe(
+      source.replace('public int First', 'public readonly int First')
+    );
+  });
+
+  it('leaves ref-returning members and members taking refs to the instance alone', () => {
+    const source = lines(
+      'struct S',
+      '{',
+      '    private int _x;',
+      '    public ref int GetRef() => ref _x;',
+      '    public ref int Item => ref _x;',
+      '    public int Bump() { ref int r = ref _x; r++; return r; }',
+      '    public ref readonly int Peek() => ref _x;',
+      '    public int Read() { return _x; }',
+      '}'
+    );
+
+    expect(codeStyle(source, 'csharp_style_prefer_readonly_struct_member = true:warning').output).toBe(
+      source.replace('public int Read', 'public readonly int Read')
+    );
+  });
+
+  it('leaves members that call methods on a primary constructor parameter of a struct type alone', () => {
+    const source = lines(
+      'struct Holder(Point p, List<int> items)',
+      '{',
+      '    public void Move() { p.Increment(); }',
+      '    public void MoveInner() { p.Inner.Increment(); }',
+      '    public void Append() { items.Add(1); }',
+      '    public int Read() { return p.X; }',
+      '}'
+    );
+
+    expect(codeStyle(source, 'csharp_style_prefer_readonly_struct_member = true:warning').output).toBe(
+      source.replace('public void Append', 'public readonly void Append').replace('public int Read', 'public readonly int Read')
+    );
+  });
 });
 
 describe('IDE0062 csharp_prefer_static_local_function', () => {
@@ -160,7 +239,7 @@ describe('IDE0032 dotnet_style_prefer_auto_properties', () => {
     const { output, issues } = codeStyle(source, 'dotnet_style_prefer_auto_properties = true:warning');
 
     expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/^IDE0032 .* line 4: 'Count' was not made an auto property: '_count' is used outside it\.$/)]);
+    expect(issues).toEqual([expect.stringMatching(/^IDE0032 .*line 4: .*'Count'.*'_count'/)]);
   });
 });
 
@@ -172,7 +251,7 @@ describe('IDE0130 dotnet_style_namespace_match_folder', () => {
     const { output, issues } = codeStyle(source, 'dotnet_style_namespace_match_folder = true:warning', { filePath: '/repo/src/Sample.cs', project });
 
     expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/^IDE0130 .* namespace 'Company\.App\.Other' does not match the folder structure, expected 'Company\.App\.src'\.$/)]);
+    expect(issues).toEqual([expect.stringMatching(/^IDE0130 .*'Company\.App\.Other'.*'Company\.App\.src'/)]);
     expect(codeStyle(source.replace('Other', 'src'), 'dotnet_style_namespace_match_folder = true:warning', { filePath: '/repo/src/Sample.cs', project }).issues).toEqual([]);
     expect(codeStyle(source, 'dotnet_style_namespace_match_folder = true:silent', { filePath: '/repo/src/Sample.cs', project }).issues).toEqual([]);
   });
@@ -194,7 +273,7 @@ describe('IDE0060 dotnet_code_quality_unused_parameters', () => {
     const { output, issues } = codeStyle(source, 'dotnet_code_quality_unused_parameters = all:warning');
 
     expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/^IDE0060 .* line 3: parameter 'unused' of 'Twice' is never used\.$/)]);
+    expect(issues).toEqual([expect.stringMatching(/^IDE0060 .*line 3: .*'unused'.*'Twice'/)]);
     expect(codeStyle(source, 'dotnet_code_quality_unused_parameters = all:silent').issues).toEqual([]);
   });
 });

@@ -16,9 +16,10 @@ const JSON_SERIALIZER_OPTIONS_TYPES = new Set([
 ]);
 
 /**
- * Replaces direct `new JsonSerializerOptions()` arguments of `JsonSerializer.*` calls with `null`
- * (CA1869), avoiding a per-call allocation while keeping the selected overload. Configured
- * instances - those with an initializer or constructor arguments - are left alone.
+ * Replaces direct `new JsonSerializerOptions()` arguments of `JsonSerializer.*` calls with
+ * `default(JsonSerializerOptions)` (written with the type as the call names it), or with `null` for a
+ * named `options:` argument (CA1869), avoiding a per-call allocation while keeping the selected
+ * overload. Configured instances - those with an initializer or constructor arguments - are left alone.
  */
 export const jsonSerializerOptionsReuseConverter: SourceTransformation = {
   name: 'CA1869 JsonSerializerOptions Reuse',

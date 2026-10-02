@@ -1,117 +1,72 @@
 import { describe, expect, it } from 'vitest';
-import { SourceTransformationPipeline } from '../src/cleanup/pipeline';
 import {
+  convertToBlockScoped,
   convertToFileScoped,
-  fileScopedNamespaceConverter,
-  hasMultipleNamespaces,
-  moveUsingsOutside,
-  moveUsingsOutsideNamespaceConverter,
+  createFileScopedNamespaceConverter,
+  createUsingPlacementConverter,
+  fileScopedNamespacesUnsupported,
 } from '../src/cleanup/transformations/namespaceScope';
 
-describe('moveUsingsOutside', () => {
-  it('moves usings from a block namespace to the top', () => {
-    const input =
-      'namespace CodeJanitor\r\n{\r\n    using System;\r\n    using System.Collections.Generic;\r\n\r\n    public class Sample\r\n    {\r\n    }\r\n}\r\n';
-    const result = moveUsingsOutside(input);
+function toFileScoped(source: string): { output: string; reasons: string[] } {
+  const reasons: string[] = [];
 
-    expect(result.startsWith('using System;\r\nusing System.Collections.Generic;\r\n\r\nnamespace CodeJanitor')).toBe(
-      true
-    );
-    expect(result).not.toContain('{\r\n    using System;');
-  });
+  return { output: convertToFileScoped(source, { indent: '    ', report: (reason) => reasons.push(reason) }), reasons };
+}
 
-  it('moves usings from a file-scoped namespace to the top', () => {
-    const input =
-      'namespace CodeJanitor;\r\n\r\nusing System;\r\nusing System.Linq;\r\n\r\npublic class Sample\r\n{\r\n}\r\n';
+function toBlockScoped(source: string, indent = '    '): { output: string; reasons: string[] } {
+  const reasons: string[] = [];
 
-    expect(
-      moveUsingsOutside(input).startsWith('using System;\r\nusing System.Linq;\r\n\r\nnamespace CodeJanitor;')
-    ).toBe(true);
-  });
-
-  it('leaves usings that are already at the top unchanged', () => {
-    const input =
-      'using System;\r\n\r\nnamespace CodeJanitor\r\n{\r\n    public class Sample\r\n    {\r\n    }\r\n}\r\n';
-
-    expect(moveUsingsOutside(input)).toBe(input);
-  });
-
-  it('merges and deduplicates against existing top-level usings', () => {
-    const input =
-      'using System;\r\nusing System.Text;\r\n\r\nnamespace CodeJanitor\r\n{\r\n    using System;\r\n    using System.Collections.Generic;\r\n\r\n    public class Sample\r\n    {\r\n    }\r\n}\r\n';
-
-    expect(
-      moveUsingsOutside(input).startsWith(
-        'using System;\r\nusing System.Text;\r\nusing System.Collections.Generic;\r\n\r\nnamespace CodeJanitor'
-      )
-    ).toBe(true);
-  });
-
-  it('preserves the file header when moving usings to the top', () => {
-    const input =
-      '// Copyright (c) 2026\r\n\r\nnamespace CodeJanitor\r\n{\r\n    using System;\r\n\r\n    public class Sample\r\n    {\r\n    }\r\n}\r\n';
-
-    expect(moveUsingsOutside(input).startsWith('// Copyright (c) 2026\r\n\r\nusing System;\r\n\r\nnamespace CodeJanitor')).toBe(
-      true
-    );
-  });
-
-  it('produces clean file-scoped code when combined with the file-scoped converter', () => {
-    const input = 'namespace CodeJanitor\r\n{\r\n    using System;\r\n\r\n    public class Sample\r\n    {\r\n    }\r\n}\r\n';
-    const pipeline = new SourceTransformationPipeline([
-      moveUsingsOutsideNamespaceConverter,
-      fileScopedNamespaceConverter,
-    ]);
-
-    expect(pipeline.run(input)).toBe(
-      'using System;\r\n\r\nnamespace CodeJanitor;\r\n\r\npublic class Sample\r\n{\r\n}\r\n'
-    );
-  });
-
-  it('handles an empty source', () => {
-    expect(moveUsingsOutside('')).toBe('');
-  });
-
-  it('is named', () => {
-    expect(moveUsingsOutsideNamespaceConverter.name).toBe('Move using directives outside namespace');
-  });
-});
+  return { output: convertToBlockScoped(source, { indent, report: (reason) => reasons.push(reason) }), reasons };
+}
 
 describe('convertToFileScoped', () => {
   it('converts a single block namespace', () => {
-    expect(convertToFileScoped('namespace A\r\n{\r\n    class C\r\n    {\r\n    }\r\n}\r\n')).toBe(
-      'namespace A;\r\n\r\nclass C\r\n{\r\n}\r\n'
-    );
+    expect(toFileScoped('namespace A\r\n{\r\n    class C\r\n    {\r\n    }\r\n}\r\n').output).toBe('namespace A;\r\n\r\nclass C\r\n{\r\n}\r\n');
   });
 
-  it('moves usings outside while converting', () => {
-    expect(
-      convertToFileScoped('namespace A\r\n{\r\n    using System;\r\n\r\n    class C\r\n    {\r\n    }\r\n}\r\n')
-    ).toBe('using System;\r\n\r\nnamespace A;\r\n\r\nclass C\r\n{\r\n}\r\n');
+  it('keeps the usings inside the namespace: only the using placement moves them', () => {
+    expect(toFileScoped('namespace A\r\n{\r\n    using System;\r\n\r\n    class C\r\n    {\r\n    }\r\n}\r\n').output).toBe(
+      'namespace A;\r\n\r\nusing System;\r\n\r\nclass C\r\n{\r\n}\r\n'
+    );
   });
 
   it('leaves an already file-scoped namespace unchanged', () => {
     const input = 'namespace A;\r\n\r\nclass C\r\n{\r\n}\r\n';
 
-    expect(convertToFileScoped(input)).toBe(input);
+    expect(toFileScoped(input)).toEqual({ output: input, reasons: [] });
   });
 
-  it('leaves multiple namespaces unchanged', () => {
-    const input = 'namespace A\r\n{\r\n}\r\nnamespace B\r\n{\r\n}\r\n';
-
-    expect(convertToFileScoped(input)).toBe(input);
+  it('dedents the body by its own indentation when a comment follows the opening brace', () => {
+    expect(toFileScoped('namespace A { // c\n    class C { }\n}\n').output).toBe('namespace A;\n\n// c\nclass C { }\n');
+    expect(toFileScoped('namespace A\n{ // c\n\n    class C\n    {\n    }\n}\n').output).toBe('namespace A;\n\n// c\n\nclass C\n{\n}\n');
   });
 
-  it('leaves a file without a namespace unchanged', () => {
-    const input = 'class C\r\n{\r\n}\r\n';
-
-    expect(convertToFileScoped(input)).toBe(input);
+  it('takes the dedent unit from code lines, not from a comment or a nested member opened on the brace line', () => {
+    expect(toFileScoped('namespace A { /* a\n   b */\n    class C { }\n}\n').output).toBe('namespace A;\n\n/* a\n   b */\nclass C { }\n');
+    expect(toFileScoped('namespace A { class C {\n        int x;\n    }\n}\n').output).toBe('namespace A;\n\nclass C {\n    int x;\n}\n');
   });
 
-  it('leaves nested namespaces unchanged', () => {
-    const input = 'namespace A\r\n{\r\n    namespace B\r\n    {\r\n    }\r\n}\r\n';
+  it.each([
+    ['multiple namespaces', 'namespace A\r\n{\r\n}\r\nnamespace B\r\n{\r\n}\r\n'],
+    ['no namespace', 'class C\r\n{\r\n}\r\n'],
+    ['nested namespaces', 'namespace A\r\n{\r\n    namespace B\r\n    {\r\n    }\r\n}\r\n'],
+    ['a type before the namespace', 'class B { }\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\n'],
+    ['a type after the namespace', 'namespace A\r\n{\r\n    class C { }\r\n}\r\nclass B { }\r\n'],
+    ['a global attribute and a type before the namespace', '[assembly: X]\r\nclass B { }\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\n'],
+    ['a global attribute and a type after the namespace', '[assembly: X]\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\nclass B { }\r\n'],
+    ['a type attribute before the namespace', '[Serializable]\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\n'],
+    ['a syntax error', 'namespace A\r\n{\r\n    class C {\r\n}\r\n'],
+  ])('is not a candidate with %s', (_name, input) => {
+    expect(toFileScoped(input)).toEqual({ output: input, reasons: [] });
+  });
 
-    expect(convertToFileScoped(input)).toBe(input);
+  it('converts a namespace that follows global attributes, keeping them before it', () => {
+    expect(
+      toFileScoped('using System;\n[assembly: System.CLSCompliant(true)]\n[module: A(new[] { 1 })] [assembly: B]\n\nnamespace Demo\n{\n    class C { }\n}\n')
+    ).toEqual({
+      output: 'using System;\n[assembly: System.CLSCompliant(true)]\n[module: A(new[] { 1 })] [assembly: B]\n\nnamespace Demo;\n\nclass C { }\n',
+      reasons: [],
+    });
   });
 
   it('never changes the lines inside verbatim, raw and interpolated multi-line strings', () => {
@@ -134,7 +89,7 @@ describe('convertToFileScoped', () => {
       '',
     ].join('\r\n');
 
-    expect(convertToFileScoped(input)).toBe(
+    expect(toFileScoped(input).output).toBe(
       [
         'namespace N;',
         '',
@@ -158,40 +113,172 @@ describe('convertToFileScoped', () => {
   it('keeps the bare LF line breaks inside a string of a CRLF file', () => {
     const input = 'namespace N\r\n{\r\n    class C\r\n    {\r\n        string s = @"\n    x\n";\r\n    }\r\n}\r\n';
 
-    expect(convertToFileScoped(input)).toBe('namespace N;\r\n\r\nclass C\r\n{\r\n    string s = @"\n    x\n";\r\n}\r\n');
+    expect(toFileScoped(input).output).toBe('namespace N;\r\n\r\nclass C\r\n{\r\n    string s = @"\n    x\n";\r\n}\r\n');
   });
 
   it('preserves the file header and outer usings', () => {
-    expect(
-      convertToFileScoped(
-        '// file header\r\nusing System;\r\n\r\nnamespace A\r\n{\r\n    class C\r\n    {\r\n    }\r\n}\r\n'
-      )
-    ).toBe('// file header\r\nusing System;\r\n\r\nnamespace A;\r\n\r\nclass C\r\n{\r\n}\r\n');
+    expect(toFileScoped('// file header\r\nusing System;\r\n\r\nnamespace A\r\n{\r\n    class C\r\n    {\r\n    }\r\n}\r\n').output).toBe(
+      '// file header\r\nusing System;\r\n\r\nnamespace A;\r\n\r\nclass C\r\n{\r\n}\r\n'
+    );
   });
 
-  it('is named', () => {
-    expect(fileScopedNamespaceConverter.name).toBe('File-Scoped Namespace');
+  it.each([
+    ['tabs', 'namespace A\n{\n\tclass C\n\t{\n\t}\n}\n', 'namespace A;\n\nclass C\n{\n}\n'],
+    ['two spaces', 'namespace A\n{\n  class C\n  {\n    int x;\n  }\n}\n', 'namespace A;\n\nclass C\n{\n  int x;\n}\n'],
+    ['an empty body', 'namespace A\n{\n}\n', 'namespace A;\n'],
+    ['a dotted name', 'namespace A.B.C\n{\n    class D { }\n}\n', 'namespace A.B.C;\n\nclass D { }\n'],
+  ])('moves the body by one indentation level of the file (%s)', (_name, input, expected) => {
+    expect(toFileScoped(input).output).toBe(expected);
+  });
+
+  it.each([
+    ['an #if that ends inside the namespace', 'namespace A\n{\n    class C\n    {\n    }\n#if X\n}\n#endif\n'],
+    ['an #if that begins before the namespace and ends inside it', '#if X\nnamespace A\n{\n    class C\n    {\n    }\n#endif\n}\n'],
+    ['a #region that begins inside and ends after the namespace', 'namespace A\n{\n    class C\n    {\n    }\n#region R\n}\n#endregion\n'],
+  ])('reports and keeps the namespace with %s', (_name, input) => {
+    const { output, reasons } = toFileScoped(input);
+
+    expect(output).toBe(input);
+    expect(reasons).toHaveLength(1);
+  });
+
+  it('keeps comments around the braces as a reason', () => {
+    const input = 'namespace A // the namespace\n{\n    class C { }\n}\n';
+    const { output, reasons } = toFileScoped(input);
+
+    expect(output).toBe(input);
+    expect(reasons).toEqual(['comments or code surround the namespace braces.']);
+  });
+
+  it('keeps a comment between the namespace keyword and the name', () => {
+    expect(toFileScoped('namespace /* keep */ A\n{\n    class C { }\n}\n')).toEqual({ output: 'namespace /* keep */ A;\n\nclass C { }\n', reasons: [] });
+    expect(toFileScoped('namespace // keep\nA\n{\n    class C { }\n}\n')).toEqual({ output: 'namespace // keep\nA;\n\nclass C { }\n', reasons: [] });
+  });
+
+  it('converts an #if block that lies entirely inside the namespace', () => {
+    expect(toFileScoped('namespace A\n{\n#if X\n    class C { }\n#else\n    class D { }\n#endif\n}\n').output).toBe(
+      'namespace A;\n\n#if X\nclass C { }\n#else\nclass D { }\n#endif\n'
+    );
   });
 });
 
-describe('hasMultipleNamespaces', () => {
-  it('detects multiple top-level namespaces', () => {
-    expect(hasMultipleNamespaces('namespace A\r\n{\r\n}\r\nnamespace B\r\n{\r\n}\r\n')).toBe(true);
+describe('convertToBlockScoped', () => {
+  it('converts a file-scoped namespace, indenting what follows by one level', () => {
+    expect(toBlockScoped('using System;\r\n\r\nnamespace A;\r\n\r\nclass C\r\n{\r\n}\r\n').output).toBe(
+      'using System;\r\n\r\nnamespace A\r\n{\r\n    class C\r\n    {\r\n    }\r\n}\r\n'
+    );
   });
 
-  it('detects a nested namespace', () => {
-    expect(hasMultipleNamespaces('namespace A\r\n{\r\n    namespace B\r\n    {\r\n    }\r\n}\r\n')).toBe(true);
+  it('indents with the unit it is given', () => {
+    expect(toBlockScoped('namespace A;\n\nclass C { }\n', '\t').output).toBe('namespace A\n{\n\tclass C { }\n}\n');
   });
 
-  it('returns false for a single block namespace', () => {
-    expect(hasMultipleNamespaces('namespace A\r\n{\r\n    class C\r\n    {\r\n    }\r\n}\r\n')).toBe(false);
+  it('moves usings after the declaration into the block', () => {
+    expect(toBlockScoped('namespace A;\n\nusing System;\n\nclass C { }\n').output).toBe('namespace A\n{\n    using System;\n\n    class C { }\n}\n');
   });
 
-  it('returns false for a single file-scoped namespace', () => {
-    expect(hasMultipleNamespaces('namespace A;\r\n\r\nclass C\r\n{\r\n}\r\n')).toBe(false);
+  it('leaves the lines inside multi-line strings as they are', () => {
+    expect(toBlockScoped('namespace A;\n\nclass C\n{\n    string s = @"x\ny";\n}\n').output).toBe(
+      'namespace A\n{\n    class C\n    {\n        string s = @"x\ny";\n    }\n}\n'
+    );
   });
 
-  it('returns false when there is no namespace', () => {
-    expect(hasMultipleNamespaces('class C\r\n{\r\n}\r\n')).toBe(false);
+  it('indents a comment that follows the semicolon like the rest of the body', () => {
+    expect(toBlockScoped('namespace A; // c\n\nclass C { }\n').output).toBe('namespace A\n{\n    // c\n\n    class C { }\n}\n');
+    expect(toBlockScoped('namespace A;\t/* c */ class C { }\n').output).toBe('namespace A\n{\n    /* c */ class C { }\n}\n');
+  });
+
+  it('keeps a comment between the namespace keyword and the name', () => {
+    expect(toBlockScoped('namespace /* keep */ A;\n\nclass C { }\n')).toEqual({ output: 'namespace /* keep */ A\n{\n    class C { }\n}\n', reasons: [] });
+  });
+
+  it('keeps a comment between the name and the semicolon as a reason', () => {
+    const input = 'namespace A /* keep */;\n\nclass C { }\n';
+
+    expect(toBlockScoped(input)).toEqual({ output: input, reasons: ['comments or code surround the namespace semicolon.'] });
+  });
+
+  it.each([
+    ['an empty body', 'namespace A;\n', 'namespace A\n{\n}\n'],
+    ['no final line break', 'namespace A;\n\nclass C { }', 'namespace A\n{\n    class C { }\n}\n'],
+    ['trailing blank lines', 'namespace A;\n\nclass C { }\n\n\n', 'namespace A\n{\n    class C { }\n}\n'],
+  ])('handles %s', (_name, input, expected) => {
+    expect(toBlockScoped(input).output).toBe(expected);
+  });
+
+  it.each([
+    ['a block-scoped namespace', 'namespace A\n{\n    class C { }\n}\n'],
+    ['two file-scoped namespaces', 'namespace A;\nnamespace B;\n'],
+    ['no namespace', 'class C\n{\n}\n'],
+  ])('is not a candidate with %s', (_name, input) => {
+    expect(toBlockScoped(input)).toEqual({ output: input, reasons: [] });
+  });
+
+  it('reports an #if that begins before the namespace and ends after it', () => {
+    const input = '#if NETFRAMEWORK\nnamespace A;\n\nclass C { }\n#endif\n';
+    const { output, reasons } = toBlockScoped(input);
+
+    expect(output).toBe(input);
+    expect(reasons).toHaveLength(1);
+  });
+});
+
+describe('file-scoped namespaces need C# 10', () => {
+  it.each([
+    [undefined, /could not be determined/],
+    [{ directory: '/p' }, /version of its project is unknown/],
+    [{ directory: '/p', languageVersion: 9 }, /C# 9 and file-scoped namespaces need C# 10/],
+    [{ directory: '/p', languageVersion: 7.3 }, /C# 7.3/],
+  ])('gives a reason for %j', (project, reason) => {
+    expect(fileScopedNamespacesUnsupported(project)).toMatch(reason);
+  });
+
+  it.each([10, 12, 99])('accepts C# %s', (languageVersion) => {
+    expect(fileScopedNamespacesUnsupported({ directory: '/p', languageVersion })).toBeUndefined();
+  });
+
+  it('keeps the namespace block-scoped and reports once when the version is not known', () => {
+    const messages: string[] = [];
+    const converter = createFileScopedNamespaceConverter({ project: undefined, report: (message) => messages.push(message) });
+    const input = 'namespace A\n{\n    class C { }\n}\n';
+
+    expect(converter.apply(input)).toBe(input);
+    expect(messages).toEqual([expect.stringMatching(/namespace not converted to a file-scoped one: its project could not be determined/)]);
+  });
+
+  it('stays silent for a file with no block-scoped namespace to convert', () => {
+    const messages: string[] = [];
+    const converter = createFileScopedNamespaceConverter({ project: undefined, report: (message) => messages.push(message) });
+    const input = 'namespace A;\n\nclass C { }\n';
+
+    expect(converter.apply(input)).toBe(input);
+    expect(messages).toEqual([]);
+  });
+
+  it('converts for a project on C# 10', () => {
+    const converter = createFileScopedNamespaceConverter({ project: { directory: '/p', languageVersion: 10 }, report: () => undefined });
+
+    expect(converter.apply('namespace A\n{\n    class C { }\n}\n')).toBe('namespace A;\n\nclass C { }\n');
+    expect(converter.name).toBe('File-Scoped Namespace');
+  });
+
+  it('converts a file that starts with a byte order mark and keeps the mark', () => {
+    const messages: string[] = [];
+    const converter = createFileScopedNamespaceConverter({ project: { directory: '/p', languageVersion: 10 }, report: (message) => messages.push(message) });
+
+    expect(converter.apply('\uFEFFnamespace A\n{\n    class C { }\n}\n')).toBe('\uFEFFnamespace A;\n\nclass C { }\n');
+    expect(messages).toEqual([]);
+  });
+});
+
+describe('createUsingPlacementConverter', () => {
+  it('returns a file without directives to move untouched and silently', () => {
+    const messages: string[] = [];
+    const converter = createUsingPlacementConverter({ direction: 'outside', report: (message) => messages.push(message) });
+    const input = 'using System;\n\nnamespace A\n{\n    class C { }\n}\n';
+
+    expect(converter.apply(input)).toBe(input);
+    expect(converter.apply('')).toBe('');
+    expect(messages).toEqual([]);
   });
 });

@@ -97,6 +97,12 @@ describe('regionDirectiveRemover', () => {
     expect(regionDirectiveRemover.apply(source)).toBe('#if DEBUG\nint x;\n#endif\n');
   });
 
+  it('removes a region on the first line of a file that starts with a byte order mark, keeping the mark', () => {
+    const source = '\uFEFF#region License\n// text\n#endregion\nnamespace N;\n';
+
+    expect(regionDirectiveRemover.apply(source)).toBe('\uFEFF// text\nnamespace N;\n');
+  });
+
   it('is named', () => {
     expect(regionDirectiveRemover.name).toBe('Remove region directives');
   });

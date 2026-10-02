@@ -3,8 +3,9 @@ import { effectiveEditorConfigValue, enforcedOptionValue } from '../editorConfig
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import { RELATIONAL, UNARY, nullTest, operatorOf, precedenceOf, unparenthesized, withParentheses } from './editorConfigPrecedence';
 import { hasParseErrors, lineEndAt, lineIndentAt, lineStartAt, newlineOf } from './editorConfigSupport';
-import { isPlainNullComparison } from './typeFacts';
+import { isPlainNullComparison, isPlainReferenceType } from './typeFacts';
 import { delegateParameterTypes, subjectTypeText } from './editorConfigExpressionPreferences';
+import { interpolationIdentifiers, interpolationWritesName } from './interpolation';
 
 /**
  * Statement-level code-style preferences. A group of statements is rewritten only when every
@@ -16,6 +17,8 @@ interface StatementContext {
   readonly props: EditorConfigProperties;
   /** One indentation level for code the rule creates. */
   readonly indent: string;
+  /** The project's C# language version, when known. */
+  readonly languageVersion?: number;
 }
 
 /** Collects the edits for the statements of one block. */
@@ -44,7 +47,7 @@ export const STATEMENT_PREFERENCES: readonly PreferenceRule[] = [
 const MAX_REWRITES = 16;
 
 /** Applies one preference when its option is `true` and enforced, again while it changes the code. */
-export function applyStatementPreference(rule: PreferenceRule, source: string, props: EditorConfigProperties, indent: string): string {
+export function applyStatementPreference(rule: PreferenceRule, source: string, props: EditorConfigProperties, indent: string, languageVersion?: number): string {
   if (effectiveEditorConfigValue(props, rule.option) !== 'true') {
     return source;
   }
@@ -57,7 +60,7 @@ export function applyStatementPreference(rule: PreferenceRule, source: string, p
       edits = [];
       for (const block of findAll(tree.rootNode, 'block')) {
         const statements = block.namedChildren.filter((child) => child.type !== 'comment' && !child.type.startsWith('preproc'));
-        rule.apply(current, block, statements, edits, { props, indent });
+        rule.apply(current, block, statements, edits, { props, indent, languageVersion });
       }
     } finally {
       tree.delete();
@@ -124,9 +127,18 @@ export function isSimpleTarget(node: Node): boolean {
   return node.type === 'member_access_expression' && receiver !== null && isSimpleTarget(receiver);
 }
 
-/** Identifier occurrences named `name` inside `scope`, other than `except`. */
+/**
+ * Occurrences of `name` inside `scope`, other than `except`: its identifiers, and the interpolated
+ * strings (one literal node to the parser) whose holes use it as a name in scope.
+ */
 export function occurrences(scope: Node, name: string, except: readonly Node[] = []): Node[] {
-  return scope.descendantsOfType('identifier').filter((node) => node.text === name && !except.includes(node));
+  return scope
+    .descendantsOfType(['identifier', 'interpolated_string_expression'])
+    .filter(
+      (node) =>
+        !except.includes(node) &&
+        (node.type === 'identifier' ? node.text === name : interpolationIdentifiers(node.text).some((used) => used.name === name && !used.member))
+    );
 }
 
 export function isNameOfMemberAccess(identifier: Node): boolean {
@@ -148,7 +160,8 @@ function throwExpressions(source: string, block: Node, statements: readonly Node
       continue;
     }
 
-    if (!isLocalOrParameter(block, checked) || hasParseErrors(check) || hasComment(source, check.startIndex, statements[i + 1].startIndex)) {
+    // The target's receiver and indexes run before `?? throw`: they must not have side effects.
+    if (!isSimpleTarget(assignment.left) || !isLocalOrParameter(block, checked) || hasParseErrors(check) || hasComment(source, check.startIndex, statements[i + 1].startIndex)) {
       continue;
     }
 
@@ -261,17 +274,25 @@ function localFunctions(source: string, block: Node, statements: readonly Node[]
       continue;
     }
 
-    const isAsyncOrStatic = /\b(?:async|static)\s*$/.test(source.slice(local.declarator.startIndex, lambda.startIndex));
     const parameters = lambdaParameters(lambda);
+    const parameterList = lambda.childForFieldName('parameters');
     const body = lambda.childForFieldName('body');
-    if (isAsyncOrStatic || !parameters || !body || parameters.length !== parameterTypes.length) {
+    // The parser makes `async`/`static` the lambda's own leading tokens; the local function keeps
+    // them (dropping `async` leaves `await` outside an async method). Anything else there (an
+    // explicit return type, a comment) keeps the lambda.
+    const leading = parameterList ? source.slice(lambda.startIndex, parameterList.startIndex) : '';
+    if (!/^(?:(?:async|static)\b\s*)*$/.test(leading) || !parameters || !body || parameters.length !== parameterTypes.length) {
       continue;
     }
 
+    const modifiers = leading.split(/\s+/).filter(Boolean).map((modifier) => `${modifier} `).join('');
+
     const names = parameters.map((parameter) => parameter.name);
     const nameNode = local.declarator.childForFieldName('name')!;
-    const onlyCalled = occurrences(block, local.name, [nameNode]).every(
-      (use) => use.parent?.type === 'invocation_expression' && use.parent.childForFieldName('function') === use
+    const onlyCalled = occurrences(block, local.name, [nameNode]).every((use) =>
+      use.type === 'interpolated_string_expression'
+        ? interpolationIdentifiers(use.text).every((used) => used.name !== local.name || used.member || used.invoked)
+        : use.parent?.type === 'invocation_expression' && use.parent.childForFieldName('function') === use
     );
     const redeclared = block
       .descendantsOfType(['variable_declarator', 'parameter', 'local_function_statement'])
@@ -285,7 +306,7 @@ function localFunctions(source: string, block: Node, statements: readonly Node[]
     const signature = parameters.map((parameter, index) => `${parameter.type ?? parameterTypes[index]} ${parameter.name}`).join(', ');
     const bodyText = body.type === 'block' ? body.text : `=> ${body.text};`;
 
-    edits.push({ start: statement.startIndex, end: statement.endIndex, text: `${returnType} ${local.name}(${signature}) ${bodyText}` });
+    edits.push({ start: statement.startIndex, end: statement.endIndex, text: `${modifiers}${returnType} ${local.name}(${signature}) ${bodyText}` });
   }
 }
 
@@ -431,6 +452,50 @@ export function enclosingMember(node: Node): Node {
  */
 const CONDITIONAL_TARGET_TYPES = /^(?:bool|Boolean|int|Int32|long|Int64|decimal|Decimal|string|String)\??$/;
 
+/**
+ * An integer literal without suffix that fits in `int`, optionally negated (only when `negative`):
+ * its natural type is `int`.
+ */
+function isIntLiteral(node: Node, negative: boolean): boolean {
+  const value = unparenthesized(node);
+  const negated = value.type === 'prefix_unary_expression' && value.child(0)?.type === '-';
+  const operand = negated ? value.namedChildren[0] : value;
+  if ((negated && !negative) || operand?.type !== 'integer_literal' || /[uUlL]$/.test(operand.text)) {
+    return false;
+  }
+
+  const digits = operand.text.replace(/_/g, '');
+
+  return Number(/^0[bB]/.test(digits) ? parseInt(digits.slice(2), 2) : digits) <= 2147483647;
+}
+
+/**
+ * Whether `c ? a : b` for `targetType` may need target-typed conditionals (C# 9) the project
+ * lacks: before C# 9 one branch has to convert to the other. Without the branch types this is
+ * only certain for a `bool`/`string` target with a non-null branch, or for a numeric target with
+ * an `int` literal branch (it converts to, or from, every other value the target takes). A
+ * negative literal does not convert to `uint`/`ulong`, which `long`/`decimal` targets also take,
+ * so it only counts for an `int` target.
+ */
+function needsTargetTyping(languageVersion: number | undefined, targetType: string, whenTrue: Node, whenFalse: Node): boolean {
+  if (languageVersion === undefined || languageVersion >= 9) {
+    return false;
+  }
+
+  const nullish = (node: Node): boolean => /^(?:null_literal|default_expression)$/.test(unparenthesized(node).type);
+  if (targetType.endsWith('?')) {
+    return true;
+  }
+
+  if (/^(?:bool|Boolean|string|String)$/.test(targetType)) {
+    return nullish(whenTrue) && nullish(whenFalse);
+  }
+
+  const negative = /^(?:int|Int32)$/.test(targetType);
+
+  return !((isIntLiteral(whenTrue, negative) && !nullish(whenFalse)) || (isIntLiteral(whenFalse, negative) && !nullish(whenTrue)));
+}
+
 /** The only statement of `node`: the statement itself or the single statement of a block. */
 function soleStatement(node: Node | undefined): Node | undefined {
   return node?.type === 'block' ? (node.namedChildCount === 1 ? node.namedChildren[0] : undefined) : node;
@@ -488,7 +553,7 @@ function conditionalText(condition: Node, whenTrue: Node, whenFalse: Node, targe
  * `if (c) x = a; else x = b;` becomes `x = c ? a : b;`, and `T x; if (c) x = a; else x = b;`
  * becomes `T x = c ? a : b;`, when the type of `x` is one the conditional cannot change.
  */
-function conditionalAssignments(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+function conditionalAssignments(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { languageVersion }: StatementContext): void {
   statements.forEach((statement, index) => {
     const parts = ifElse(statement);
     const first = simpleAssignment(parts?.whenTrue);
@@ -505,8 +570,10 @@ function conditionalAssignments(source: string, _block: Node, statements: readon
       text === undefined ||
       text.includes('\n') ||
       !CONDITIONAL_TARGET_TYPES.test(type) ||
+      needsTargetTyping(languageVersion, type, first.right, second.right) ||
       hasParseErrors(statement) ||
-      hasComment(source, statement.startIndex, statement.endIndex)
+      // A declaration folded into the conditional also takes everything between it and the `if`.
+      hasComment(source, declares ? declaration.declarator.endIndex : statement.startIndex, statement.endIndex)
     ) {
       return;
     }
@@ -545,14 +612,14 @@ function returnedValue(statement: Node | undefined): Node | undefined {
  * `if (c) return a; else return b;` and `if (c) return a; return b;` become `return c ? a : b;`
  * when the return type is one the conditional cannot change.
  */
-function conditionalReturns(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[]): void {
+function conditionalReturns(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { languageVersion }: StatementContext): void {
   for (let i = 0; i < statements.length; i++) {
     const parts = ifElse(statements[i]);
     const first = returnedValue(parts?.whenTrue);
     const next = parts && !parts.whenFalse ? statements[i + 1] : undefined;
     const second = returnedValue(parts?.whenFalse ?? next);
     const type = parts ? returnType(statements[i]) ?? '' : '';
-    if (!parts || !first || !second || !CONDITIONAL_TARGET_TYPES.test(type)) {
+    if (!parts || !first || !second || !CONDITIONAL_TARGET_TYPES.test(type) || needsTargetTyping(languageVersion, type, first, second)) {
       continue;
     }
 
@@ -571,7 +638,11 @@ function conditionalReturns(source: string, _block: Node, statements: readonly N
 // IDE0017 / IDE0028 dotnet_style_object_initializer / dotnet_style_collection_initializer
 // ---------------------------------------------------------------------------------------------
 
-/** `var x = new T(...);` without an initializer. */
+/**
+ * `var x = new T(...);` without an initializer. The local must have the created type (`var`,
+ * `new()`, or the same type written out): through a `dynamic`, base or interface local the
+ * statements after it bind to members an initializer on `T` would not.
+ */
 function createdLocal(statement: Node | undefined): { name: string; creation: Node } | undefined {
   const local = singleLocal(statement);
   const creation = local?.value;
@@ -580,7 +651,12 @@ function createdLocal(statement: Node | undefined): { name: string; creation: No
     return undefined;
   }
 
-  return { name: local.name, creation };
+  const declared = local.type.text.replace(/\s+/g, '');
+  const created = creation.childForFieldName('type')?.text.replace(/\s+/g, '');
+  const hasCreatedType =
+    declared !== 'dynamic' && (local.type.type === 'implicit_type' || creation.type === 'implicit_object_creation_expression' || declared === created);
+
+  return hasCreatedType ? { name: local.name, creation } : undefined;
 }
 
 /** Replaces the creation of `local` and the statements after it with an initializer of `elements`. */
@@ -662,10 +738,7 @@ const COLLECTION_TYPES: Record<string, 1 | 2> = {
  * would take a collection expression instead.
  */
 function collectionInitializers(source: string, block: Node, statements: readonly Node[], edits: TextEdit[], { props, indent }: StatementContext): void {
-  let fileRoot: Node = block;
-  while (fileRoot.parent) {
-    fileRoot = fileRoot.parent;
-  }
+  const fileRoot = fileRootOf(block);
 
   const collectionExpressions = enforcedOptionValue(props, 'dotnet_style_prefer_collection_expression');
   const explicitTypeAllowed = collectionExpressions === undefined || collectionExpressions === 'false' || collectionExpressions === 'never';
@@ -679,8 +752,7 @@ function collectionInitializers(source: string, block: Node, statements: readonl
 
     const name = (type?.type === 'generic_name' ? type.namedChildren[0]?.text : undefined) ?? '';
     const arity = COLLECTION_TYPES[name];
-    const declaredInFile = fileRoot.descendantsOfType(['class_declaration', 'struct_declaration', 'record_declaration']).some((declaration) => declaration.childForFieldName('name')?.text === name);
-    if (!local || !arity || declaredInFile) {
+    if (!local || !arity || typeNamesDeclaredIn(fileRoot).has(name)) {
       continue;
     }
 
@@ -702,7 +774,8 @@ function collectionInitializers(source: string, block: Node, statements: readonl
         break;
       }
 
-      elements.push(arity === 1 ? values[0]!.text : `{ ${values.map((value) => value!.text).join(', ')} }`);
+      // A lone element that is an assignment would read as a member initializer: it keeps parentheses.
+      elements.push(arity === 1 ? (values[0]!.type === 'assignment_expression' ? `(${values[0]!.text})` : values[0]!.text) : `{ ${values.map((value) => value!.text).join(', ')} }`);
     }
 
     const group = statements.slice(i, j);
@@ -713,6 +786,24 @@ function collectionInitializers(source: string, block: Node, statements: readonl
     edits.push(initializerEdit(source, local, group, elements, indent));
     i = j - 1;
   }
+}
+
+const typeNamesByRoot = new WeakMap<Node, ReadonlySet<string>>();
+
+/** The names of the classes, structs and records declared in the file, collected once per parse. */
+function typeNamesDeclaredIn(fileRoot: Node): ReadonlySet<string> {
+  let names = typeNamesByRoot.get(fileRoot);
+  if (!names) {
+    names = new Set(
+      fileRoot
+        .descendantsOfType(['class_declaration', 'struct_declaration', 'record_declaration'])
+        .map((declaration) => declaration.childForFieldName('name')?.text)
+        .filter((declared) => declared !== undefined)
+    );
+    typeNamesByRoot.set(fileRoot, names);
+  }
+
+  return names;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -787,7 +878,9 @@ function isEnumOfFile(type: string, anyNode: Node): boolean {
 function switchExpressions(source: string, _block: Node, statements: readonly Node[], edits: TextEdit[], { indent }: StatementContext): void {
   for (let i = 0; i < statements.length; i++) {
     const statement = statements[i];
-    const subject = statement.type === 'switch_statement' ? statement.namedChildren[0] : undefined;
+    // `switch (a, b)` parses each tuple element as its own child: only a single subject converts.
+    const header = statement.type === 'switch_statement' ? statement.namedChildren.filter((child) => child.type !== 'switch_body') : [];
+    const subject = header.length === 1 ? header[0] : undefined;
     const body = statement.namedChildren.find((child) => child.type === 'switch_body');
     const sections = body && subject ? switchSections(source, body) : undefined;
     if (!sections || sections.length === 0 || hasParseErrors(statement) || hasComment(source, statement.startIndex, statement.endIndex)) {
@@ -834,10 +927,11 @@ function switchExpressions(source: string, _block: Node, statements: readonly No
     if (defaultValue >= 0) {
       armTexts.push(`_ => ${arms[defaultValue]!.value}`);
     } else {
-      const next = statements[i + 1];
-      const fallback = form === 'return' ? returnedValue(next) : undefined;
+      // After an assigning switch, every section breaks to the next statement: it runs unconditionally.
+      const next = form === 'return' ? statements[i + 1] : undefined;
+      const fallback = returnedValue(next);
       const thrown = next?.type === 'throw_statement' && next.namedChildCount === 1 ? `throw ${next.namedChildren[0].text}` : undefined;
-      if (!fallback && !thrown) {
+      if (!next || (!fallback && !thrown)) {
         continue;
       }
 
@@ -853,6 +947,7 @@ function switchExpressions(source: string, _block: Node, statements: readonly No
     if (
       !(CONDITIONAL_TARGET_TYPES.test(type.replace(/\s+/g, '')) || isEnumOfFile(type, statement)) ||
       armTexts.some((text) => text.includes('\n')) ||
+      (declares && hasComment(source, declaration.declarator.endIndex, statement.startIndex)) ||
       (consumed !== statement && (hasParseErrors(consumed) || hasComment(source, statement.endIndex, consumed.endIndex)))
     ) {
       continue;
@@ -900,12 +995,13 @@ function declaredOnlyBy(member: Node, name: string, declarations: number): boole
   return others === declarations && patterns === 0;
 }
 
-/** True when an identifier `name` inside `scope` is assigned (`name = `, `name++`, `ref`/`out name`). */
+/** True when an identifier `name` inside `scope` is assigned (`name = `, `name++`, `ref`/`out name`), in an interpolation hole too. */
 function isAssignedIn(scope: Node, name: string): boolean {
   return occurrences(scope, name).some((use) => {
     const parent = use.parent;
 
     return (
+      (use.type === 'interpolated_string_expression' && interpolationWritesName(use.text, name)) ||
       (parent?.type === 'assignment_expression' && parent.childForFieldName('left') === use) ||
       parent?.type === 'postfix_unary_expression' ||
       (parent?.type === 'prefix_unary_expression' && /^(?:\+\+|--)/.test(parent.text)) ||
@@ -946,12 +1042,15 @@ function asWithNullCheckPatterns(source: string, block: Node, statements: readon
     const member = enclosingMember(block);
     const usedOutside =
       statements.slice(i + 2).some((later) => occurrences(later, local.name).length > 0) || (alternative !== undefined && occurrences(alternative, local.name).length > 0);
+    // `s != null` may call a user-defined operator (a destroyed Unity object equals null); `is` never does.
+    const plainCheck = check.byPattern || isPlainReferenceType(type.text, fileRootOf(block));
     if (
       check.subject.type !== 'identifier' ||
       check.subject.text !== local.name ||
       (local.type.type !== 'implicit_type' && local.type.text.replace(/\s+/g, '') !== type.text.replace(/\s+/g, '')) ||
       type.text.trim().endsWith('?') ||
       usedOutside ||
+      !plainCheck ||
       isAssignedIn(statement, local.name) ||
       !declaredOnlyBy(member, local.name, 1) ||
       hasParseErrors(statements[i]) ||
@@ -990,6 +1089,8 @@ function isWithCastPatterns(source: string, block: Node, statements: readonly No
       (local.type.type !== 'implicit_type' && local.type.text.replace(/\s+/g, '') !== castType) ||
       isAssignedIn(then, local.name) ||
       !declaredOnlyBy(enclosingMember(block), local.name, 1) ||
+      // The pattern variable is in scope in the whole block, where the name may mean a field or property.
+      occurrences(block, local.name).some((use) => !isNameOfMemberAccess(use) && (use.startIndex < then.startIndex || use.endIndex > then.endIndex)) ||
       hasParseErrors(statement) ||
       hasComment(source, test!.startIndex, local.declarator.endIndex)
     ) {
@@ -1004,4 +1105,13 @@ function isWithCastPatterns(source: string, block: Node, statements: readonly No
     edits.push({ start: pattern.endIndex, end: pattern.endIndex, text: ` ${local.name}` });
     edits.push({ start: removeStart, end: removeEnd, text: '' });
   }
+}
+
+function fileRootOf(node: Node): Node {
+  let root = node;
+  while (root.parent) {
+    root = root.parent;
+  }
+
+  return root;
 }

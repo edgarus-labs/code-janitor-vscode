@@ -6,6 +6,33 @@ All notable changes to this extension are documented here.
 
 First release of the Visual Studio Code port.
 
+### Added (Visual Studio parity)
+
+- **Testbed.** `npm run test:testbed` runs every cleanup option against deliberately bad C# from the public
+  [code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) repository (one class per option) and builds and runs the
+  cleaned solution with the real compiler. It found the fixes listed under **Fixed (found on real code)**.
+- **CI.** The tests that build C# with the .NET SDK run in one job per category (`test/compilerTests.json`), each on its own runner
+  with the .NET 10 SDK (`10.0.x`); Build and Test runs the rest. The Code Style compiler tests build each rule group as its own project.
+- Code Style rules (`codeJanitor.cleanup.codeStyleRules`, `.codejanitor` `codeStyle`), grouped in the settings panel; override notes that disable the controls `.editorconfig` decides; export/import of the rules.
+- Using directive placement is proven against an index of the project's declarations instead of the old name-prefix heuristic: namespace-relative directives (`using Services;` in `Company.App`) are written fully qualified, `csharp_using_directive_placement = inside_namespace` moves file-level directives into the namespace (`global::`-qualifying what would bind differently), and every file where the move is not provably safe is left unchanged with the reason in the output.
+- File-scoped namespaces are only written for projects known to use C# 10+; `convertToFileScopedNamespace` keeps using directives inside the namespace and reports why a namespace was not converted.
+- Added multi-file cleanup preview commands (selected files, open files, changed files, workspace) with per-file inclusion, per-rule selection, native diff and stale-text protection; optional options dialog for Cleanup Selected Files (`codeJanitor.cleanup.showOptionsDialog`).
+- Added navigation commands: Switch to Related File, Toggle Read-Only (Session), Close All Read-Only Editors, Find in Explorer, Collapse Explorer, Collapse Selected in Explorer.
+- Added Reorganize (`codeJanitor.reorganizeActiveFile`, `codeJanitor.reorganizeSelectedFiles`): members ordered by the `codeJanitor.reorganize.*` settings (the `Reorganizing_*` settings of the Visual Studio extension with the same defaults), with generated or removed regions, `#if` blocks moving with their member, initializers that depend on declaration order kept in order, an option to run it at the start of cleanup, and a question about files with preprocessor conditionals.
+- Added Insert Region Around Selection and Remove Region (under the cursor or in the selection).
+- Sort Lines now behaves like the Visual Studio command: empty lines are dropped, the order is culture-aware, every line ends with a line break, and a last selected line that the selection only reaches the start of is left out.
+- Fixed the parser: explicit interface implementations of indexers (`int I.this[int i]`) and of events with accessors (`event Action I.E { add {} remove {} }`) are now single members instead of incomplete declarations.
+- Added a Razor and Blazor formatter (`codeJanitor.formatRazor`, `codeJanitor.cleanup.formatRazorComponents`, `codeJanitor.razor.indentSize`, `codeJanitor.razor.indentStyle`): whitespace-only layout of `@code`/`@functions` and control blocks in `.razor` and `.cshtml` files.
+- Added the real-compiler test helper (`test/helpers/dotnetBuild.ts`) and oracle projects for Code Style, Usings, Reorganize and Razor; `npm run verify:compile` covers them. The shared transformation corpus gained the two lambda null-check fixtures of the Visual Studio repository (the block-lambda conversion is a documented divergence: no semantic model).
+
+### Changed (Visual Studio parity)
+
+- `.codejanitor` is discovered per file, walking up from the cleaned file's folder (nearest file wins as a whole), in cleanup on save, every cleanup command, the editor diagnostics, the preview and check mode (`npm run check`); before, only the first workspace folder's root was read.
+- Precedence is `.editorconfig` (where it enforces) > `.codejanitor` > VS Code settings, as in the Visual Studio extension; a key in `.codejanitor` now wins over an explicit VS Code setting.
+- As in Visual Studio: `:none` option suffix stops a rule, severity suffix on plain options, CA1852 not enabled by category/global severity, IDE2000/IDE2002 inverted blank-line keys, `csharp_style_expression_bodied_lambdas = when_on_single_line`, null-check keys, `file_header_template` independent of IDE0073 and `unset`, using-order keys, Roslyn default values for severity-only enforcement (see README).
+- Setting notes (an enabled Code Style rule that is not implemented or is suppressed by `NoWarn`, a namespace not converted to file-scoped, using directives not moved by the setting) are logged as `Cleanup note:` and counted apart; they are no longer logged or counted as `.editorconfig` violations, and `npm run check` now lists the Code Style ones.
+- The workspace-wide rename reports, instead of renaming, an extension method whose extended type (or part of its hierarchy) is declared outside the workspace, such as `this string`: a call to it could bind to an instance method with the new name.
+
 ### Added
 
 - **Severities from the project, as the compiler reads them**: `.globalconfig` files and
@@ -203,6 +230,95 @@ First release of the Visual Studio Code port.
   - Blank lines inside multi-line string literals (verbatim, raw and interpolated) were collapsed by *Remove multiple consecutive blank lines* and by IDE2000.
   - `string.Format` was converted to an interpolated string even when that changes the number or the order of evaluations of its arguments, and a conditional
     argument was not parenthesized (CS8361).
+  - Code review fixes, each with a test reproducing it:
+    - Rewrites that no longer compiled or changed behavior: `return(x)` became `returnx`; `a - --b` became `a---b` with
+      `csharp_space_around_binary_operators = none`; an expression body was put after a `//` comment on the header line; a trailing
+      `throw` after an assigning `switch` was folded into its `_` arm; `?.` on a `Nullable<T>` pattern null check (CS1061); object/collection
+      initializers, deconstruction, tuple swap and pattern matching that ignored uses inside interpolated strings; `static` lambdas reading
+      deconstructed or `case` pattern locals; `readonly` struct members calling through nested struct fields.
+    - Using directive placement skips moves that would rebind a name: a namespace directive resolved only through a moved one, an alias
+      next to a same-named imported type, an alias named like a member of the target namespace (CS0576); `<Using>` items count as global usings.
+    - CA1822/CA1852 read member uses inside interpolated strings and property patterns of other files, keep pattern-bound members
+      (`GetEnumerator`, `Deconstruct`, ...) and interface implementations through derived types, and report instead of fixing in projects
+      with Razor/XAML markup.
+    - Workspace rename refuses anonymous-type, `dynamic` and unresolved-receiver members, contextual keywords as new names, and projects
+      whose references or packability it cannot read; it no longer inserts a byte order mark.
+    - In the effective settings, `NoWarn` wins over `.editorconfig` severities, and the `AnalysisLevel`/`AnalysisMode` rule set over the
+      category and global bulk severities, as in the build; `<GlobalAnalyzerConfigFiles>`
+      items resolve against the project; a `none` severity on the selected diagnostic is no longer overridden.
+    - The preview, Reorganize and Insert Region use the `.codejanitor` nearest to each file; Cleanup Open/Changed Files and Workspace
+      format Razor files when `formatRazorComponents` is on.
+    - `check` lists Code Janitor setting notes without failing on them; changed-lines cleanup ignores a byte order mark in `HEAD`;
+      `x < (y) ? a > b : c` is no longer parsed as a generic name; the Razor formatter keeps inline control blocks as written; Reorganize
+      keeps static initializers that read names it cannot resolve in order.
+    - Large files: applying edits, IDE0360 and IDE0002 were quadratic.
+    - Casts to tuple types (`(List<(int, int)>)o`) and calls inside comparisons (`F(x < Max(a, b), y > z)`) parse correctly again;
+      `string.Format` to interpolation escapes backslashes and control characters; `global::` inside interpolation holes is read
+      whole; workspace rename handles extension-method calls, `this.field.member` and derived types; CA1822 keeps `Length`/`Count`
+      a derived type or `Slice` needs; project-file imports and XML comments in MSBuild files are honored.
+    - The `insertBlankLineBeforeReturnAndThrow` key written by **Export .codejanitor** is now read back (the `.codejanitor` parser accepted only the long key).
+  - Second code review fixes, each with a test reproducing it:
+    - Reorganize keeps in order the parts of a partial type, initializers that read a static field through a generic type name
+      (`C<T>.Z`) or another generic type (`G<int>.V`), and `#if` blocks that hold `#nullable` or `#pragma`; Insert/Remove Region work on
+      files with mixed line endings.
+    - Using placement indexes files saved with a byte order mark, does not move a using of an extern alias declared in an enclosing
+      namespace, treats framework namespaces as incomplete in Windows Forms/WPF projects (or with another unindexed `FrameworkReference`),
+      ignores the global usings of referenced projects, recognizes a namespace that directly follows `[assembly: …]` attributes and no
+      longer re-reads every nested project on each index refresh; the framework index no longer lists non-public extension methods.
+    - The Razor formatter leaves multi-line quoted attribute values as written and stops at an unterminated `@*` comment, `@{` block or
+      `@(` expression.
+    - CA1852/CA1822/IDE0001 detect Razor, MVC, XAML and Avalonia `.axaml` markup also when `EnableDefaultCompileItems` is false; CA1822
+      reports the members of interpolated string handlers and async method builders instead of making them static (CS0176);
+      `string.Format` to interpolation escapes the format specifier (`{0:hh\\:mm}`, CS1009).
+    - File-scoped namespace conversion (setting and IDE0161) handles files with a byte order mark or with `[assembly: …]`/`[module: …]`
+      attributes before the namespace, and reports an unknown C# version only for files that have a namespace to convert; IDE0031 no
+      longer writes `x?.Value` for a plain type name that a `global using` alias may bind to `Nullable<T>` (CS1061).
+    - An enabled Code Style rule whose `.editorconfig` option has no severity suffix now applies the `.editorconfig` value instead of
+      being dropped.
+    - The cleanup preview checks each file again before applying it on its own when VS Code rejects the combined edit, opens closed
+      files as documents before comparing them, and no longer claims a single undo step for separately applied files; **Close All
+      Read-Only Editors** closes files that are read-only on disk.
+  - Third code review fixes, each with a test reproducing it:
+    - Whitespace rules (`indent_style`, IDE0055 indentation, IDE2000, IDE2002, blank-line removal) changed the text of `$@"..."` strings
+      whose interpolation hole holds a string literal: the scanner and the lexer now read interpolation holes with nested literals,
+      comments and format clauses. IDE0055 keeps the indentation after `#if`/`#else` branches that each hold a copy of a body, and
+      IDE2001 puts an `else` that follows a moved statement on its own line.
+    - Rewrites that no longer compiled or changed behavior: IDE0251 on `ref`-returning members and members taking a `ref` to the
+      instance; IDE0017/IDE0028 through `dynamic`, interface or base-typed locals; IDE0016 on assignment targets with side effects;
+      IDE1005 on `!=` that a type may overload (Unity); IDE0058 writing to a `_` parameter or local; IDE0008 typing a `L` literal above
+      `long.MaxValue` as `long`; IDE0049 on bare names a project type or `global using` alias declares; IDE0004, CA1829, CA2249 and the
+      other typed CA rules reading a pattern or query variable as the field it shadows; CA1825/CA2249/CA1862 writing `Array`/
+      `StringComparison` where a member of that name binds; IDE0005 removing a duplicate using of another `#if` branch inside a
+      namespace; CA1852 sealing a type the project casts to or tests with `as`, `is` or a pattern.
+    - Renames: the in-file rename refuses members with attributes or of serialized types and names that appear in a string of their
+      scope; the workspace rename refuses a simple name inside a type whose base types are declared outside the workspace and
+      checks that no file changed since the plan before applying it; `ß` and other characters without simple case mapping count as
+      uncased, as in .NET.
+    - Using placement compares generic arity, treats framework namespaces as incomplete with package references or a .NET Framework,
+      .NET Standard or platform target, skips unresolved relative directives that a package sharing the root namespace may provide and
+      names declared only under a preprocessor condition; the framework index no longer lists analyzer and source-generator assemblies.
+      Sort using directives follows Roslyn's order (name by name, ignoring case first).
+    - Reorganize keeps the instance fields of structs in their layout order, treats user-defined operators, indexers and conversions
+      in initializers as running code, and moves a doc comment with its member across a blank line. Namespace conversion keeps a
+      comment between `namespace` and the name.
+    - `.editorconfig` section globs match like Roslyn's (`**` is any string, `{cs}` is a choice), `warn` is not a severity, `.globalconfig`
+      files above any compile item of the project apply, and an import through an unknown MSBuild property makes the project facts
+      unknown. `.codejanitor` header values are checked per key.
+    - Issue line numbers of diagnostics, `npm run check` and changed-lines cleanup point at the original line when an earlier rule of
+      the same step added or removed lines; the analysis runs the same "code style after renames" step as the cleanup.
+    - Export .codejanitor keeps the file's `codeStyle` section; a group setting is marked overridden only when `.codejanitor` sets all
+      of its flags; a cancel during the last planned file stops the preview; deleted files are left out of the changed-files commands;
+      saving `.code-janitor.json` refreshes the diagnostics. Batch cleanup reads each project's files once instead of once per file.
+  - Found by cleaning real open-source C# solutions (libraries, ASP.NET Core MVC and Blazor applications), building them before and
+    after and running their tests, then cleaning the result again:
+    - **Remove regions** left `#region` in place and removed `#endregion` when a file starts with a byte order mark followed by
+      `#region` (CS1038).
+    - One cleanup now leaves nothing for the next: a `this.` that a naming-rule rename made redundant is removed in the same run;
+      `var x = (T)value` counts as declared with type `T`, so `x == null` becomes `x is null` at once; the `private static readonly`
+      fields CA1861/CA1869 add get the blank line padding gives a multi-line field.
+    - **Remove blank lines after attributes** keeps the blank line after an `[assembly: …]` or `[module: …]` attribute, which
+      belongs to no declaration.
+    - `npm run verify:compile` retries a build the .NET host aborted with an internal CLR error instead of blaming the rules.
 
 - **Project settings read as MSBuild evaluates them**: the target frameworks, C# version, root
   namespace and `<Nullable>` ignore XML comments, follow `Directory.Build.targets` and resolvable
@@ -287,6 +403,52 @@ First release of the Visual Studio Code port.
 - The editor context submenu no longer splits Generate and Remove XML Documentation across two
   groups separated by an unrelated divider. They are adjacent, in their own group - not folded into
   the AI actions group either, since removal never calls AI.
+- Code style rewrites that no longer break the build: IDE0039 keeps `async`/`static` of the lambda;
+  IDE0066 leaves `switch (a, b)` alone; IDE0028 parenthesizes an assigning `Add` argument;
+  IDE0045/IDE0046 keep a negative literal for a `long`/`decimal` target before C# 9; IDE0029/IDE0030
+  use `??` only when the fallback converts to the subject's type (CS0019); IDE0200 skips partial
+  methods without an implementation (CS0762); IDE0170 leaves named positional subpatterns alone;
+  IDE0082 converts `typeof(X).Name` only when `X` cannot be an alias of another file. Options set to
+  `false`/`never` are no longer held back by language-version checks.
+- IDE0250/IDE0251 no longer add `readonly` when a struct writes through or calls a method on a
+  struct-typed primary constructor parameter; IDE0058 no longer writes `_ =` in a type with a primary
+  constructor parameter named `_`; async methods returning a non-generic task-like type get a
+  statement body without `return`; IDE0320 treats a name redeclared in a nested lambda as captured;
+  IDE0003 keeps `this.` in `(this.X)(...)`.
+- Formatting: unsupported values of `csharp_new_line_before_open_brace` and
+  `csharp_space_between_parentheses` are no longer applied as `none`/`false`;
+  `csharp_preserve_single_line_statements = false` no longer splits statements in blocks kept on one
+  line and puts a `case`/`default` label after a statement on its own line;
+  `csharp_preserve_single_line_blocks = false` puts each member and accessor of an expanded body on
+  its own line; IDE0055 aligns attribute lines of top-level and file-scoped namespace members.
+- Quality rules: CA1822 no longer makes members static that may implement an external interface a
+  project interface extends; CA1852 no longer seals a class code converts to an interface it does
+  not implement; CA1854 keeps `?:` guards inside lambdas (CS8198) and guards whose loop may change the
+  dictionary; deconstructed variables are no longer taken for a field of the same name;
+  CA1825/CA2249/CA1862 qualify `Array`/`StringComparison` when a using alias or a project namespace
+  around the code (`Acme.System` used inside `Acme`) could hide them; CA1861/CA1869 fields use the
+  file's line endings; the project scan matches the .NET SDK (nested `bin`/`obj`, `node_modules`
+  outside Web projects, symbolic links); cross-file rules (CA1822, CA1852, IDE0051) read the unsaved
+  editor text of the project's other open C# files instead of their disk copies.
+- Naming: no rename of a private member a nested derived type reaches through `this` or an object
+  initializer; types and delegates nested in an interface are public; a workspace rename of an
+  extension method or member no longer rewrites accesses or simple names that cannot bind to it.
+- Project reading treats instance property functions (`$(X.Replace(...))`) as unknown and keeps
+  reserved MSBuild properties known after an unresolved import; the settings panel names a
+  `.globalconfig` instead of `.editorconfig` for keys only a global AnalyzerConfig decides.
+- With `charset = utf-8-bom`, a file that already has a byte order mark is no longer reported as
+  changed and the preview no longer writes two byte order marks. Split Top-Level Types and one type
+  per file keep `Result` in `Result.cs` and move `Result<T>`. Diagnostics point at their own lines
+  after an earlier step re-indented the file, analyze only C# files shown in an editor, and no longer
+  touch the Problems panel on edits of other files. The preview applies closed files with mixed line
+  endings and no longer reruns code style after renames because of an earlier preview; batch cleanup
+  no longer overwrites an open document edited while it runs; in Workspace scope the settings panel
+  shows the Code Style rules enabled in User settings.
+- Reorganize recognizes `# if`/`# pragma`; with the access level first, a member type order of 10 or
+  more no longer outweighs an access level. Remove Region at the cursor keeps nested regions. The
+  Razor formatter no longer re-indents a multi-line literal in markup nested in a statement and leaves
+  a chain with an unreadable link (`catch … when`) as authored. `npm run check` sets the exit code
+  instead of calling `process.exit()`. The CA1869 description now says `default(JsonSerializerOptions)`.
 
 ### Testing
 

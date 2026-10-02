@@ -1,3 +1,5 @@
+import { ReorganizeSettings, createDefaultReorganizeSettings } from '../reorganize/settings';
+
 /**
  * A single composable source-text transformation - a "block" in the cleanup pipeline. Each block
  * takes C# source text and returns transformed source, returning its input unchanged when it does
@@ -114,6 +116,9 @@ export interface CleanupSettings {
 
   formatComments: boolean;
 
+  /** Member reorganization (the `Reorganizing_*` settings); it runs first when `runAtStartOfCleanup` is on. */
+  reorganize: ReorganizeSettings;
+
   removeRegions: boolean;
   removeByteOrderMark: boolean;
   removeEndOfLineWhitespace: boolean;
@@ -128,6 +133,13 @@ export interface CleanupSettings {
   fileHeaderCSharp: string;
   fileHeaderPosition: HeaderPosition;
   fileHeaderUpdateMode: HeaderUpdateMode;
+
+  /**
+   * The enabled Code Style rules (see `codeStyleRules.ts`): the value of each, keyed by `.editorconfig`
+   * option name, from the repository policy or the user setting (none by default). A rule the file's
+   * `.editorconfig` enforces keeps its `.editorconfig` value; the rest apply as `suggestion`.
+   */
+  codeStyleRules: Readonly<Record<string, string>>;
 }
 
 /** Defaults mirroring `Settings.settings` of the source extension. */
@@ -199,6 +211,7 @@ export function createDefaultSettings(): CleanupSettings {
     updateAccessorsToBothBeSingleLineOrMultiLine: false,
 
     formatComments: false,
+    reorganize: createDefaultReorganizeSettings(),
 
     removeRegions: true,
     removeByteOrderMark: true,
@@ -214,5 +227,7 @@ export function createDefaultSettings(): CleanupSettings {
     fileHeaderCSharp: '',
     fileHeaderPosition: HeaderPosition.DocumentStart,
     fileHeaderUpdateMode: HeaderUpdateMode.Insert,
+
+    codeStyleRules: {},
   };
 }

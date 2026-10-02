@@ -106,12 +106,14 @@ export function createTopLevelTypeSplitPlan(
         isEligibleTopLevelType(entry.member) && (options.movableKinds?.has(typeKind(entry.member)) ?? true)
     );
 
-    // The type named like the file (up to its first dot: `View.xaml.cs`) stays, movable or not;
-    // without one, the first movable type does.
-    const fileStem = fileStemOf(filePath);
-    const named = entries.find(
-      (entry) => TYPE_DECL_TYPES.has(entry.member.type) && matchesFileStem(entry.member.childForFieldName('name')?.text ?? '', getTypeParameterNames(entry.member), fileStem)
-    );
+    // The type named like the file (up to its first dot: `View.xaml.cs`) stays, movable or not: first
+    // the one whose own file name it is (`Result` in `Result.cs`, not `Result<T>`), else one whose
+    // generic name matches; without one, the first movable type does.
+    const fileStem = fileStemOf(filePath).toUpperCase();
+    const types = entries.filter((entry) => TYPE_DECL_TYPES.has(entry.member.type));
+    const named =
+      types.find((entry) => buildTypeFileStem(entry.member).toUpperCase() === fileStem) ??
+      types.find((entry) => matchesFileStem(entry.member.childForFieldName('name')?.text ?? '', getTypeParameterNames(entry.member), fileStem));
     const keep = named ?? eligible[0];
     const moved = eligible.filter((entry) => entry !== keep);
 

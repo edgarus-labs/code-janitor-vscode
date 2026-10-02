@@ -50,10 +50,22 @@ const LITERAL_TYPES = new Set([
   'null_literal',
 ]);
 
-/** Tokens that may appear inside a type argument list; anything else rules out generics. */
+/**
+ * Tokens that may appear inside a type argument list or a cast type; anything else rules out
+ * generics. Tuple-type parentheses are judged separately by scanTupleToken.
+ */
 const TYPE_ARGUMENT_TOKENS = new Set([
-  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out', '(', ')',
+  'identifier', 'predefined_type', ',', '.', '[', ']', '?', '::', '*', 'in', 'out',
 ]);
+
+/** Tokens after which `(` can open a tuple type: the start of a type argument or tuple element. */
+const TUPLE_TYPE_PREDECESSORS = new Set(['<', ',', '(']);
+
+/** An open tuple-type group: the generic depth it opened at and whether it holds its own comma. */
+interface TupleGroup {
+  depth: number;
+  comma: boolean;
+}
 
 const AFTER_TYPE_ARGUMENTS = new Set([
   '(', ')', ']', '}', ',', ';', '.', ':', '?', '=>', '{', '>', '==', '!=', 'identifier',
@@ -1288,19 +1300,18 @@ class CSharpParser {
    */
   private typeArgumentListEnd(): number {
     let depth = 0;
-    // Parentheses only appear around tuple types, so they must balance inside the list.
-    let parentheses = 0;
+    const tupleGroups: TupleGroup[] = [];
     let i = this.pos;
 
     for (; i < this.tokens.length; i++) {
       const type = this.tokens[i].type;
+      const tuple = this.scanTupleToken(tupleGroups, i, depth);
 
-      if (type === '(' || type === ')') {
-        parentheses += type === '(' ? 1 : -1;
-        if (parentheses < 0) {
-          return -1;
-        }
+      if (tuple === false) {
+        return -1;
+      }
 
+      if (tuple) {
         continue;
       }
 
@@ -1323,11 +1334,50 @@ class CSharpParser {
       }
     }
 
-    if (depth !== 0 || parentheses !== 0 || i >= this.tokens.length) {
+    if (depth !== 0 || tupleGroups.length !== 0 || i >= this.tokens.length) {
       return -1;
     }
 
     return AFTER_TYPE_ARGUMENTS.has(this.tokens[i + 1]?.type ?? 'end') ? i : -1;
+  }
+
+  /**
+   * Feeds token `i` of a scanned type to the open tuple-type groups. Returns true when the token is
+   * a tuple parenthesis or a group's own comma, false when it rules the scan out as a type, and
+   * undefined when the caller must judge the token itself.
+   *
+   * A tuple type only starts a type argument or a tuple element, so `(` right after a name opens
+   * an argument list (`x < Math.Max(a, b), y > z`). A tuple always has at least two elements, so a
+   * group without a comma at its own generic depth is an expression: `x < (y) ? a > b`,
+   * `a < (int)b, c > d`, `a < (G<b, c>)d, e > f` and the `(Action)` in `((Action)a)(b)`.
+   */
+  private scanTupleToken(groups: TupleGroup[], i: number, depth: number): boolean | undefined {
+    const type = this.tokens[i].type;
+
+    if (type === '(') {
+      if (!TUPLE_TYPE_PREDECESSORS.has(this.tokens[i - 1]?.type)) {
+        return false;
+      }
+
+      groups.push({ depth, comma: false });
+
+      return true;
+    }
+
+    if (type === ')') {
+      const group = groups.pop();
+
+      return group !== undefined && group.comma && group.depth === depth;
+    }
+
+    const group = groups[groups.length - 1];
+    if (type === ',' && group?.depth === depth) {
+      group.comma = true;
+
+      return true;
+    }
+
+    return undefined;
   }
 
   // ---------------------------------------------------------------- statements
@@ -1773,7 +1823,8 @@ class CSharpParser {
     const typeStart = this.pos;
     const type = this.parseType();
 
-    if (!type || !this.is('identifier')) {
+    // `(T)x` is a cast, not a declaration: C# has no one-element tuple type.
+    if (!type || !this.is('identifier') || isOneElementTupleType(type)) {
       this.pos = save;
 
       return undefined;
@@ -2860,9 +2911,32 @@ class CSharpParser {
       return false;
     }
 
+    let depth = 0;
+    const tupleGroups: TupleGroup[] = [];
+
     for (let i = this.pos + 1; i < closing; i++) {
       const type = this.tokens[i].type;
-      if (!TYPE_ARGUMENT_TOKENS.has(type) && type !== '<' && type !== '>') {
+      const tuple = this.scanTupleToken(tupleGroups, i, depth);
+
+      if (tuple === false) {
+        return false;
+      }
+
+      if (tuple) {
+        continue;
+      }
+
+      if (type === '<') {
+        depth++;
+        continue;
+      }
+
+      if (type === '>') {
+        depth--;
+        continue;
+      }
+
+      if (!TYPE_ARGUMENT_TOKENS.has(type)) {
         return false;
       }
 
@@ -2870,10 +2944,13 @@ class CSharpParser {
       // connecting them (`Foo.Bar`, `Foo<Bar>` - always via `.`/`<`/`::`; never `Foo Bar`).
       // A query expression's clause keywords (`from`, `select`, `where`, ...) lex as plain
       // identifiers, so `(from x in y select x)` would otherwise satisfy every check above.
+      // The one exception is a tuple element name, which ends its element: `(int a, int b)`.
+      const next = this.tokens[i + 1].type;
       if (
         i > this.pos + 1 &&
         (type === 'identifier' || type === 'predefined_type') &&
-        (this.tokens[i - 1].type === 'identifier' || this.tokens[i - 1].type === 'predefined_type')
+        (this.tokens[i - 1].type === 'identifier' || this.tokens[i - 1].type === 'predefined_type') &&
+        !(type === 'identifier' && tupleGroups.length > 0 && (next === ',' || next === ')'))
       ) {
         return false;
       }
@@ -3247,4 +3324,15 @@ function deepestContaining(root: Node, start: number, end: number): Node {
 
     host = child;
   }
+}
+
+/** `(T)` parsed as a tuple type (also under `?`/`[]`): a tuple type needs at least two elements. */
+function isOneElementTupleType(type: Node): boolean {
+  let base = type;
+
+  while ((base.type === 'nullable_type' || base.type === 'array_type') && base.children.length > 0) {
+    base = base.children[0];
+  }
+
+  return base.type === 'tuple_type' && !base.children.some((child) => child.type === ',');
 }

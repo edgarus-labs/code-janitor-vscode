@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  ConfigurationTarget,
   Position,
   Selection,
   TextDocument,
@@ -11,18 +12,21 @@ import {
   TextEditor,
   Uri,
   createContext,
+  ExtensionContext,
   resetMock,
   state,
   window,
+  workspace,
 } from './helpers/vscodeMock';
 import { activate } from '../src/extension';
 import { registerCleanupCommands } from '../src/commands/cleanupCommands';
 import { expandToCleanableFiles, isSupportedFile, runCleanupOnUris } from '../src/commands/cleanupCore';
 import { registerEditorCommands, suggestNamespace } from '../src/commands/editorCommands';
 import { registerFormatOnSave } from '../src/commands/formatOnSave';
-import { readCleanupSettings, readXmlDocOptions } from '../src/commands/settings';
+import { readCleanupSettings, readCleanupSettingsForUri, readXmlDocOptions } from '../src/commands/settings';
 import { exportRepositorySettings, importRepositorySettings, registerRepositorySettingsCommands } from '../src/commands/repositorySettings';
 import { HeaderPosition, HeaderUpdateMode } from '../src/cleanup/types';
+import { findProject } from '../src/cleanup/projectInfo';
 import { createOutputChannel } from '../src/logging';
 
 /** Trailing whitespace is the smallest change every default cleanup configuration performs. */
@@ -44,10 +48,37 @@ function tempRoot(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * A `codeJanitor` configuration with separate User and Workspace values (keys relative to the section).
+ * As in VS Code, `get` merges an object value across the scopes and any other value is overridden.
+ */
+function scopedConfiguration(user: Record<string, unknown>, workspaceValues: Record<string, unknown>): { user: Record<string, unknown>; workspace: Record<string, unknown> } {
+  const isObject = (value: unknown): value is object => typeof value === 'object' && value !== null && !Array.isArray(value);
+  vi.spyOn(workspace, 'getConfiguration').mockImplementation(
+    () =>
+      ({
+        get: (key: string, defaultValue?: unknown) => {
+          const [userValue, workspaceValue] = [user[key], workspaceValues[key]];
+
+          return (isObject(userValue) && isObject(workspaceValue) ? { ...userValue, ...workspaceValue } : workspaceValue ?? userValue) ?? defaultValue;
+        },
+        inspect: (key: string) => ({ globalValue: user[key], workspaceValue: workspaceValues[key] }),
+        update: (key: string, value: unknown, target: unknown) => {
+          (target === ConfigurationTarget.Global ? user : workspaceValues)[key] = value;
+
+          return Promise.resolve();
+        },
+      }) as never
+  );
+
+  return { user, workspace: workspaceValues };
+}
 
 function run(command: string, ...args: unknown[]): Promise<unknown> {
   const handler = state.commands.get(command);
@@ -146,12 +177,91 @@ describe('readCleanupSettings', () => {
     ]);
   });
 
-  it('lets explicit VS Code cleanup settings override the repository policy', () => {
+  it('lets a key in the repository policy win over the explicit VS Code setting', () => {
     const root = tempRoot();
     fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
     state.configuration.set('codeJanitor.cleanup.removeRegions', true);
+    state.configuration.set('codeJanitor.cleanup.organizeUsings', true);
 
-    expect(readCleanupSettings(root).removeRegions).toBe(true);
+    const settings = readCleanupSettings(root);
+
+    expect(settings.removeRegions).toBe(false);
+    // A key the policy does not list keeps following the user's setting.
+    expect(settings.organizeUsings).toBe(true);
+  });
+
+  it('lets the policy alias win over the explicit fan-out setting, and an individual key over the alias', () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { insertBlankLinePadding: false, insertBlankLinePaddingBeforeClasses: true } }));
+    state.configuration.set('codeJanitor.cleanup.insertBlankLinePadding', true);
+
+    const settings = readCleanupSettings(root);
+
+    expect(settings.insertBlankLinePaddingAfterMethods).toBe(false);
+    expect(settings.insertBlankLinePaddingBeforeClasses).toBe(true);
+  });
+
+  it('finds the nearest .codejanitor by walking up from the cleaned file directory', () => {
+    const root = tempRoot();
+    const nested = path.join(root, 'src', 'Feature');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+
+    expect(readCleanupSettings(nested).removeRegions).toBe(false);
+  });
+
+  it('lets the nearest .codejanitor win as a whole over one in a parent directory', () => {
+    const root = tempRoot();
+    const nested = path.join(root, 'src');
+    fs.mkdirSync(nested);
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false, organizeUsings: true } }));
+    fs.writeFileSync(path.join(nested, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: true } }));
+
+    const settings = readCleanupSettings(nested);
+
+    expect(settings.removeRegions).toBe(true);
+    expect(settings.organizeUsings).toBe(false);
+  });
+
+  it('reads the policy of the document being cleaned, not of the first workspace folder', () => {
+    const root = tempRoot();
+    const other = tempRoot();
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+    fs.writeFileSync(path.join(other, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: true } }));
+    state.workspaceFolders = [{ uri: Uri.file(root), name: 'root' }];
+
+    expect(readCleanupSettingsForUri(Uri.file(path.join(other, 'Sample.cs'))).removeRegions).toBe(true);
+    expect(readCleanupSettingsForUri(Uri.file(path.join(root, 'Sample.cs'))).removeRegions).toBe(false);
+    expect(readCleanupSettings().removeRegions).toBe(false);
+  });
+
+  it('reads the enabled Code Style rules from the object setting, ignoring invalid entries', () => {
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', {
+      csharp_prefer_braces: 'When_Multiline',
+      dotnet_style_null_propagation: 'sometimes',
+      unknown_rule: 'true',
+    });
+
+    expect(readCleanupSettings().codeStyleRules).toEqual({ csharp_prefer_braces: 'when_multiline' });
+  });
+
+  it('applies the .codejanitor codeStyle section over the Code Style setting: a value enables, null disables', () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { codeStyle: { csharp_prefer_braces: 'false', dotnet_style_null_propagation: null, csharp_style_throw_expression: 'True' } } })
+    );
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', {
+      csharp_prefer_braces: 'true',
+      dotnet_style_null_propagation: 'true',
+      csharp_prefer_simple_using_statement: 'true',
+    });
+
+    expect(readCleanupSettings(root).codeStyleRules).toEqual({
+      csharp_prefer_braces: 'false',
+      csharp_prefer_simple_using_statement: 'true',
+      csharp_style_throw_expression: 'true',
+    });
   });
 });
 
@@ -179,6 +289,185 @@ describe('repository settings commands', () => {
 
     expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
     expect(state.configuration.get('codeJanitor.cleanup.organizeUsings')).toBe(true);
+  });
+
+  it('never exports the reorganize settings object into .codejanitor', async () => {
+    const root = tempRoot();
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).not.toHaveProperty('reorganize');
+  });
+
+  it('does not import a reorganize object from .codejanitor into an unregistered setting', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false, reorganize: { runAtStartOfCleanup: true } } }));
+
+    await importRepositorySettings(root);
+
+    expect(state.configuration.has('codeJanitor.cleanup.reorganize')).toBe(false);
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
+  });
+
+  it('exports only the enabled Code Style rules, as an empty section when none is enabled', async () => {
+    const root = tempRoot();
+
+    await exportRepositorySettings(root);
+    expect((JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> }).cleanup.codeStyle).toEqual({});
+
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', {
+      dotnet_style_null_propagation: 'True',
+      csharp_prefer_braces: 'when_multiline',
+      unknown_rule: 'true',
+      csharp_preferred_modifier_order: 'public,loud',
+    });
+    state.informationMessages.length = 0;
+    fs.rmSync(path.join(root, '.codejanitor'));
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup.codeStyle).toEqual({ csharp_prefer_braces: 'when_multiline', dotnet_style_null_propagation: 'true' });
+    expect(Object.keys(exported.cleanup)).not.toContain('codeStyleRules');
+  });
+
+  it('round-trips export and import, including the Code Style rules', async () => {
+    const root = tempRoot();
+    state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { csharp_prefer_braces: 'when_multiline' });
+    await exportRepositorySettings(root);
+    state.configuration.clear();
+
+    await importRepositorySettings(root);
+
+    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
+    expect(state.configuration.get('codeJanitor.cleanup.codeStyleRules')).toEqual({ csharp_prefer_braces: 'when_multiline' });
+  });
+
+  it('imports the codeStyle section over the Workspace rules: a value enables or changes a rule, null disables it', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { codeStyle: { csharp_prefer_braces: 'false', dotnet_style_null_propagation: null, csharp_style_throw_expression: 'true', unknown_rule: 'true' } } })
+    );
+    const scopes = scopedConfiguration({}, { 'cleanup.codeStyleRules': { csharp_prefer_braces: 'true', dotnet_style_null_propagation: 'true' } });
+
+    await importRepositorySettings(root);
+
+    expect(scopes.workspace['cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'false', csharp_style_throw_expression: 'true' });
+    expect(state.informationMessages).toEqual(['Code Janitor: imported 3 repository setting(s) into workspace settings.']);
+  });
+
+  it('does not touch the Code Style setting when the file has no codeStyle section', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { csharp_prefer_braces: 'true' });
+
+    await importRepositorySettings(root);
+
+    expect(state.configuration.get('codeJanitor.cleanup.codeStyleRules')).toEqual({ csharp_prefer_braces: 'true' });
+  });
+
+  it('exports only the settings set in VS Code, so the others keep following each user setting', async () => {
+    const root = tempRoot();
+    state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+    state.configuration.set('codeJanitor.cleanup.insertBlankLinePadding', false);
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({ removeRegions: false, insertBlankLinePadding: false, codeStyle: {} });
+  });
+
+  it('keeps what the overwritten file lists for the settings not set in VS Code', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({
+        cleanup: {
+          removeRegions: true,
+          organizeUsings: false,
+          fileHeaderPosition: 'afterUsings',
+          insertBlankLinePaddingBeforeFieldsSingleLine: true,
+          insertExplicitAccessModifiers: false,
+          insertBlankLinePaddingBeforeClasses: false,
+        },
+      })
+    );
+    state.modalChoice = 'Overwrite';
+    state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({
+      removeRegions: false,
+      organizeUsings: false,
+      fileHeaderPosition: 'afterUsings',
+      insertBlankLinePaddingBeforeFieldsSingleLine: true,
+      insertExplicitAccessModifiers: false,
+      insertBlankLinePaddingBeforeClasses: false,
+      codeStyle: {},
+    });
+  });
+
+  it('keeps the codeStyle section of the overwritten file, null pins included, with the rules set in VS Code winning', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({
+        cleanup: {
+          organizeUsings: false,
+          codeStyle: { csharp_style_throw_expression: 'true', csharp_prefer_braces: null, dotnet_style_null_propagation: 'true', csharp_prefer_simple_using_statement: 'true' },
+        },
+      })
+    );
+    state.modalChoice = 'Overwrite';
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { csharp_prefer_braces: 'when_multiline', dotnet_style_null_propagation: null });
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({
+      organizeUsings: false,
+      codeStyle: {
+        csharp_style_throw_expression: 'true',
+        csharp_prefer_braces: 'when_multiline',
+        dotnet_style_null_propagation: null,
+        csharp_prefer_simple_using_statement: 'true',
+      },
+    });
+  });
+
+  it('keeps a null pin of the overwritten file for a rule VS Code does not enable', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { codeStyle: { csharp_prefer_braces: null } } }));
+    state.modalChoice = 'Overwrite';
+
+    await exportRepositorySettings(root);
+
+    const exported = JSON.parse(fs.readFileSync(path.join(root, '.codejanitor'), 'utf8')) as { cleanup: Record<string, unknown> };
+    expect(exported.cleanup).toEqual({ codeStyle: { csharp_prefer_braces: null } });
+  });
+
+  it('imports the codeStyle section over the Workspace rules only, writing null for a rule the file turns off and User settings enable', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, '.codejanitor'),
+      JSON.stringify({ cleanup: { codeStyle: { csharp_prefer_braces: null, dotnet_style_null_propagation: null, csharp_prefer_simple_using_statement: 'true' } } })
+    );
+    const scopes = scopedConfiguration(
+      { 'cleanup.codeStyleRules': { csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' } },
+      { 'cleanup.codeStyleRules': { dotnet_style_null_propagation: 'true' } }
+    );
+
+    await importRepositorySettings(root);
+
+    // The User rules are not copied into the (often committed) workspace settings; the one the file
+    // turns off gets null, which wins when VS Code merges the scopes.
+    expect(scopes.workspace['cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: null, csharp_prefer_simple_using_statement: 'true' });
+    expect(scopes.user['cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' });
+    expect(state.informationMessages).toEqual(['Code Janitor: imported 3 repository setting(s) into workspace settings.']);
   });
 
   it('registers export and import commands', () => {
@@ -484,6 +773,25 @@ describe('runCleanupOnUris', () => {
     expect(state.files.get('/w/b.cs')).toBe('stale content');
   });
 
+  it('leaves an open document the user edits during the cleanup as the user left it, and reports it', async () => {
+    const document = new TextDocument(Uri.file('/w/b.cs'), UNCLEAN, 'csharp');
+    state.documents.push(document);
+    const typed = `${UNCLEAN}// typed meanwhile\n`;
+    const readDirectory = workspace.fs.readDirectory.bind(workspace.fs);
+    // The user types while the cleanup reads the folder.
+    vi.spyOn(workspace.fs, 'readDirectory').mockImplementation((uri) => {
+      document.setText(typed);
+
+      return readDirectory(uri);
+    });
+
+    const result = await runCleanupOnUris(createContext(), [document.uri]);
+
+    expect(result.failed).toBe(1);
+    expect(document.getText()).toBe(typed);
+    expect(state.warningMessages.at(-1)).toBe('Code Janitor: /w/b.cs - the document was edited during cleanup; the file was not changed');
+  });
+
   it('reports nothing to do when every file is filtered out', async () => {
     const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.md')]);
 
@@ -548,12 +856,32 @@ describe('runCleanupOnUris', () => {
     expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 0 });
     expect(state.files.get('/w/Widget.cs')).toBe('internal sealed class Widget\n{\n}\n');
   });
+
+  it('logs what the settings left undone as notes, neither logged nor counted as .editorconfig violations', async () => {
+    createOutputChannel(createContext());
+    state.configuration.set('codeJanitor.cleanup.convertToFileScopedNamespace', true);
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { dotnet_style_predefined_type_for_locals_parameters_members: 'false' });
+    state.files.set('/w/a.cs', 'namespace N\n{\n    internal class C\n    {\n    }\n}\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/a.cs')]);
+
+    expect(result.unresolved).toBe(0);
+    expect(state.outputChannelLines.filter((line) => line.includes('rule not fixed') || line.includes('violation'))).toEqual([]);
+    expect(state.outputChannelLines.filter((line) => line.includes('Cleanup note: /w/a.cs: '))).toEqual([
+      expect.stringContaining('Cleanup note: /w/a.cs: Code Style rule dotnet_style_predefined_type_for_locals_parameters_members = false (IDE0049) is not implemented'),
+      expect.stringContaining('Cleanup note: /w/a.cs: Line 1: namespace not converted'),
+    ]);
+  });
 });
 
 describe('cleanup commands', () => {
   const commandIds = [
     'codeJanitor.cleanupActiveFile',
     'codeJanitor.previewCleanupActiveFile',
+    'codeJanitor.previewCleanupSelectedFiles',
+    'codeJanitor.previewCleanupOpenFiles',
+    'codeJanitor.previewCleanupChangedFiles',
+    'codeJanitor.previewCleanupWorkspace',
     'codeJanitor.cleanupSelectedFiles',
     'codeJanitor.removeXmlDocSelectedFiles',
     'codeJanitor.fixNamespaceSelectedFiles',
@@ -701,6 +1029,34 @@ describe('cleanup commands', () => {
     expect(state.outputChannelLines.some((line) => /SA1402 .*type 'Bar' was not moved to its own file because cleanup on save does not create files/.test(line))).toBe(true);
   });
 
+  it('cleans on save with the .codejanitor nearest to the saved file, not the one of the workspace root', async () => {
+    const root = tempRoot();
+    const nested = path.join(root, 'src', 'Legacy');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(root, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: true } }));
+    fs.writeFileSync(path.join(nested, '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+    state.workspaceFolders = [{ uri: Uri.file(root), name: 'root' }];
+    state.configuration.set('codeJanitor.cleanup.onSave', true);
+    registerFormatOnSave(createContext());
+    const source = 'internal class Foo\n{\n    #region Members\n    private int value;\n    #endregion\n}\n';
+    const save = async (dir: string): Promise<string> => {
+      let captured: Promise<TextEdit[]> | undefined;
+      for (const handler of state.willSaveHandlers) {
+        handler({
+          document: new TextDocument(Uri.file(path.join(dir, 'Foo.cs')), source, 'csharp'),
+          waitUntil: (edits) => {
+            captured = edits as Promise<TextEdit[]>;
+          },
+        });
+      }
+
+      return (await captured!)[0]?.newText ?? source;
+    };
+
+    expect(await save(nested)).toContain('#region Members');
+    expect(await save(root)).not.toContain('#region Members');
+  });
+
   it('logs a failure of cleanup on save and leaves the document as it is', async () => {
     state.configuration.set('codeJanitor.cleanup.onSave', true);
     createOutputChannel(createContext());
@@ -768,6 +1124,28 @@ describe('cleanup commands', () => {
     expect(result).toEqual({ changed: 0, failed: 1, unresolved: 0, created: 0 });
     expect(document.getText()).toBe(source);
     expect(state.files.has(path.join(root, 'Bar.cs'))).toBe(false);
+  });
+
+  it('splits an open file in one edit with its new files, so the disk never holds a type twice before the user saves', async () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
+    const filePath = path.join(root, 'Foo.cs');
+    const barPath = path.join(root, 'Bar.cs');
+    const source = 'namespace Demo;\n\ninternal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n';
+    state.files.set(filePath, source);
+    const document = new TextDocument(Uri.file(filePath), source, 'csharp');
+    state.documents.push(document);
+    const applyEdit = vi.spyOn(workspace, 'applyEdit');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file(filePath)]);
+
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 1 });
+    // One edit: undoing it removes the type from the new file and puts it back in the original.
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    expect(document.getText()).toBe('namespace Demo;\n\ninternal class Foo\n{\n}\n');
+    expect(state.documents.find((candidate) => candidate.uri.fsPath === barPath)?.getText()).toBe('namespace Demo;\n\ninternal class Bar\n{\n}\n');
+    // On disk: the original still has Bar, the new file is empty until saved.
+    expect([state.files.get(filePath), state.files.get(barPath)]).toEqual([source, '']);
   });
 
   it('counts an open file whose edit VS Code rejects as failed, not changed', async () => {
@@ -991,7 +1369,9 @@ describe('cleanup commands', () => {
 
     expect(document.getText()).toContain('class Foo');
     expect(document.getText()).not.toContain('class Bar');
-    expect(state.files.get(path.join('/w', 'Bar.cs'))).toContain('class Bar');
+    // Not on disk until the user saves: the new file is created unsaved, in the same edit as the original.
+    expect(state.files.get(path.join('/w', 'Bar.cs'))).toBe('');
+    expect(state.documents.find((candidate) => candidate.uri.fsPath === path.join('/w', 'Bar.cs'))?.getText()).toContain('class Bar');
   });
 
   it('reports a missing active editor for splitting top-level types', async () => {
@@ -1341,8 +1721,38 @@ describe('activation', () => {
     manifest.contributes.configuration.flatMap((section) => Object.keys(section.properties))
   );
 
+  /** Contexts activated in the running test: disposed after it, which removes what activation registered globally. */
+  const contexts: ExtensionContext[] = [];
+  afterEach(() => contexts.splice(0).forEach((context) => context.subscriptions.forEach((subscription) => subscription.dispose())));
+
+  function activated(): ExtensionContext {
+    const context = createContext();
+    contexts.push(context);
+    activate(context);
+
+    return context;
+  }
+
+  it('lets project facts read the unsaved text of open C# files, only while activated', () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+    const unsaved = new TextDocument(Uri.file(path.join(root, 'User.cs')), 'class User { }', 'csharp');
+    unsaved.isDirty = true;
+    const notes = new TextDocument(Uri.file(path.join(root, 'Notes.txt')), 'draft', 'plaintext');
+    notes.isDirty = true;
+    state.documents.push(unsaved, new TextDocument(Uri.file(path.join(root, 'Saved.cs')), 'class Saved { }', 'csharp'), notes);
+    expect(findProject(path.join(root, 'Util.cs'))?.unsavedSources).toBeUndefined();
+
+    const context = activated();
+    expect(findProject(path.join(root, 'Util.cs'))?.unsavedSources).toEqual(new Map([[path.join(root, 'User.cs'), 'class User { }']]));
+
+    contexts.splice(contexts.indexOf(context), 1);
+    context.subscriptions.forEach((subscription) => subscription.dispose());
+    expect(findProject(path.join(root, 'Util.cs'))?.unsavedSources).toBeUndefined();
+  });
+
   it('registers a handler for every command declared in the manifest', () => {
-    activate(createContext());
+    activated();
 
     const declared = manifest.contributes.commands.map((entry) => entry.command);
     const missing = declared.filter((command) => !state.commands.has(command));
@@ -1351,7 +1761,7 @@ describe('activation', () => {
   });
 
   it('registers no command that the manifest does not declare', () => {
-    activate(createContext());
+    activated();
 
     const declared = new Set(manifest.contributes.commands.map((entry) => entry.command));
     const undeclared = [...state.commands.keys()].filter((command) => !declared.has(command));
@@ -1360,19 +1770,19 @@ describe('activation', () => {
   });
 
   it('subscribes the save hook', () => {
-    activate(createContext());
+    activated();
 
     expect(state.willSaveHandlers).toHaveLength(1);
   });
 
   it('creates the output channel and logs activation', () => {
-    activate(createContext());
+    activated();
 
     expect(state.outputChannelLines.some((line) => line.includes('Code Janitor activated'))).toBe(true);
   });
 
   it('shows the output channel on demand', () => {
-    activate(createContext());
+    activated();
     const handler = state.commands.get('codeJanitor.showOutputChannel');
 
     expect(() => handler?.()).not.toThrow();

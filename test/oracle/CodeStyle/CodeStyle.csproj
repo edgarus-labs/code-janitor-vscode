@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile oracle corpus of the Code Style rules (see src/cleanup/codeStyleRules.ts): one file per group of the opt-in layer. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeStyleFixtures</RootNamespace>
+    <NoWarn>$(NoWarn);CS0169;CS0414;CS0649;CS8618;CS0067;CS0219;CS0168</NoWarn>
+  </PropertyGroup>
+</Project>

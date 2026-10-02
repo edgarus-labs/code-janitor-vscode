@@ -8,13 +8,14 @@ function editorConfig(properties: string): EditorConfigRules {
   return {
     properties: resolveEditorConfigProperties([{ directory: '/repo', text: `root = true\n[*.cs]\n${properties}\n` }], '/repo/Sample.cs'),
     report: () => undefined,
+    note: () => undefined,
   };
 }
 
 function run(source: string, overrides: Partial<CleanupSettings> = {}): string {
   const settings = { ...createDefaultSettings(), ...overrides };
 
-  return buildPipeline(source, settings).run(source);
+  return buildPipeline(settings).run(source);
 }
 
 describe('cleanup pipeline', () => {
@@ -79,7 +80,7 @@ describe('cleanup pipeline', () => {
     const settings = { ...createDefaultSettings(), convertToVarWhenApparent: true, convertToFileScopedNamespace: true };
     // File-scoped namespaces are only written for a project that is known to compile them.
     const rules = { ...editorConfig('root = true'), project: { directory: '/repo', languageVersion: 12 } };
-    const result = buildPipeline(source, settings, rules).run(source);
+    const result = buildPipeline(settings, rules).run(source);
 
     expect(result).toContain('namespace Demo;');
     expect(result).toContain('var x = new Foo();');
@@ -91,14 +92,14 @@ describe('cleanup pipeline', () => {
 
   it('respects an editorconfig that turns the final newline off', () => {
     const settings = createDefaultSettings();
-    const result = buildPipeline('class C { }', settings, editorConfig('insert_final_newline = false')).run('class C { }');
+    const result = buildPipeline(settings, editorConfig('insert_final_newline = false')).run('class C { }');
 
     expect(result.endsWith('\n')).toBe(false);
   });
 
   it('expands tabs when the editorconfig asks for spaces', () => {
     const source = 'class C\n{\n\tint x;\n}\n';
-    const result = buildPipeline(source, createDefaultSettings(), editorConfig('indent_style = space\nindent_size = 2')).run(source);
+    const result = buildPipeline(createDefaultSettings(), editorConfig('indent_style = space\nindent_size = 2')).run(source);
 
     expect(result).toContain('  private int x;');
   });
@@ -114,7 +115,7 @@ describe('cleanup pipeline', () => {
     const source = 'using System;\n\nclass C { }\n';
     const settings = { ...createDefaultSettings(), fileHeaderCSharp: '// My Header', fileHeaderPosition: 1 as const };
 
-    const result = buildPipeline(source, settings).run(source);
+    const result = buildPipeline(settings).run(source);
 
     expect(result).toContain('// My Header');
   });
@@ -123,7 +124,7 @@ describe('cleanup pipeline', () => {
     const source = '// Old Header\nclass C { }\n';
     const settings = { ...createDefaultSettings(), fileHeaderCSharp: '// New Header', fileHeaderUpdateMode: 1 as const };
 
-    const result = buildPipeline(source, settings).run(source);
+    const result = buildPipeline(settings).run(source);
 
     expect(result).toContain('// New Header');
     expect(result).not.toContain('// Old Header');
@@ -221,7 +222,6 @@ describe('cleanup pipeline', () => {
   it('applies sortSystemDirectivesFirst from editorconfig', () => {
     const source = 'using B;\nusing System;\nusing A;\n\nclass C { }\n';
     const result = buildPipeline(
-      source,
       createDefaultSettings(),
       editorConfig('dotnet_sort_system_directives_first = true\ndotnet_separate_import_directive_groups = false')
     ).run(source);
@@ -231,19 +231,19 @@ describe('cleanup pipeline', () => {
 
   it('applies trimTrailingWhitespace from editorconfig', () => {
     const source = 'class C   \n{\n}\n';
-    const result = buildPipeline(source, createDefaultSettings(), editorConfig('trim_trailing_whitespace = true')).run(source);
+    const result = buildPipeline(createDefaultSettings(), editorConfig('trim_trailing_whitespace = true')).run(source);
 
     expect(result).not.toContain('   \n');
   });
 
   it('applies insertFinalNewline from editorconfig', () => {
-    const result = buildPipeline('class C { }', createDefaultSettings(), editorConfig('insert_final_newline = true')).run('class C { }');
+    const result = buildPipeline(createDefaultSettings(), editorConfig('insert_final_newline = true')).run('class C { }');
 
     expect(result.endsWith('\n')).toBe(true);
   });
 
   it('does not insert final newline when editorconfig says no', () => {
-    const result = buildPipeline('class C { }', createDefaultSettings(), editorConfig('insert_final_newline = false')).run('class C { }');
+    const result = buildPipeline(createDefaultSettings(), editorConfig('insert_final_newline = false')).run('class C { }');
 
     expect(result.endsWith('\n')).toBe(false);
   });
@@ -382,7 +382,7 @@ describe('cleanup pipeline', () => {
   describe('pipeline preview', () => {
     it('returns preview steps and tracks changes', () => {
       const source = 'class C\n{\n    int x;   \n}\n';
-      const pipeline = buildPipeline(source, createDefaultSettings());
+      const pipeline = buildPipeline(createDefaultSettings());
       const preview = pipeline.preview(source);
 
       expect(preview.hasChanges).toBe(true);
@@ -397,7 +397,7 @@ describe('cleanup pipeline', () => {
     it('reports no changes when source is already clean', () => {
       const source = 'namespace Demo\n{\n    internal class C\n    {\n        private void M() { }\n    }\n}\n';
       const cleanSource = run(source);
-      const pipeline = buildPipeline(cleanSource, createDefaultSettings());
+      const pipeline = buildPipeline(createDefaultSettings());
       const preview = pipeline.preview(cleanSource);
 
       expect(preview.hasChanges).toBe(false);
@@ -406,7 +406,7 @@ describe('cleanup pipeline', () => {
 
     it('respects excluded transformations', () => {
       const source = 'class C\n{\n    int x;   \n}\n';
-      const pipeline = buildPipeline(source, createDefaultSettings());
+      const pipeline = buildPipeline(createDefaultSettings());
       const allIndices = new Set(pipeline.transformations.map((_, i) => i));
       const preview = pipeline.preview(source, allIndices);
 
@@ -433,7 +433,7 @@ describe('cleanup pipeline', () => {
       const rules = editorConfig(
         'csharp_style_implicit_object_creation_when_type_is_apparent = true:warning\ncsharp_prefer_braces = true:warning'
       );
-      const pipeline = buildPipeline(source, createDefaultSettings(), rules);
+      const pipeline = buildPipeline(createDefaultSettings(), rules);
 
       const full = pipeline.preview(source);
       const codeStyle = full.steps.find((step) => step.rules !== undefined && step.rules.length > 0);
@@ -455,16 +455,64 @@ describe('cleanup pipeline', () => {
 
     it('does not remove a final newline that a later step puts back', () => {
       const source = 'internal class C\n{\n}\n';
-      const steps = (rules?: EditorConfigRules) => buildPipeline(source, createDefaultSettings(), rules).preview(source).steps;
+      const steps = (rules?: EditorConfigRules) => buildPipeline(createDefaultSettings(), rules).preview(source).steps;
 
       expect(steps().filter((step) => step.changed)).toEqual([]);
       expect(steps(editorConfig('insert_final_newline = true')).filter((step) => step.changed)).toEqual([]);
-      expect(buildPipeline(source, createDefaultSettings(), editorConfig('insert_final_newline = false')).run(source)).toBe('internal class C\n{\n}');
+      expect(buildPipeline(createDefaultSettings(), editorConfig('insert_final_newline = false')).run(source)).toBe('internal class C\n{\n}');
+    });
+
+    it('keeps the byte order mark charset = utf-8-bom asks for, with no step changing it, even with the BOM removal left out', () => {
+      const source = '\uFEFFinternal class C\n{\n}\n';
+      const pipeline = buildPipeline({ ...createDefaultSettings(), removeByteOrderMark: false }, editorConfig('charset = utf-8-bom'));
+      const bomRemoval = new Set(pipeline.transformations.flatMap((step, index) => (step.name === 'Remove Byte Order Mark (BOM)' ? [index] : [])));
+
+      expect(pipeline.preview(source).steps.filter((step) => step.changed)).toEqual([]);
+      expect(pipeline.preview(source, bomRemoval).updatedSource).toBe(source);
+      expect(buildPipeline(createDefaultSettings(), editorConfig('charset = utf-8')).run(source)).toBe('internal class C\n{\n}\n');
+    });
+
+    it('reruns code style after renames only when code style ran in the same preview', () => {
+      const source = [
+        'internal class Store',
+        '{',
+        '    private int table;',
+        '',
+        '    public void Set(int table)',
+        '    {',
+        '        this.table = table;',
+        '    }',
+        '}',
+        '',
+      ].join('\n');
+      const rules = editorConfig(
+        [
+          'dotnet_style_qualification_for_field = false:warning',
+          'dotnet_naming_rule.private_fields.symbols = private_fields',
+          'dotnet_naming_rule.private_fields.style = underscore',
+          'dotnet_naming_rule.private_fields.severity = warning',
+          'dotnet_naming_symbols.private_fields.applicable_kinds = field',
+          'dotnet_naming_symbols.private_fields.applicable_accessibilities = private',
+          'dotnet_naming_style.underscore.capitalization = camel_case',
+          'dotnet_naming_style.underscore.required_prefix = _',
+        ].join('\n')
+      );
+      const pipeline = buildPipeline(createDefaultSettings(), rules);
+      const names = pipeline.transformations.map((step) => step.name);
+      const codeStyle = names.indexOf('Apply .editorconfig code style');
+      const naming = pipeline.transformations.findIndex((step) => step.diagnosticId === 'IDE1006');
+      const rerun = names.indexOf('C# code style after renames (.editorconfig)');
+
+      expect(pipeline.preview(source).updatedSource).toContain('        _table = table;\n');
+      // Code style runs (changing nothing) while naming and its rerun are left out ...
+      pipeline.preview(source, new Set([naming, rerun]));
+      // ... so a later preview leaving out code style must not rerun it after the renames.
+      expect(pipeline.preview(source, new Set([codeStyle])).updatedSource).toContain('        this._table = table;\n');
     });
 
     it('applies changes conditionally via tryApply', () => {
       const source = 'class C\n{\n}\n';
-      const pipeline = buildPipeline(source, createDefaultSettings());
+      const pipeline = buildPipeline(createDefaultSettings());
       const preview = pipeline.preview(source);
 
       let target = source;

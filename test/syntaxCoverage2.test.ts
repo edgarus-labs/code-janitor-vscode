@@ -772,4 +772,26 @@ describe('parseCSharpSource - targeted edge cases', () => {
 
     expect(root.descendantsOfType('parameter').length).toBeGreaterThan(0);
   });
+
+  it.each([
+    ['if ((bool)Flag) { }', '(bool)Flag'],
+    ['lock ((object)x) { }', '(object)x'],
+    ['using ((System.IDisposable)Resource) { }', '(System.IDisposable)Resource'],
+    ['foreach (var v in (IEnumerable<int>)Items) { }', '(IEnumerable<int>)Items'],
+    ['(int)x;', '(int)x'],
+  ])('parses the parenthesized cast in %s as a cast, not a one-element tuple declaration', (statement, cast) => {
+    const root = parse(`class C { void M() { ${statement} } }`);
+
+    expect(root.descendantsOfType('variable_declaration').map((node) => node.text)).not.toContain(cast);
+    expect(root.descendantsOfType('cast_expression').map((node) => node.text)).toEqual([cast]);
+  });
+
+  it('keeps a tuple-typed declaration in a statement header', () => {
+    const root = parse('class C { void M() { foreach ((int a, string b) t in xs) { } using ((int, int) p = f) { } } }');
+
+    expect(root.descendantsOfType('variable_declaration').map((node) => node.text)).toEqual([
+      '(int a, string b) t',
+      '(int, int) p = f',
+    ]);
+  });
 });

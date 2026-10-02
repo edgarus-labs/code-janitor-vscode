@@ -156,6 +156,16 @@ function expandSingleLineBlocks(source: string, root: Node): TextEdit[] {
     }
 
     breakGap(source, open.endIndex, inner[0].startIndex, open.startIndex, edits);
+    // Members of a type body, and accessors after a block body, each get a line of their own too.
+    if (container.type === 'declaration_list' || container.type === 'accessor_list') {
+      for (let index = 1; index < inner.length; index++) {
+        const previousEnd = lastToken(inner[index - 1]);
+        if (container.type === 'declaration_list' || previousEnd.type === '}') {
+          breakGap(source, previousEnd.endIndex, inner[index].startIndex, open.startIndex, edits);
+        }
+      }
+    }
+
     breakGap(source, lastToken(inner[inner.length - 1]).endIndex, close.startIndex, open.startIndex, edits);
   }
 
@@ -181,19 +191,43 @@ function isStatement(node: Node): boolean {
   return node.isNamed && node.type !== 'comment' && !node.type.startsWith('preproc') && (node.type.endsWith('_statement') || node.type === 'block');
 }
 
+/** Whether `node` sits in a `{ }` body kept on one line, whose contents Roslyn leaves together. */
+function inOneLineBraces(source: string, node: Node): boolean {
+  for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+    if (ancestor.children[0]?.type === '{' && sameLine(source, ancestor.startIndex, ancestor.endIndex)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function splitStatements(source: string, root: Node): TextEdit[] {
   const edits: TextEdit[] = [];
 
-  // Statements (and a statement after a label) sharing a line in a block or a switch section.
-  for (const container of findAll(root, ['block', 'switch_body'])) {
-    if (isRecoveredNode(container)) {
+  // Statements (and a statement after a label) sharing a line in a block or a switch section, a
+  // switch label after a statement, and member declarations sharing a line in a type body. A body
+  // kept on one line stays as it is.
+  for (const container of findAll(root, ['block', 'switch_body', 'declaration_list'])) {
+    if (isRecoveredNode(container) || sameLine(source, container.startIndex, container.endIndex)) {
       continue;
     }
 
     let previousEnd: number | undefined;
+    let afterStatement = false;
     for (const child of container.children.slice(1, -1)) {
       if (child.type === 'comment' || child.type.startsWith('preproc')) {
         previousEnd = undefined;
+        continue;
+      }
+
+      if (container.type === 'switch_body' && (child.type === 'case' || child.type === 'default')) {
+        if (afterStatement && previousEnd !== undefined && sameLine(source, previousEnd, child.startIndex)) {
+          breakGap(source, previousEnd, child.startIndex, lineStartAt(source, previousEnd), edits);
+        }
+
+        previousEnd = undefined;
+        afterStatement = false;
         continue;
       }
 
@@ -202,7 +236,7 @@ function splitStatements(source: string, root: Node): TextEdit[] {
         continue;
       }
 
-      if (!isStatement(child)) {
+      if (container.type === 'declaration_list' ? !child.isNamed : !isStatement(child)) {
         previousEnd = undefined;
         continue;
       }
@@ -212,12 +246,13 @@ function splitStatements(source: string, root: Node): TextEdit[] {
       }
 
       previousEnd = isRecoveredNode(child) ? undefined : lastToken(child).endIndex;
+      afterStatement = true;
     }
   }
 
   // Embedded statements (`if (x) A();`), `else` after them, and `while` after a `do` body.
   for (const statement of findAll(root, Object.keys(EMBEDDING))) {
-    if (isRecoveredNode(statement)) {
+    if (isRecoveredNode(statement) || inOneLineBraces(source, statement)) {
       continue;
     }
 

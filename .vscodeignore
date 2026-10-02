@@ -17,3 +17,4 @@ dist/verify-bundle.cjs
 **/*.map
 **/.eslintrc.json
 coverage/**
+.testbed/**

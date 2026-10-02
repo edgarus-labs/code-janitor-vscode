@@ -1,6 +1,6 @@
 import { Node, applyEdits, walk } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
-import { FileView, STRING_TYPES, importsNamespace, isString, positionalArguments, viewOf } from './editorConfigQualityRulesExpressions';
+import { FileView, STRING_TYPES, isString, positionalArguments, systemTypeReference, viewOf } from './editorConfigQualityRulesExpressions';
 import { targetFrameworksOf } from './editorConfigQualityRulesProject';
 import { frameworksSupport, isRuleActive, unwrapParentheses } from './editorConfigQualityRulesSupport';
 
@@ -133,7 +133,6 @@ export function applyCaseInsensitiveComparison(source: string, context: RuleCont
   }
 
   const view = viewOf(source, context);
-  let systemPrefix: string | undefined;
   for (const binary of walk(view.model.root)) {
     const parts = binary.type === 'binary_expression' ? binaryParts(binary) : undefined;
     if (!parts || (parts.operator !== '==' && parts.operator !== '!=')) {
@@ -154,8 +153,13 @@ export function applyCaseInsensitiveComparison(source: string, context: RuleCont
       continue;
     }
 
-    systemPrefix ??= importsNamespace(view, context, 'System') ? '' : 'System.';
-    const equals = `string.Equals(${changed.receiver.text}, ${unwrapParentheses(other).text}, ${systemPrefix}StringComparison.OrdinalIgnoreCase)`;
+    const comparisonType = systemTypeReference(view, context, 'StringComparison', binary);
+    if (comparisonType === undefined) {
+      view.report('CA1862', binary, `${binary.text} changes case to compare, but the file or project declares something named System, so StringComparison cannot be named safely; it was kept.`);
+      continue;
+    }
+
+    const equals = `string.Equals(${changed.receiver.text}, ${unwrapParentheses(other).text}, ${comparisonType}.OrdinalIgnoreCase)`;
     view.edits.push({ start: binary.startIndex, end: binary.endIndex, text: `${parts.operator === '!=' ? '!' : ''}${equals}` });
   }
 

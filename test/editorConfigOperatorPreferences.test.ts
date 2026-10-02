@@ -1,6 +1,10 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
-import { createEditorConfigCodeStyleConverter } from '../src/cleanup/transformations/editorConfigCodeStyle';
+import { ProjectInfo } from '../src/cleanup/projectInfo';
+import { createEditorConfigCodeStyleConverter, EditorConfigCodeStyleOptions } from '../src/cleanup/transformations/editorConfigCodeStyle';
 
 function lines(...text: string[]): string {
   return `${text.join('\n')}\n`;
@@ -23,10 +27,10 @@ function method(...body: string[]): string {
   );
 }
 
-function codeStyle(source: string, rules: string): string {
+function codeStyle(source: string, rules: string, options: EditorConfigCodeStyleOptions = {}): string {
   const props = resolveEditorConfigProperties([{ directory: '/repo', text: `root = true\n[*.cs]\n${rules}\n` }], '/repo/Sample.cs');
 
-  return createEditorConfigCodeStyleConverter(props, () => undefined).apply(source);
+  return createEditorConfigCodeStyleConverter(props, () => undefined, options).apply(source);
 }
 
 /** Asserts the option rewrites `before` to `after` while enforced and changes nothing while silent. */
@@ -66,6 +70,32 @@ describe('IDE0047 / IDE0048 dotnet_style_parentheses_in_*', () => {
       method('var a = i + i * 2;', 'var d = i - 1 - 2;', 'var e = i - (i - 1);', 'var f = (i + 1) * 2;', 'var g = i + 1;')
     );
   });
+
+  it('removes only the redundant layer of doubled parentheses around an operator', () => {
+    const rules = [
+      'dotnet_style_parentheses_in_other_binary_operators = never_if_unnecessary:warning',
+      'dotnet_style_parentheses_in_arithmetic_binary_operators = never_if_unnecessary:warning',
+      'dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning',
+    ].join('\n');
+
+    expect(codeStyle(method('var g = ((b || c)) && b;', 'var f = ((i + 1)) * 2;', 'var h = ((i));'), rules)).toBe(
+      method('var g = (b || c) && b;', 'var f = (i + 1) * 2;', 'var h = i;')
+    );
+  });
+
+  it('keeps a keyword separated from the operand when it removes parentheses', () => {
+    const source = lines('class Sample', '{', '    int F(int x) { return(x); }', '    int G(int x) { return(x + 1); }', '    void H(System.Exception e) { throw(e); }', '}');
+    const after = lines('class Sample', '{', '    int F(int x) { return x; }', '    int G(int x) { return x + 1; }', '    void H(System.Exception e) { throw e; }', '}');
+
+    expect(codeStyle(source, ['dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning', 'dotnet_style_parentheses_in_arithmetic_binary_operators = never_if_unnecessary:warning'].join('\n'))).toBe(after);
+  });
+
+  it('keeps a keyword separated from a non-ASCII identifier', () => {
+    const source = lines('class Sample', '{', '    int F(int ä) { return(ä); }', '    int G(int x) { return(Ωmega(x)); }', '    int Ωmega(int x) => x;', '}');
+    const after = lines('class Sample', '{', '    int F(int ä) { return ä; }', '    int G(int x) { return Ωmega(x); }', '    int Ωmega(int x) => x;', '}');
+
+    expect(codeStyle(source, 'dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning')).toBe(after);
+  });
 });
 
 describe('IDE0054 dotnet_style_prefer_compound_assignment', () => {
@@ -75,6 +105,12 @@ describe('IDE0054 dotnet_style_prefer_compound_assignment', () => {
       method('i = i + 1;', '_name = _name ?? s;', 'this._name = this._name + s;', 'i = 1 + i;', 'i = i - 1 - 2;', 'i = i * (i + 1);', 'Use(_name ?? (_name = s));'),
       method('i += 1;', '_name ??= s;', 'this._name += s;', 'i = 1 + i;', 'i = i - 1 - 2;', 'i *= (i + 1);', 'Use(_name ??= s);')
     );
+  });
+
+  it('keeps x = x ?? throw ..., as ??= does not accept a throw expression (CS8115)', () => {
+    const source = method('s = s ?? throw new ArgumentNullException(nameof(s));');
+
+    expect(codeStyle(source, 'dotnet_style_prefer_compound_assignment = true:warning')).toBe(source);
   });
 });
 
@@ -97,10 +133,32 @@ describe('IDE0029 / IDE0030 dotnet_style_coalesce_expression', () => {
     );
   });
 
+  it('keeps a throw expression fallback unparenthesized (CS8115)', () => {
+    expectRewrite(
+      'dotnet_style_coalesce_expression = true',
+      method('_name = s == null ? throw new ArgumentNullException(nameof(s)) : s;', 'var e = n.HasValue ? n.Value : throw new InvalidOperationException();'),
+      method('_name = s ?? throw new ArgumentNullException(nameof(s));', 'var e = n ?? throw new InvalidOperationException();')
+    );
+  });
+
   it('uses ?? for classes declared in the file without operator ==', () => {
     const source = lines('class Node', '{', '    Node Next(Node node, Node fallback) => node != null ? node : fallback;', '}');
 
     expect(codeStyle(source, 'dotnet_style_coalesce_expression = true:warning')).toBe(source.replace('node != null ? node : fallback', 'node ?? fallback'));
+  });
+
+  it('keeps conditionals whose fallback may only convert to the target type (CS0019)', () => {
+    const source = method(
+      'object v = s != null ? s : DBNull.Value;',
+      'int[] arr = Get();',
+      'var list = new System.Collections.Generic.List<int>();',
+      'System.Collections.Generic.IEnumerable<int> e = arr != null ? arr : list;',
+      'object w = n.HasValue ? n.Value : "none";',
+      'object x = n.HasValue ? n.Value : default(Uri);',
+      'object p = o != null ? o : DBNull.Value;'
+    );
+
+    expect(codeStyle(source, 'dotnet_style_coalesce_expression = true:warning')).toBe(source.replace('o != null ? o : DBNull.Value', 'o ?? DBNull.Value'));
   });
 });
 
@@ -118,6 +176,50 @@ describe('IDE0031 dotnet_style_null_propagation', () => {
 
     expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
   });
+
+  it('leaves pattern null checks on nullable value types alone', () => {
+    const source = method('int? r = n is not null ? n.Value : null;', 'bool? h = n is not null ? n.HasValue : null;', 'int? d = n is not null ? n.GetValueOrDefault() : null;');
+
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
+  });
+
+  it('leaves Nullable<T> members alone when the declared type is unknown or fully qualified', () => {
+    const source = method('var v = Get();', 'int? r = v is not null ? v.Value : null;', 'global::System.Nullable<int> g = n;', 'bool? h = g is not null ? g.HasValue : null;');
+
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
+  });
+
+  it('uses ?. on a nullable reference type declared elsewhere', () => {
+    expect(codeStyle(method('Uri? u = uri;', 'var h = u is not null ? u.Host : null;'), 'dotnet_style_null_propagation = true:warning')).toBe(
+      method('Uri? u = uri;', 'var h = u?.Host;')
+    );
+  });
+
+  it('uses ?. for a Value member of a type proven not to be Nullable<T>', () => {
+    const source = lines(
+      'using System;',
+      '',
+      'class Box',
+      '{',
+      '    public string Value = "";',
+      '',
+      '    string M(Box b) => b is not null ? b.Value : null;',
+      '    string L(Lazy<string> l) => l is not null ? l.Value : null;',
+      '}'
+    );
+
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(
+      lines('using System;', '', 'class Box', '{', '    public string Value = "";', '', '    string M(Box b) => b?.Value;', '    string L(Lazy<string> l) => l?.Value;', '}')
+    );
+  });
+
+  it.each([
+    ['a using alias of this file', lines('using N = System.Nullable<int>;', '', 'class Sample', '{', '    int? M(N g) => g is not null ? g.Value : null;', '}')],
+    // `global using N = System.Nullable<int>;` (or a project `<Using Alias>`) may declare it in another file.
+    ['a plain name declared elsewhere', lines('class Sample', '{', '    int? M(N g) => g is not null ? g.Value : null;', '}')],
+  ])('leaves Nullable<T> members alone on %s', (_name, source) => {
+    expect(codeStyle(source, 'dotnet_style_null_propagation = true:warning')).toBe(source);
+  });
 });
 
 describe('IDE1005 csharp_style_conditional_delegate_call', () => {
@@ -126,6 +228,71 @@ describe('IDE1005 csharp_style_conditional_delegate_call', () => {
       'csharp_style_conditional_delegate_call = true',
       method('if (handler != null) handler();', 'if (handler != null)', '{', '    handler.Invoke();', '}', 'if (handler != null) handler(); else Use(s);'),
       method('handler?.Invoke();', 'handler?.Invoke();', 'if (handler != null) handler(); else Use(s);')
+    );
+  });
+
+  it('keeps != null guards on receivers that may define their own == and still converts delegates and events', () => {
+    const source = lines(
+      'using System;',
+      'using UnityEngine;',
+      '',
+      'class Sample : MonoBehaviour',
+      '{',
+      '    private MonoBehaviour _other;',
+      '    private Action<int>? _callback;',
+      '    private Notify _notify;',
+      '    public event EventHandler Changed;',
+      '',
+      '    void M()',
+      '    {',
+      '        if (_other != null) _other.Invoke("Run", 1f);',
+      '        if (_other is not null) _other.Invoke("Run", 1f);',
+      '        if (_callback != null) _callback(1);',
+      '        if (_notify != null) _notify();',
+      '        if (Changed != null) Changed(this, EventArgs.Empty);',
+      '    }',
+      '}',
+      '',
+      'delegate void Notify();'
+    );
+
+    expect(codeStyle(source, 'csharp_style_conditional_delegate_call = true:warning')).toBe(
+      source
+        .replace('if (_other is not null) _other.Invoke("Run", 1f);', '_other?.Invoke("Run", 1f);')
+        .replace('if (_callback != null) _callback(1);', '_callback?.Invoke(1);')
+        .replace('if (_notify != null) _notify();', '_notify?.Invoke();')
+        .replace('if (Changed != null) Changed(this, EventArgs.Empty);', 'Changed?.Invoke(this, EventArgs.Empty);')
+    );
+  });
+
+  it('converts a direct call of a variable of any type but dynamic: only delegates can be called, and they cannot define !=', () => {
+    const source = lines(
+      'using System.ComponentModel;',
+      '',
+      'class Sample : INotifyPropertyChanged',
+      '{',
+      '    public event PropertyChangedEventHandler PropertyChanged;',
+      '    private Callback _cb;',
+      '    private dynamic _any;',
+      '',
+      '    void Raise(PropertyChangedEventArgs e)',
+      '    {',
+      '        var handler = PropertyChanged;',
+      '        if (handler != null) handler(this, e);',
+      '        if (PropertyChanged != null) PropertyChanged(this, e);',
+      '        if (PropertyChanged != null) PropertyChanged.Invoke(this, e);',
+      '        if (_cb != null) _cb();',
+      '        if (_any != null) _any();',
+      '    }',
+      '}'
+    );
+
+    expect(codeStyle(source, 'csharp_style_conditional_delegate_call = true:warning')).toBe(
+      source
+        .replace('if (handler != null) handler(this, e);', 'handler?.Invoke(this, e);')
+        .replace('if (PropertyChanged != null) PropertyChanged(this, e);', 'PropertyChanged?.Invoke(this, e);')
+        .replace('if (PropertyChanged != null) PropertyChanged.Invoke(this, e);', 'PropertyChanged?.Invoke(this, e);')
+        .replace('if (_cb != null) _cb();', '_cb?.Invoke();')
     );
   });
 });
@@ -147,6 +314,12 @@ describe('IDE0083 csharp_style_prefer_not_pattern', () => {
       method('if (!(o is string)) { }', 'if (!(o is null) && b) { }', 'if (!(o is string t)) { }'),
       method('if (o is not string) { }', 'if (o is not null && b) { }', 'if (!(o is string t)) { }')
     );
+  });
+
+  it('keeps a keyword separated from the rewritten operand', () => {
+    const source = lines('class Sample', '{', '    bool F(object o) { return!(o is string); }', '}');
+
+    expect(codeStyle(source, 'csharp_style_prefer_not_pattern = true:warning')).toBe(lines('class Sample', '{', '    bool F(object o) { return o is not string; }', '}'));
   });
 });
 
@@ -179,22 +352,58 @@ describe('IDE0037 dotnet_style_prefer_inferred_*_names', () => {
 });
 
 describe('IDE0049 dotnet_style_predefined_type_for_*', () => {
+  const both = 'dotnet_style_predefined_type_for_member_access = true:warning\ndotnet_style_predefined_type_for_locals_parameters_members = true:warning';
+
+  /** Runs `test` with the options of a file `C.cs` in a project folder holding `files`. */
+  function inProject(files: Readonly<Record<string, string>>, test: (options: EditorConfigCodeStyleOptions) => void): void {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-ide0049-'));
+    try {
+      fs.writeFileSync(path.join(folder, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+      for (const [name, text] of Object.entries(files)) {
+        fs.writeFileSync(path.join(folder, name), text);
+      }
+
+      test({ project: { directory: folder } as ProjectInfo, filePath: path.join(folder, 'C.cs') });
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
+  }
+
   it('uses keywords for framework type names in declarations and member access', () => {
     const before = method('Int32 a = Int32.Parse(s);', 'System.String d = String.Empty;', 'var e = typeof(Object);', 'var f = nameof(Int32);');
 
-    expect(codeStyle(before, 'dotnet_style_predefined_type_for_locals_parameters_members = true:warning')).toBe(
-      method('int a = Int32.Parse(s);', 'string d = String.Empty;', 'var e = typeof(object);', 'var f = nameof(Int32);')
-    );
-    expect(codeStyle(before, 'dotnet_style_predefined_type_for_member_access = true:warning')).toBe(
-      method('Int32 a = int.Parse(s);', 'System.String d = string.Empty;', 'var e = typeof(Object);', 'var f = nameof(Int32);')
-    );
-    expect(codeStyle(before, 'dotnet_style_predefined_type_for_member_access = true:silent')).toBe(before);
+    inProject({}, (options) => {
+      expect(codeStyle(before, 'dotnet_style_predefined_type_for_locals_parameters_members = true:warning', options)).toBe(
+        method('int a = Int32.Parse(s);', 'string d = String.Empty;', 'var e = typeof(object);', 'var f = nameof(Int32);')
+      );
+      expect(codeStyle(before, 'dotnet_style_predefined_type_for_member_access = true:warning', options)).toBe(
+        method('Int32 a = int.Parse(s);', 'System.String d = string.Empty;', 'var e = typeof(Object);', 'var f = nameof(Int32);')
+      );
+      expect(codeStyle(before, 'dotnet_style_predefined_type_for_member_access = true:silent', options)).toBe(before);
+    });
   });
 
   it('keeps names the file declares itself', () => {
     const source = lines('using System;', '', 'class String', '{', '    String Copy() => String.Empty;', '}');
 
-    expect(codeStyle(source, 'dotnet_style_predefined_type_for_member_access = true:warning\ndotnet_style_predefined_type_for_locals_parameters_members = true:warning')).toBe(source);
+    inProject({}, (options) => expect(codeStyle(source, both, options)).toBe(source));
+  });
+
+  describe('bare names another file of the project may bind', () => {
+    const source = lines('using System;', '', 'namespace Game', '{', '    class C', '    {', '        Object o;', '        Single f = Single.Epsilon;', '        System.Object q;', '    }', '}');
+    const othersChanged = source.replace('Single f = Single.Epsilon', 'float f = float.Epsilon').replace('System.Object q', 'object q');
+
+    it.each([
+      ['a type of the project', { 'Object.cs': 'namespace Game { public class Object { } }\n' }],
+      ['a global using alias', { 'GlobalUsings.cs': 'global using Object = UnityEngine.Object;\n' }],
+    ])('keeps a bare name that is %s', (_name, files) => {
+      inProject(files, (options) => expect(codeStyle(source, both, options)).toBe(othersChanged));
+    });
+
+    it('changes bare names no other file declares, and only System-qualified names when the project files are unknown', () => {
+      inProject({}, (options) => expect(codeStyle(source, both, options)).toBe(othersChanged.replace('Object o', 'object o')));
+      expect(codeStyle(source, both)).toBe(source.replace('System.Object q', 'object q'));
+    });
   });
 });
 
@@ -244,6 +453,12 @@ describe('IDE0170 csharp_style_prefer_extended_property_pattern', () => {
       method('var a = o is Uri { Host.Length: 5 };', 'var d = o is Uri { Host: { Length: 5, } h };')
     );
   });
+
+  it('leaves named subpatterns of positional patterns alone', () => {
+    expect(codeStyle(method('var p = o is Point(1, Name: { Length: 3 }, 2);', 'var q = o is Point(1, _) { Name: { Length: 3 } };'), 'csharp_style_prefer_extended_property_pattern = true:warning')).toBe(
+      method('var p = o is Point(1, Name: { Length: 3 }, 2);', 'var q = o is Point(1, _) { Name.Length: 3 };')
+    );
+  });
 });
 
 describe('IDE0200 csharp_style_prefer_method_group_conversion', () => {
@@ -271,6 +486,65 @@ describe('IDE0200 csharp_style_prefer_method_group_conversion', () => {
     expect(issuesOf(source, 'csharp_style_prefer_method_group_conversion = true:warning')).toEqual([
       expect.stringMatching(/^IDE0200 .* line 10: the lambda was not replaced by 'Log'/),
     ]);
+  });
+
+  it('keeps async and static lambdas, whose method group would change exception flow or the returned task', () => {
+    const modified = lines(
+      'class Sample',
+      '{',
+      '    static void Log(string text) { }',
+      '',
+      '    void M()',
+      '    {',
+      '        Action<string> a = async x => Log(x);',
+      '        Action<string> b = static x => Log(x);',
+      '        Action<string> c = static async x => Log(x);',
+      '    }',
+      '}'
+    );
+
+    expect(codeStyle(modified, 'csharp_style_prefer_method_group_conversion = true:warning')).toBe(modified);
+  });
+
+  it('reports instead of converting a lambda whose target may be an expression tree', () => {
+    const tree = lines(
+      'class Sample',
+      '{',
+      '    static void Log(int value) { }',
+      '    static void Run(Expression<Action<int>> e) { }',
+      '',
+      '    void M()',
+      '    {',
+      '        Run((int x) => Log(x));',
+      '        Expression<Action<int>> e = (int x) => Log(x);',
+      '        var v = (int x) => Log(x);',
+      '    }',
+      '}'
+    );
+
+    expect(codeStyle(tree, 'csharp_style_prefer_method_group_conversion = true:warning')).toBe(tree.replace('v = (int x) => Log(x);', 'v = Log;'));
+    expect(issuesOf(tree, 'csharp_style_prefer_method_group_conversion = true:warning')).toEqual([
+      expect.stringMatching(/^IDE0200 .* line 8: the lambda was not replaced by 'Log'/),
+      expect.stringMatching(/^IDE0200 .* line 9: the lambda was not replaced by 'Log'/),
+    ]);
+  });
+
+  it('keeps a lambda forwarding to a partial method without an implementation in the file (CS0762)', () => {
+    const partial = lines(
+      'partial class Sample',
+      '{',
+      '    partial void OnChanged(int value);',
+      '    partial void OnSaved(int value) { }',
+      '',
+      '    void M()',
+      '    {',
+      '        Action<int> a = x => OnChanged(x);',
+      '        Action<int> b = x => OnSaved(x);',
+      '    }',
+      '}'
+    );
+
+    expect(codeStyle(partial, 'csharp_style_prefer_method_group_conversion = true:warning')).toBe(partial.replace('b = x => OnSaved(x);', 'b = OnSaved;'));
   });
 });
 

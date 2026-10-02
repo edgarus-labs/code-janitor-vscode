@@ -14,7 +14,7 @@ interface ParsedUsing {
 
 /**
  * Sorts `using` directives: plain usings first, then `using static`, then aliases; inside each
- * group `System` namespaces come first, then ordinal alphabetical.
+ * group `System` namespaces come first, then the names in Roslyn's order (see {@link compareNames}).
  *
  * Formatting is preserved by keeping each original slot in place and only swapping the directive
  * text. A block that contains comments, preprocessor directives or `global using` directives is
@@ -85,7 +85,7 @@ function collectSortEdits(source: string, kinds: Uint8Array, container: Node, ed
     (a, b) =>
       groupRank(a) - groupRank(b) ||
       (systemFirst ? systemRank(a) - systemRank(b) : 0) ||
-      compareOrdinal(sortName(a), sortName(b))
+      compareNames(sortName(a), sortName(b))
   );
 
   if (sorted.every((directive, index) => directive.node.id === directives[index].node.id)) {
@@ -192,13 +192,111 @@ function systemRank(directive: ParsedUsing): number {
     return 0;
   }
 
-  return directive.name === 'System' || directive.name.startsWith('System.') ? 0 : 1;
+  return nameParts(directive.name)[0].identifier.replace(/^@/, '') === 'System' ? 0 : 1;
 }
 
 function sortName(directive: ParsedUsing): string {
   return directive.alias ?? directive.name;
 }
 
-function compareOrdinal(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+const IGNORING_CASE = new Intl.Collator('und', { sensitivity: 'base' });
+const LOWERCASE_FIRST = new Intl.Collator('und', { sensitivity: 'case', caseFirst: 'lower' });
+
+/**
+ * Roslyn's `NameSyntaxComparer` (Organize Usings, `dotnet format`): the names are compared part by part
+ * (`System.IO` after `System.IdentityModel`), a name before the longer names it starts; `Goo` before
+ * `Goo<T>`, fewer type arguments first, then the type arguments themselves.
+ */
+function compareNames(a: string, b: string): number {
+  const x = nameParts(a);
+  const y = nameParts(b);
+  for (let i = 0; i < x.length && i < y.length; i++) {
+    const compare = compareIdentifiers(x[i].identifier, y[i].identifier) || compareTypeArguments(x[i].typeArguments, y[i].typeArguments);
+    if (compare !== 0) {
+      return compare;
+    }
+  }
+
+  return x.length - y.length;
+}
+
+/**
+ * Roslyn's `TokenComparer`: invariant culture ignoring case, accents and width, then lowercase first. The
+ * value of the identifier counts, so `@class` is `class`.
+ */
+function compareIdentifiers(a: string, b: string): number {
+  const x = a.replace(/^@/, '');
+  const y = b.replace(/^@/, '');
+
+  return IGNORING_CASE.compare(x, y) || LOWERCASE_FIRST.compare(x, y);
+}
+
+function compareTypeArguments(a: readonly string[] | undefined, b: readonly string[] | undefined): number {
+  if (a === undefined || b === undefined) {
+    return (a === undefined ? 0 : 1) - (b === undefined ? 0 : 1);
+  }
+
+  if (a.length !== b.length) {
+    return a.length - b.length;
+  }
+
+  for (let i = 0; i < a.length; i++) {
+    const compare = compareNames(a[i], b[i]);
+    if (compare !== 0) {
+      return compare;
+    }
+  }
+
+  return 0;
+}
+
+interface NamePart {
+  identifier: string;
+  typeArguments?: string[];
+}
+
+/** `global::A.B<C, D>` -> `global`, `A`, `B` with type arguments `C` and `D`. */
+function nameParts(name: string): NamePart[] {
+  const parts: NamePart[] = [];
+  let depth = 0;
+  let start = 0;
+  const text = name.replace(/\s+/g, '');
+  const add = (end: number): void => {
+    const part = text.slice(start, end);
+    const open = part.indexOf('<');
+    parts.push(open < 0 ? { identifier: part } : { identifier: part.slice(0, open), typeArguments: splitTopLevel(part.slice(open + 1, part.lastIndexOf('>'))) });
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    depth += char === '<' || char === '(' || char === '[' ? 1 : char === '>' || char === ')' || char === ']' ? -1 : 0;
+    if (depth === 0 && (char === '.' || (char === ':' && text[i + 1] === ':'))) {
+      add(i);
+      i += char === ':' ? 1 : 0;
+      start = i + 1;
+    }
+  }
+
+  add(text.length);
+
+  return parts;
+}
+
+/** `A, B<C, D>` -> `A`, `B<C, D>`. */
+function splitTopLevel(text: string): string[] {
+  const items: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    depth += char === '<' || char === '(' || char === '[' ? 1 : char === '>' || char === ')' || char === ']' ? -1 : 0;
+    if (depth === 0 && char === ',') {
+      items.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+
+  items.push(text.slice(start));
+
+  return items;
 }

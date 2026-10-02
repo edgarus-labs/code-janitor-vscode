@@ -123,6 +123,19 @@ describe('nullCheckPatternMatchingConverter', () => {
     );
   });
 
+  it('takes the type of a var declared with a cast from the cast, so one run converts what the explicit type would', () => {
+    expect(apply('class C { void M(object o) { var x = (string[]?)o; if (x == null) { return; } } }')).toBe(
+      'class C { void M(object o) { var x = (string[]?)o; if (x is null) { return; } } }'
+    );
+  });
+
+  it('leaves a var declared with a cast to a type that may overload == unchanged', () => {
+    const input =
+      'class V { public static bool operator ==(V a, V b) => true; public static bool operator !=(V a, V b) => false; }\nclass C { bool M(object o) { var v = (V)o; var w = (V)o + 1; return v == null || w == null; } }';
+
+    expect(apply(input)).toBe(input);
+  });
+
   it('handles an empty source', () => {
     expect(apply('')).toBe('');
   });

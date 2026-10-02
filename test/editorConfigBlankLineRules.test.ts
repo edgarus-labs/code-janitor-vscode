@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import { unsupportedEditorConfigSettings } from '../src/cleanup/editorConfigRegistry';
 import { createEditorConfigCodeStyleConverter } from '../src/cleanup/transformations/editorConfigCodeStyle';
+import { BLANK_LINE_RULES } from '../src/cleanup/transformations/editorConfigBlankLineRules';
 
 function lines(...text: string[]): string {
   return `${text.join('\n')}\n`;
@@ -68,6 +69,19 @@ describe('experimental blank-line and wrapping options (IDE2000 - IDE2006)', () 
     );
   });
 
+  it('IDE2001 puts an else that follows a moved statement on its own line', () => {
+    expectRewrite(
+      'csharp_style_allow_embedded_statements_on_same_line_experimental',
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a) X(); else Y();', '    }', '}'),
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a)', '            X();', '        else', '            Y();', '    }', '}')
+    );
+    expectRewrite(
+      'csharp_style_allow_embedded_statements_on_same_line_experimental',
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a) X(); else if (!a) Y(); else Z();', '    }', '}'),
+      lines('class C', '{', '    void M(bool a)', '    {', '        if (a)', '            X();', '        else if (!a)', '            Y();', '        else', '            Z();', '    }', '}')
+    );
+  });
+
   it('IDE2002 removes blank lines between consecutive closing braces', () => {
     expectRewrite(
       'csharp_style_allow_blank_lines_between_consecutive_braces_experimental',
@@ -108,6 +122,7 @@ describe('IDE2000 and multi-line string literals', () => {
     ['verbatim', lines('class C', '{', '    string S = @"a', '', '', '', 'b";', '}')],
     ['raw', lines('class C', '{', '    string S = """', '        a', '', '', '        b', '        """;', '}')],
     ['interpolated verbatim', lines('class C', '{', '    string S(int n) => $@"a', '', '', '{n}', '', '', 'b";', '}')],
+    ['interpolated verbatim whose hole holds a string literal', lines('class C', '{', '    string M(string[] x) => $@"{string.Join(",", x)}', '', '', 'end";', '}')],
   ])('keeps the blank lines of a %s string', (_name, source) => {
     expect(codeStyle(source, 'dotnet_style_allow_multiple_blank_lines_experimental = false:warning')).toBe(source);
   });
@@ -117,6 +132,55 @@ describe('IDE2000 and multi-line string literals', () => {
       'dotnet_style_allow_multiple_blank_lines_experimental',
       lines('class C', '{', '    string S = @"a', '', '', 'b";', '', '', '', '    int N;', '}'),
       lines('class C', '{', '    string S = @"a', '', '', 'b";', '', '    int N;', '}')
+    );
+  });
+
+  it('IDE2002 keeps blank lines before closing braces inside a $@ string whose hole holds a string literal', () => {
+    const source = lines('class C', '{', '    string M(string[] x) => $@"{string.Join(",", x)}', '    }', '', '}";', '}');
+
+    expect(codeStyle(source, 'csharp_style_allow_blank_lines_between_consecutive_braces_experimental = false:warning')).toBe(source);
+  });
+});
+
+describe('IDE2000 - IDE2003 edge cases', () => {
+  it('IDE2000 collapses blank lines after a // comment line in a CRLF file', () => {
+    const crlf = (text: string): string => text.replace(/\n/g, '\r\n');
+    expectRewrite(
+      'dotnet_style_allow_multiple_blank_lines_experimental',
+      crlf(lines('class C', '{', '    int a; // note', '', '', '', '    int b;', '}')),
+      crlf(lines('class C', '{', '    int a; // note', '', '    int b;', '}'))
+    );
+  });
+
+  it('IDE2002 removes every blank line in a chain of closing braces in one pass of the rule', () => {
+    const option = 'csharp_style_allow_blank_lines_between_consecutive_braces_experimental';
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: `root = true\n[*.cs]\n${option} = false:warning\n` }], '/repo/Sample.cs');
+    const rule = BLANK_LINE_RULES.find((candidate) => candidate.option === option)!;
+    const source = lines('namespace N', '{', '    class C', '    {', '        void M()', '        {', '        }', '', '    }', '', '}');
+
+    // The converter re-runs rules while they change code; one pass must already reach the fixed point.
+    expect(rule.apply(source, { props, report: () => undefined, indent: '    ' })).toBe(lines('namespace N', '{', '    class C', '    {', '        void M()', '        {', '        }', '    }', '}'));
+  });
+
+  it('IDE2002 leaves a blank line before a closing brace that is inside a comment', () => {
+    const source = lines('class C', '{', '    void M()', '    {', '    }', '', '    // }', '}');
+
+    expect(codeStyle(source, 'csharp_style_allow_blank_lines_between_consecutive_braces_experimental = false:warning')).toBe(source);
+  });
+
+  it('IDE2001 indents the moved statement from the start of a wrapped header', () => {
+    expectRewrite(
+      'csharp_style_allow_embedded_statements_on_same_line_experimental',
+      lines('class C', '{', '    void M(bool x)', '    {', '        if (x &&', '            x) return;', '    }', '}'),
+      lines('class C', '{', '    void M(bool x)', '    {', '        if (x &&', '            x)', '            return;', '    }', '}')
+    );
+  });
+
+  it('IDE2003 separates a block from the next statement inside a switch section', () => {
+    expectRewrite(
+      'dotnet_style_allow_statement_immediately_after_block_experimental',
+      lines('class C', '{', '    void M(int x)', '    {', '        switch (x)', '        {', '            case 1:', '                if (x > 0) { }', '                M(1);', '                break;', '            case 2:', '                { }', '            default:', '                break;', '        }', '    }', '}'),
+      lines('class C', '{', '    void M(int x)', '    {', '        switch (x)', '        {', '            case 1:', '                if (x > 0) { }', '', '                M(1);', '                break;', '            case 2:', '                { }', '            default:', '                break;', '        }', '    }', '}')
     );
   });
 });

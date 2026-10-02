@@ -1,6 +1,5 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { readMSBuildProject } from './msbuildProperties';
+import { findProjectFile, readMSBuildProject } from './msbuildProperties';
 
 /** What cleanup reads from the project file a C# file belongs to. */
 export interface ProjectInfo {
@@ -27,45 +26,50 @@ export interface ProjectInfo {
    * property decides it, or its value is not a nullable context.
    */
   readonly nullable?: NullableContext;
+  /**
+   * The current text of the C# files open with unsaved changes, by full path (`path.resolve`):
+   * rules reading the project's other files read these instead of their disk copies.
+   */
+  readonly unsavedSources?: ReadonlyMap<string, string>;
 }
 
 export type NullableContext = 'enable' | 'disable' | 'annotations' | 'warnings';
 
 const NULLABLE_CONTEXTS: Record<string, true> = { enable: true, disable: true, annotations: true, warnings: true };
 
-/**
- * The project of a C# file: the single `.csproj` in the nearest folder (from the file's folder up)
- * that has one. `undefined` when there is no such project or several project files share the folder.
- */
-export function findProject(filePath: string): ProjectInfo | undefined {
-  if (!filePath.trim()) {
-    return undefined;
-  }
+/** Supplies the unsaved open C# documents (the extension host registers it; see `setUnsavedSourcesProvider`). */
+let unsavedSourcesProvider: (() => ReadonlyMap<string, string>) | undefined;
 
-  let directory = path.dirname(path.resolve(filePath));
-  for (;;) {
-    let projects: string[] = [];
-    try {
-      projects = fs.readdirSync(directory).filter((name) => name.toLowerCase().endsWith('.csproj'));
-    } catch {
-      return undefined;
-    }
+/** Makes {@link findProject} attach the texts `provider` returns; disposing the result removes it again. */
+export function setUnsavedSourcesProvider(provider: () => ReadonlyMap<string, string>): { dispose(): void } {
+  unsavedSourcesProvider = provider;
 
-    if (projects.length > 0) {
-      return projects.length === 1 ? readProject(directory, projects[0]) : undefined;
-    }
-
-    const parent = path.dirname(directory);
-    if (parent === directory) {
-      return undefined;
-    }
-
-    directory = parent;
-  }
+  return {
+    dispose: () => {
+      if (unsavedSourcesProvider === provider) {
+        unsavedSourcesProvider = undefined;
+      }
+    },
+  };
 }
 
-function readProject(directory: string, fileName: string): ProjectInfo | undefined {
-  const project = readMSBuildProject(path.join(directory, fileName));
+/**
+ * The project of a C# file: the single `.csproj` in the nearest folder (from the file's folder up)
+ * that has one ({@link findProjectFile}). `undefined` when there is no such project or several
+ * project files share the folder.
+ */
+export function findProject(filePath: string): ProjectInfo | undefined {
+  const projectFile = filePath.trim() ? findProjectFile(filePath) : undefined;
+  const project = projectFile ? readProject(projectFile) : undefined;
+  const unsavedSources = project && unsavedSourcesProvider?.();
+
+  return project && unsavedSources && unsavedSources.size > 0 ? { ...project, unsavedSources } : project;
+}
+
+function readProject(projectFile: string): ProjectInfo | undefined {
+  const project = readMSBuildProject(projectFile);
+  const directory = path.dirname(projectFile);
+  const fileName = path.basename(projectFile);
   if (!project) {
     return undefined;
   }

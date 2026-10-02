@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { resolveEffectiveCleanupSettings } from './effectiveSettings';
 import { diagnosticSeverity } from './editorConfigRegistry';
 import { EditorConfigProperties, EditorConfigSeverity, loadEditorConfigProperties, parseSeverity } from './editorconfig';
 import { LineHunk, applyLineHunks, diffLineHunks } from './lineDiff';
@@ -49,6 +50,8 @@ export interface CleanupAnalysis {
   readonly findings: readonly CleanupFinding[];
   /** The `.editorconfig` settings cleanup does not apply. */
   readonly unsupported: readonly string[];
+  /** What the Code Janitor settings (their steps, the enabled Code Style rules) leave undone and why: notes, not `.editorconfig` violations. */
+  readonly notes: readonly string[];
 }
 
 export interface AnalysisOptions {
@@ -59,13 +62,17 @@ export interface AnalysisOptions {
 
 /** Runs cleanup on `source` step by step and records, per rule, where it changes the text or what it cannot fix. */
 export function analyzeCleanup(source: string, filePath: string, settings: CleanupSettings, options: AnalysisOptions = {}): CleanupAnalysis {
-  const props = loadEditorConfigProperties(filePath);
+  // With the enabled Code Style rules layered on top, so their findings carry the `suggestion` severity they apply with.
+  const props = resolveEffectiveCleanupSettings(filePath, settings).properties;
   const unsupported: string[] = [];
+  const notes: string[] = [];
   const issues: string[] = [];
   let collecting = false;
-  const pipeline = getCleanupPipeline(source, filePath, settings, options.disqualifiedTypeNames, (issue) => {
+  const pipeline = getCleanupPipeline(filePath, settings, options.disqualifiedTypeNames, (issue) => {
     if (issue.kind === 'unsupported') {
       unsupported.push(issue.detail);
+    } else if (issue.kind === 'note') {
+      notes.push(issue.detail);
     } else if (collecting) {
       issues.push(issue.detail);
     }
@@ -81,6 +88,7 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
     const output = full ? full.output : step.apply(current);
     collecting = false;
     const stepIssues = [...issues];
+    // A step numbers the lines of its issues in its input, `current`, as its changes are diffed from it.
     const toSource = lineMapper(source, current);
     const at = (start: number, end: number) => {
       const [first] = toSource(start);
@@ -96,18 +104,20 @@ export function analyzeCleanup(source: string, filePath: string, settings: Clean
           findings.push(...changeFindings(current, ruleOutput, rule.id, diagnosticSeverity(props, rule.id), at));
         }
       } else if (step.diagnosticId === NAMING_DIAGNOSTIC_ID) {
-        findings.push(...namingFindings(current, props, stepIssues, at));
+        findings.push(...namingFindings(source, current, props, stepIssues, at));
       } else {
         const severity = step.diagnosticId ? diagnosticSeverity(props, step.diagnosticId) : undefined;
         findings.push(...changeFindings(current, output, step.diagnosticId, severity, at, step.name));
       }
     }
 
+    // `unresolved` issues come from the `.editorconfig` steps; the Code Janitor settings report notes.
     findings.push(...stepIssues.map((detail) => issueFinding(detail, props, at)));
+
     current = output;
   }
 
-  return { findings, unsupported };
+  return { findings, unsupported, notes };
 }
 
 /**
@@ -121,7 +131,7 @@ export function applyRuleOnly(
   ruleId: string,
   disqualifiedTypeNames?: ReadonlySet<string>
 ): string {
-  for (const step of getCleanupPipeline(source, filePath, settings, disqualifiedTypeNames).transformations) {
+  for (const step of getCleanupPipeline(filePath, settings, disqualifiedTypeNames).transformations) {
     if (step.diagnosticId === ruleId) {
       return step.apply(source);
     }
@@ -223,24 +233,35 @@ function changeFindings(
   }
 
   return places.map(({ start, end, hunks }) => {
-    const written = hunks.flatMap((hunk) => afterLines.slice(hunk.afterStart, hunk.afterEnd)).find((line) => line.trim() !== '');
+    const writtenLines = hunks.flatMap((hunk) => afterLines.slice(hunk.afterStart, hunk.afterEnd));
+    const written = writtenLines.find((line) => line.trim() !== '');
     const removed = hunks.reduce((count, hunk) => count + hunk.beforeEnd - hunk.beforeStart, 0);
-    const change = written !== undefined ? `would change this to: ${abbreviate(written.trim())}` : `would remove ${removed} line(s)`;
+    const change =
+      written !== undefined
+        ? `would change this to: ${abbreviate(written.trim())}`
+        : removed === 0
+          ? `would insert ${writtenLines.length} blank line(s)`
+          : `would remove ${removed} line(s)`;
 
     return {
       ruleId,
       rule: ruleId ?? stepName ?? 'Cleanup',
       severity,
       ...at(start, end),
-      message: ruleId ? `Code Janitor ${change}` : `${stepName}: Code Janitor ${change}`,
+      // `rule` names the step already.
+      message: `Code Janitor ${change}`,
       wouldChange: true,
       fixable: ruleId !== undefined,
     };
   });
 }
 
-/** IDE1006: the violations the naming step renames, at the declared name; the others are reported as issues. */
-function namingFindings(before: string, props: EditorConfigProperties, stepIssues: readonly string[], at: Locate): CleanupFinding[] {
+/**
+ * IDE1006: the violations the naming step renames in `before` (the text an earlier step may have
+ * rewritten), at the declared name in `source`; the others are reported as issues. A name with no
+ * counterpart in `source` (an earlier step introduced it) is located by its lines alone.
+ */
+function namingFindings(source: string, before: string, props: EditorConfigProperties, stepIssues: readonly string[], at: Locate): CleanupFinding[] {
   const unresolved = new Set(
     stepIssues.flatMap((detail) => {
       const match = / line (\d+): .*?'([^']+)' should be named/.exec(detail);
@@ -249,21 +270,38 @@ function namingFindings(before: string, props: EditorConfigProperties, stepIssue
     })
   );
 
-  return findNamingViolations(buildSourceModel(before), parseNamingRules(props), props).flatMap((violation): CleanupFinding[] => {
+  const rules = parseNamingRules(props);
+  const violations = findNamingViolations(buildSourceModel(before), rules, props);
+  // The same violation in `source`, paired in order: the n-th `count` field to rename with the n-th one.
+  const identity = (violation: (typeof violations)[number]) => `${violation.symbol.kind}:${violation.symbol.name}:${violation.newName}`;
+  const inSource = new Map<string, (typeof violations)[number][]>();
+  for (const violation of before === source ? violations : findNamingViolations(buildSourceModel(source), rules, props)) {
+    inSource.set(identity(violation), [...(inSource.get(identity(violation)) ?? []), violation]);
+  }
+
+  return violations.flatMap((violation): CleanupFinding[] => {
     const { symbol, newName, severity, rule } = violation;
+    const counterpart = inSource.get(identity(violation))?.shift();
     const start = symbol.nameNode.startPosition;
     if (unresolved.has(`${start.row}:${symbol.name}`)) {
       return [];
     }
+
+    const sourceName = counterpart?.symbol.nameNode;
 
     return [
       {
         ruleId: NAMING_DIAGNOSTIC_ID,
         rule: NAMING_DIAGNOSTIC_ID,
         severity,
-        ...at(start.row, start.row),
-        startCharacter: start.column,
-        endCharacter: symbol.nameNode.endPosition.column,
+        ...(sourceName
+          ? {
+              startLine: sourceName.startPosition.row,
+              endLine: sourceName.startPosition.row,
+              startCharacter: sourceName.startPosition.column,
+              endCharacter: sourceName.endPosition.column,
+            }
+          : at(start.row, start.row)),
         message: `${symbol.kind.replace('_', ' ')} '${symbol.name}' should be named '${newName}' (naming rule '${rule.title}').`,
         wouldChange: true,
         fixable: true,
@@ -273,17 +311,20 @@ function namingFindings(before: string, props: EditorConfigProperties, stepIssue
   });
 }
 
-/** A violation cleanup reports instead of fixing: `ID (option or severity) line N: message`, or a note without a line. */
+/**
+ * A violation cleanup reports instead of fixing: `ID (option or severity) line N: message`,
+ * `ID line N: message`, or `rule: message` without a line.
+ */
 function issueFinding(detail: string, props: EditorConfigProperties, at: Locate): CleanupFinding {
-  const match = /^([A-Z]+\d+(?:\/[A-Z]+\d+)*) \(([^)]*)\) line (\d+): (.*)$/s.exec(detail);
+  const match = /^([A-Z]+\d+(?:\/[A-Z]+\d+)*)(?: \(([^)]*)\))? line (\d+): (.*)$/s.exec(detail);
   if (!match) {
-    const rule = /^([^:]+):/.exec(detail)?.[1] ?? 'Cleanup';
+    const [, rule, message] = /^([^:]+): (.*)$/s.exec(detail) ?? [undefined, 'Cleanup', detail];
 
-    return { rule, startLine: 0, endLine: 0, fileLevel: true, message: detail, wouldChange: false, fixable: false };
+    return { rule, startLine: 0, endLine: 0, fileLevel: true, message, wouldChange: false, fixable: false };
   }
 
   const [, ruleId, qualifier, line, message] = match;
-  const stated = parseSeverity(/(?:^|, )(\w+)$/.exec(qualifier)?.[1]);
+  const stated = parseSeverity(/(?:^|, )(\w+)$/.exec(qualifier ?? '')?.[1]);
   const severity = stated ?? diagnosticSeverity(props, ruleId);
 
   return { ruleId, rule: ruleId, severity, ...at(Number(line) - 1, Number(line) - 1), message, wouldChange: false, fixable: false };
@@ -352,9 +393,14 @@ function anchorLines(hunk: LineHunk, lastLine: number): [number, number] {
   return [line, line];
 }
 
-/** Maps a line of `current` (a text cleanup derived from `source`) to the line range of `source` it comes from. */
+/**
+ * Maps a line of `current` (a text cleanup derived from `source`) to the line range of `source` it
+ * comes from. Lines are compared without their indentation, so a line an earlier step only re-indented
+ * is still its own line; a hunk that replaced as many lines as it has maps them one to one.
+ */
 function lineMapper(source: string, current: string): (line: number) => [number, number] {
-  const hunks = diffLineHunks(source, current);
+  const trimmed = (text: string) => text.split('\n').map((line) => line.trim()).join('\n');
+  const hunks = diffLineHunks(trimmed(source), trimmed(current));
 
   return (line) => {
     let shift = 0;
@@ -364,6 +410,12 @@ function lineMapper(source: string, current: string): (line: number) => [number,
       }
 
       if (line < hunk.afterEnd) {
+        if (hunk.beforeEnd - hunk.beforeStart === hunk.afterEnd - hunk.afterStart) {
+          const mapped = hunk.beforeStart + line - hunk.afterStart;
+
+          return [mapped, mapped];
+        }
+
         return [hunk.beforeStart, Math.max(hunk.beforeStart, hunk.beforeEnd - 1)];
       }
 

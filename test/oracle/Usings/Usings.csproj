@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile oracle corpus (scripts/compile-oracle.ts): using directive placement on files that are tricky for it. Must build. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Company.App</RootNamespace>
+    <NoWarn>$(NoWarn);CS0169;CS0414;CS8981;CS0105</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Lib/**" />
+    <ProjectReference Include="Lib/Lib.csproj" Aliases="V1" />
+  </ItemGroup>
+</Project>

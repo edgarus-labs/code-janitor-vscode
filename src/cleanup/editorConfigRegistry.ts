@@ -20,6 +20,8 @@ type Gate =
       readonly diagnosticId: (value: string) => string;
       /** Every diagnostic `diagnosticId` can select. */
       readonly diagnosticIds: readonly string[];
+      /** Whether the value picks one of `diagnosticIds` (the others are not reported); otherwise they share the option. */
+      readonly selective: (value: string) => boolean;
     }
   /** While the given diagnostic is enforced; the value carries no severity. */
   | { readonly kind: 'diagnostic'; readonly diagnosticId: string };
@@ -40,18 +42,33 @@ const oneOf =
 const isBoolean = oneOf('true', 'false');
 const always: Gate = { kind: 'always' };
 const formatting: Gate = { kind: 'formatting' };
-const codeStyle = (diagnosticId: string): Gate => ({ kind: 'codeStyle', diagnosticId: () => diagnosticId, diagnosticIds: [diagnosticId] });
+const codeStyle = (diagnosticId: string): Gate => ({ kind: 'codeStyle', diagnosticId: () => diagnosticId, diagnosticIds: [diagnosticId], selective: () => false });
 /** A code-style option whose value selects one of two diagnostics. */
 const codeStyleBy = (value: string, whenValue: string, otherwise: string): Gate => ({
   kind: 'codeStyle',
   diagnosticId: (actual) => (actual === value ? whenValue : otherwise),
   diagnosticIds: [whenValue, otherwise],
+  selective: () => true,
 });
 /** A code-style option shared by several diagnostics, each gating its own part of the rule. */
-const codeStyleFamily = (main: string, ...others: string[]): Gate => ({ kind: 'codeStyle', diagnosticId: () => main, diagnosticIds: [main, ...others] });
+const codeStyleFamily = (main: string, ...others: string[]): Gate => ({
+  kind: 'codeStyle',
+  diagnosticId: () => main,
+  diagnosticIds: [main, ...others],
+  selective: () => false,
+});
 const varDiagnostic = codeStyleBy('true', 'IDE0007', 'IDE0008');
 const qualificationDiagnostic = codeStyleBy('true', 'IDE0009', 'IDE0003');
-const parenthesesDiagnostic = codeStyleBy('always_for_clarity', 'IDE0048', 'IDE0047');
+/**
+ * Roslyn reports IDE0047 under both values (always_for_clarity only spares parentheses that clarify
+ * precedence), and IDE0048 only under always_for_clarity: just never_if_unnecessary selects one.
+ */
+const parenthesesDiagnostic: Gate = {
+  kind: 'codeStyle',
+  diagnosticId: (actual) => (actual === 'always_for_clarity' ? 'IDE0048' : 'IDE0047'),
+  diagnosticIds: ['IDE0048', 'IDE0047'],
+  selective: (actual) => actual === 'never_if_unnecessary',
+};
 const parenthesesValue = oneOf('always_for_clarity', 'never_if_unnecessary');
 const expressionBodyValue = oneOf('true', 'false', 'when_on_single_line', 'when_possible', 'never');
 
@@ -389,7 +406,7 @@ export function effectiveEditorConfigValue(props: EditorConfigProperties, key: s
   }
 
   const gate = setting.gate;
-  const value = gate.kind === 'codeStyle' ? splitOptionSeverity(raw).value.toLowerCase() : raw.trim().toLowerCase();
+  const value = optionValue(gate, raw).toLowerCase();
   if (setting.accepts && !setting.accepts(value)) {
     return undefined;
   }
@@ -428,10 +445,32 @@ export function diagnosticIdsOfOption(props: EditorConfigProperties, option: str
   return ids.length > 0 ? ids.join('/') : option;
 }
 
+/**
+ * The one diagnostic Roslyn reports for a code-style option whose value selects between several
+ * (`dotnet_style_qualification_for_field = true` reports IDE0009, `false` IDE0003); undefined for
+ * an option whose diagnostics all apply, or that is not supported.
+ */
+export function diagnosticIdSelectedBy(key: string, value: string): string | undefined {
+  const gate = SUPPORTED_SETTINGS[key]?.gate;
+
+  const normalized = value.toLowerCase();
+
+  return gate?.kind === 'codeStyle' && gate.selective(normalized) ? gate.diagnosticId(normalized) : undefined;
+}
+
+/** The value of a setting as written: code-style options and plain options take a `:severity` suffix. */
+function optionValue(gate: Gate, raw: string): string {
+  return gate.kind === 'codeStyle' || gate.kind === 'always' ? splitOptionSeverity(raw).value : raw.trim();
+}
+
 function isGateOpen(props: EditorConfigProperties, gate: Gate, raw: string): boolean {
   switch (gate.kind) {
-    case 'always':
-      return true;
+    case 'always': {
+      // A plain option (`indent_style = tab:none`) is ignored by a severity that does not enforce it.
+      const { severity } = splitOptionSeverity(raw);
+
+      return severity === undefined || isEnforced(severity);
+    }
     case 'formatting':
       return isEnforced(resolveDiagnosticSeverity(props, FORMATTING_DIAGNOSTIC_ID));
     case 'diagnostic':
@@ -439,7 +478,8 @@ function isGateOpen(props: EditorConfigProperties, gate: Gate, raw: string): boo
     case 'codeStyle': {
       const { value, severity } = splitOptionSeverity(raw);
 
-      return isEnforced(resolveDiagnosticSeverity(props, gate.diagnosticId(value.toLowerCase()), severity));
+      // A `:none` suffix stops the rule whatever severity its diagnostics are given elsewhere.
+      return severity !== 'none' && isEnforced(resolveDiagnosticSeverity(props, gate.diagnosticId(value.toLowerCase()), severity));
     }
   }
 }
@@ -459,7 +499,7 @@ export function unsupportedEditorConfigSettings(props: EditorConfigProperties): 
     const supported = SUPPORTED_SETTINGS[key];
 
     if (supported) {
-      const value = supported.gate.kind === 'codeStyle' ? splitOptionSeverity(raw).value : raw;
+      const value = optionValue(supported.gate, raw);
       if (supported.accepts && !supported.accepts(value.trim().toLowerCase()) && isGateOpen(props, supported.gate, raw)) {
         messages.push(`${setting} has an unsupported value and was not applied.`);
       }
@@ -527,7 +567,7 @@ export function enforcedOptionValue(props: EditorConfigProperties, key: string):
     return undefined;
   }
 
-  return gate.kind === 'codeStyle' ? splitOptionSeverity(raw).value.toLowerCase() : raw.trim().toLowerCase();
+  return optionValue(gate, raw).toLowerCase();
 }
 
 /**
@@ -549,6 +589,7 @@ export function diagnosticSeverity(props: EditorConfigProperties, diagnosticId: 
   let highest: EditorConfigSeverity | undefined;
   for (const id of diagnosticId.split('/')) {
     let optionSeverity: EditorConfigSeverity | undefined;
+    let stopped = false;
     for (const [key, { gate }] of Object.entries(SUPPORTED_SETTINGS)) {
       const raw = gate.kind === 'codeStyle' && gate.diagnosticIds.includes(id) ? props.get(key) : undefined;
       if (raw === undefined || gate.kind !== 'codeStyle') {
@@ -558,10 +599,12 @@ export function diagnosticSeverity(props: EditorConfigProperties, diagnosticId: 
       const { value, severity } = splitOptionSeverity(raw);
       if (severity && gate.diagnosticId(value.toLowerCase()) === id) {
         optionSeverity = severity;
+        // A `:none` suffix stops the rule whatever severity its diagnostic gets elsewhere.
+        stopped ||= severity === 'none';
       }
     }
 
-    const severity = resolveDiagnosticSeverity(props, id, optionSeverity, SUPPORTED_DIAGNOSTICS[id]?.category);
+    const severity = stopped ? 'none' : resolveDiagnosticSeverity(props, id, optionSeverity, SUPPORTED_DIAGNOSTICS[id]?.category);
     if (severity && (!highest || SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest])) {
       highest = severity;
     }

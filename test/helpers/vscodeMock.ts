@@ -59,6 +59,10 @@ export class RelativePattern {
   ) {}
 }
 
+export class ThemeIcon {
+  constructor(readonly id: string) {}
+}
+
 export const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 } as const;
 export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 } as const;
 export const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 } as const;
@@ -155,6 +159,9 @@ export class TextEdit {
 export class TextDocument {
   isClosed = false;
 
+  /** As in VS Code: the document has changes that are not saved; tests set it. */
+  isDirty = false;
+
   version = 1;
 
   constructor(
@@ -182,6 +189,14 @@ export class TextDocument {
   setText(text: string): void {
     this.content = text;
     this.version++;
+  }
+
+  /** As in VS Code: writes the text to disk. */
+  save(): Thenable<boolean> {
+    state.files.set(this.uri.fsPath, this.content);
+    state.documentListeners.save.forEach((listener) => listener(this));
+
+    return Promise.resolve(true);
   }
 
   positionAt(offset: number): Position {
@@ -238,6 +253,8 @@ interface RecordedEdit {
 
 export class WorkspaceEdit {
   readonly edits = new Map<string, RecordedEdit[]>();
+  /** Files the edit creates, in order, as `WorkspaceEdit.createFile` records them. */
+  readonly createdFiles: { uri: Uri; options: { overwrite?: boolean; ignoreIfExists?: boolean } }[] = [];
 
   replace(uri: Uri, range: Range, text: string): void {
     const key = uri.toString();
@@ -246,8 +263,16 @@ export class WorkspaceEdit {
     this.edits.set(key, list);
   }
 
+  insert(uri: Uri, position: Position, text: string): void {
+    this.replace(uri, new Range(position, position), text);
+  }
+
+  createFile(uri: Uri, options: { overwrite?: boolean; ignoreIfExists?: boolean } = {}): void {
+    this.createdFiles.push({ uri, options });
+  }
+
   get size(): number {
-    return this.edits.size;
+    return this.edits.size + this.createdFiles.length;
   }
 }
 
@@ -262,6 +287,20 @@ function applyRangeEdits(document: TextDocument, edits: readonly RecordedEdit[])
   }
 
   document.setText(content);
+}
+
+/**
+ * The text of a file once loaded into a VS Code document: a file with mixed line endings gets the
+ * dominant one throughout (`PieceTreeTextBufferFactory`, which normalizes the end of lines).
+ */
+function asLoadedText(content: string): string {
+  const crlf = content.match(/\r\n/g)?.length ?? 0;
+  const cr = content.match(/\r(?!\n)/g)?.length ?? 0;
+  const lf = content.match(/(?<!\r)\n/g)?.length ?? 0;
+  const eol = cr + crlf > (cr + lf + crlf) / 2 ? '\r\n' : '\n';
+  const mixed = eol === '\r\n' ? cr + lf > 0 : cr + crlf > 0;
+
+  return mixed ? content.replace(/\r\n|\r|\n/g, eol) : content;
 }
 
 // ---------------------------------------------------------------- languages
@@ -307,7 +346,10 @@ export const languages = {
       set: (uri: Uri, diagnostics: readonly Diagnostic[]) => {
         state.diagnostics.set(uri.toString(), [...diagnostics]);
       },
+      has: (uri: Uri) => state.diagnostics.has(uri.toString()),
+      // As in VS Code, every deletion is an update of the Problems panel, whether or not the uri had diagnostics.
       delete: (uri: Uri) => {
+        state.diagnosticDeletions.push(uri.toString());
         state.diagnostics.delete(uri.toString());
       },
       dispose: () => undefined,
@@ -364,9 +406,16 @@ export const state = {
   applyEditResult: true,
   /** Published diagnostics, by document uri. */
   diagnostics: new Map<string, Diagnostic[]>(),
+  /** Every `DiagnosticCollection.delete`, by uri. */
+  diagnosticDeletions: [] as string[],
   codeActionProviders: [] as MockCodeActionProvider[],
+  /** The editor tabs (`window.tabGroups`, one group); `showInTab` opens one. */
+  tabs: [] as { input: unknown; isDirty: boolean }[],
+  tabListeners: [] as ((event: { opened: readonly unknown[]; closed: readonly unknown[]; changed: readonly unknown[] }) => void)[],
   /** Handlers of `workspace.onDid(Open|Change|Close|Save)TextDocument`. */
   documentListeners: { open: [], change: [], close: [], save: [] } as Record<'open' | 'change' | 'close' | 'save', ((argument: unknown) => void)[]>,
+  /** Handlers of the `workspace.createFileSystemWatcher` watchers: a file created, changed or deleted on disk. */
+  diskListeners: [] as ((uri: Uri) => void)[],
 };
 
 export function resetMock(): void {
@@ -398,9 +447,20 @@ export function resetMock(): void {
   state.failingWrites = new Set();
   state.applyEditResult = true;
   state.diagnostics = new Map();
+  state.diagnosticDeletions = [];
   state.codeActionProviders = [];
+  state.tabs = [];
+  state.tabListeners = [];
   state.documentListeners = { open: [], change: [], close: [], save: [] };
+  state.diskListeners = [];
   window.activeTextEditor = undefined;
+}
+
+/** Opens an editor tab on `uri`, as VS Code does once a document is shown. */
+export function showInTab(uri: Uri): void {
+  const tab = { input: { uri }, isDirty: false };
+  state.tabs.push(tab);
+  state.tabListeners.forEach((listener) => listener({ opened: [tab], closed: [], changed: [] }));
 }
 
 export interface WillSaveEvent {
@@ -440,6 +500,17 @@ export function createContext(packageJSON?: unknown): ExtensionContext {
 
 export const window = {
   activeTextEditor: undefined as TextEditor | undefined,
+
+  tabGroups: {
+    get all(): { tabs: { input: unknown; isDirty: boolean }[] }[] {
+      return [{ tabs: state.tabs }];
+    },
+    onDidChangeTabs(handler: (typeof state.tabListeners)[number]): { dispose(): void } {
+      state.tabListeners.push(handler);
+
+      return { dispose: () => undefined };
+    },
+  },
 
   createOutputChannel(_name: string) {
     return {
@@ -575,15 +646,48 @@ export const workspace = {
     return Promise.resolve(state.foundFiles);
   },
 
-  openTextDocument(options: { content: string; language: string }): Thenable<TextDocument> {
-    state.openedDocuments.push(options);
+  openTextDocument(target: Uri | { content: string; language: string }): Thenable<TextDocument> {
+    if (target instanceof Uri) {
+      // As in VS Code: the open document of the file, otherwise the file loaded from disk, unsaved and without an editor.
+      const open = state.documents.find((candidate) => !candidate.isClosed && candidate.uri.toString() === target.toString());
+      if (open) {
+        return Promise.resolve(open);
+      }
 
-    return Promise.resolve(new TextDocument(Uri.file('/untitled'), options.content, options.language));
+      const content = state.files.get(target.fsPath);
+      if (content === undefined) {
+        return Promise.reject(new Error(`cannot open ${target.toString()}. Detail: Unable to read file '${target.fsPath}'`));
+      }
+
+      const loaded = new TextDocument(target, asLoadedText(content), 'csharp');
+      state.documents.push(loaded);
+      state.documentListeners.open.forEach((listener) => listener(loaded));
+
+      return Promise.resolve(loaded);
+    }
+
+    state.openedDocuments.push(target);
+
+    return Promise.resolve(new TextDocument(Uri.file('/untitled'), target.content, target.language));
   },
 
   applyEdit(edit: WorkspaceEdit): Thenable<boolean> {
     if (!state.applyEditResult) {
       return Promise.resolve(false);
+    }
+
+    // As in VS Code: creating a file that exists, without `overwrite` or `ignoreIfExists`, fails the whole edit.
+    if (edit.createdFiles.some(({ uri, options }) => state.files.has(uri.fsPath) && !options.overwrite && !options.ignoreIfExists)) {
+      return Promise.resolve(false);
+    }
+
+    // A created file is empty on disk; its text edits go to its document, unsaved, as in VS Code.
+    for (const { uri, options } of edit.createdFiles) {
+      if (!state.files.has(uri.fsPath) || options.overwrite) {
+        state.files.set(uri.fsPath, '');
+        state.documents = state.documents.filter((candidate) => candidate.uri.toString() !== uri.toString());
+        state.documents.push(new TextDocument(uri, '', 'csharp'));
+      }
     }
 
     for (const [key, edits] of edit.edits) {
@@ -593,13 +697,14 @@ export const workspace = {
         continue;
       }
 
-      // A closed file: VS Code loads it, applies the edit and the caller saves it.
+      // A closed file: VS Code loads it and applies the edit, unsaved; the caller saves it.
       const filePath = key.replace(/^file:\/\//, '');
       const content = state.files.get(filePath);
       if (content !== undefined) {
-        const loaded = new TextDocument(Uri.file(filePath), content, 'csharp');
+        const loaded = new TextDocument(Uri.file(filePath), asLoadedText(content), 'csharp');
+        state.documents.push(loaded);
+        state.documentListeners.open.forEach((listener) => listener(loaded));
         applyRangeEdits(loaded, edits);
-        state.files.set(filePath, loaded.getText());
       }
     }
 
@@ -634,6 +739,21 @@ export const workspace = {
     state.willSaveHandlers.push(handler);
 
     return { dispose: () => undefined };
+  },
+
+  createFileSystemWatcher(_glob: string): {
+    onDidCreate(handler: (uri: Uri) => void): { dispose(): void };
+    onDidChange(handler: (uri: Uri) => void): { dispose(): void };
+    onDidDelete(handler: (uri: Uri) => void): { dispose(): void };
+    dispose(): void;
+  } {
+    const listen = (handler: (uri: Uri) => void) => {
+      state.diskListeners.push(handler);
+
+      return { dispose: () => undefined };
+    };
+
+    return { onDidCreate: listen, onDidChange: listen, onDidDelete: listen, dispose: () => undefined };
   },
 
   onDidChangeConfiguration(_handler: (event: { affectsConfiguration(section: string): boolean }) => void): { dispose(): void } {

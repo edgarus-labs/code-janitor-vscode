@@ -1,0 +1,42 @@
+@page "/wrapped"
+@* Razor comment with @if(false){ braces } inside *@
+<!-- html comment with a { brace -->
+@if (items.Count > 0 &&
+     items.Any(i => i.Active))
+{
+    <pre>
+  keep   this
+      spacing
+    </pre>
+}
+
+@if(items.Count==0){
+    <p>Empty</p>
+    <script>var o = { a: 1 };</script>
+}
+
+@if(true){
+    <ul>
+        @foreach(var n in new[]{1,2,3}){
+            <li>@n</li>
+        }
+    </ul>
+    var text="""
+    raw "quoted" {text}
+    """;
+    <p>@text</p>
+}
+
+@if(items.Count>0){
+    <text>Plain text</text>
+    @:Line of text @items.Count
+}
+
+@{
+    var total=items.Count;
+}
+<p>@(total>1?"many":"few")</p>
+
+@code {
+    private List<Item> items=new(){new(1,"a",true)};
+}

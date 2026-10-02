@@ -4,7 +4,8 @@ import { ProjectInfo } from '../src/cleanup/projectInfo';
 import { createEditorConfigCodeStyleConverter } from '../src/cleanup/transformations/editorConfigCodeStyle';
 import { createExplicitAccessModifierConverter } from '../src/cleanup/transformations/explicitAccessModifier';
 import { singleStatementLambdaConverter } from '../src/cleanup/transformations/lambdaAndJson';
-import { moveUsingsOutsideNamespaceConverter } from '../src/cleanup/transformations/namespaceScope';
+import { createIndex } from '../src/cleanup/usings/declarations';
+import { placeUsings } from '../src/cleanup/usings/placement';
 import { nullCheckPatternMatchingConverter } from '../src/cleanup/transformations/nullCheckPatternMatching';
 import { outVarInliningConverter } from '../src/cleanup/transformations/outVarInlining';
 import { readonlyFieldConverter } from '../src/cleanup/transformations/readonlyFieldAndSingleLineMethods';
@@ -139,8 +140,15 @@ describe('var when apparent', () => {
 describe('moving usings outside the namespace (setting and IDE0065)', () => {
   it('keeps usings that only resolve relative to the enclosing namespace', () => {
     const source = lines('namespace Oracle.Inside', '{', '    using Records;', '    using System;', '', '    class C { }', '}');
+    const records = 'namespace Oracle.Inside.Records { public class R { } }\n';
 
-    expect(moveUsingsOutsideNamespaceConverter.apply(source)).toBe(source);
+    // `using Records;` means Oracle.Inside.Records here; the move qualifies it rather than writing `using Records;` at file level.
+    expect(placeUsings(source, 'outside', { index: createIndex([records, source]), externalReferences: false, indent: '    ' })).toEqual({
+      status: 'moved',
+      text: lines('using Oracle.Inside.Records;', 'using System;', '', 'namespace Oracle.Inside', '{', '    class C { }', '}'),
+    });
+    // With no such namespace in the project the directive cannot be resolved, so nothing moves.
+    expect(placeUsings(source, 'outside', { index: createIndex([source]), externalReferences: false, indent: '    ' })).toMatchObject({ status: 'skipped' });
   });
 });
 
@@ -230,5 +238,22 @@ describe('IDE0160 block-scoped namespace', () => {
 
     expect(output).toBe(source);
     expect(issues).toEqual([expect.stringMatching(/IDE0160 .*#if/)]);
+  });
+});
+
+describe('IDE0003 this. qualification', () => {
+  it('keeps this. where (Name) followed by an operand would read as a cast', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    System.Func<int, int> Transform;',
+      '    C Self;',
+      '    int M(int x) => (this.Transform)(5) + (this.Self.Transform)(x) + (this.Transform)(-x) + this.Transform(1);',
+      '    bool N() => (this.Self) is null || (this.Self) == null;',
+      '}'
+    );
+    const { output } = codeStyle(source, 'dotnet_style_qualification_for_field = false:warning');
+
+    expect(output).toBe(source.replace('this.Transform(1)', 'Transform(1)').replace('(this.Self) is null || (this.Self) == null', '(Self) is null || (Self) == null'));
   });
 });

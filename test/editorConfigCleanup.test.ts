@@ -40,6 +40,8 @@ describe('.editorconfig categories in the cleanup pipeline', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'code-janitor-editorconfig-'));
     fs.writeFileSync(path.join(root, '.editorconfig'), EDITORCONFIG);
+    // The project tells that file-scoped namespaces compile.
+    fs.writeFileSync(path.join(root, 'Sample.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>');
     fs.mkdirSync(path.join(root, 'src'));
     filePath = path.join(root, 'src', 'Sample.cs');
   });

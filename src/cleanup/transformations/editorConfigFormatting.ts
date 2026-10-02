@@ -1,7 +1,7 @@
 import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { EditorConfigProperties, isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
-import { OPEN_BRACE_KINDS } from '../editorConfigRegistry';
+import { OPEN_BRACE_KINDS, effectiveEditorConfigValue } from '../editorConfigRegistry';
 import { SourceTransformation } from '../types';
 import {
   EditorConfigIssueReporter,
@@ -11,6 +11,7 @@ import {
   newlineOf,
   optionValue,
   parseErrorCount,
+  renumberIssue,
   tabWidth,
 } from './editorConfigSupport';
 import { applyIndentation } from './editorConfigIndentation';
@@ -24,7 +25,8 @@ import { sortUsingDirectives } from './usingDirectiveOrganizer';
  * `end_of_line`, `insert_final_newline`, `trim_trailing_whitespace`, `charset`) and the using
  * order options always apply. The C# formatting options only apply while IDE0055 ("Fix
  * formatting") is enforced, as in Roslyn, where they have no severity of their own. String
- * literals and comment text are never changed.
+ * literals and comment text are never changed. Like every other step's, the `line N` of a report
+ * is a line of the step's input, whichever pass reported it.
  */
 export function createEditorConfigFormattingConverter(
   props: EditorConfigProperties,
@@ -40,18 +42,25 @@ export function createEditorConfigFormattingConverter(
 
       // A byte order mark would confuse the parser; formatting works on the text after it.
       const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
-      let current = source.slice(bom.length);
+      const input = source.slice(bom.length);
+      const toInput = new Map<string, (line: number) => number>();
+      // A pass numbers its reports against the text it read, an earlier pass's output.
+      const reportAgainst =
+        (against: string): EditorConfigIssueReporter =>
+        (issue) =>
+          report(renumberIssue(issue, input, against, toInput));
+      let current = input;
       // IDE0055 ("Fix formatting") gates every C# formatting option, as in Roslyn. Using order has
       // no diagnostic of its own and applies whenever it is set.
       const enforced = isEnforced(resolveDiagnosticSeverity(props, 'IDE0055'));
       let formatted = applyUsingDirectiveOrder(current, props);
       if (enforced) {
         formatted = applyWrapping(formatted, props);
-        formatted = applyOpenBraceNewLines(formatted, props, report);
+        formatted = applyOpenBraceNewLines(formatted, props, reportAgainst(formatted));
         formatted = applyNewLinesBeforeKeywords(formatted, props);
         formatted = applySpacing(formatted, props);
         formatted = applyQueryClauseNewLines(formatted, props);
-        formatted = applyIndentation(formatted, props, report);
+        formatted = applyIndentation(formatted, props, reportAgainst(formatted));
       }
 
       // Only whitespace and using order change; a result the parser reads worse is dropped.
@@ -66,7 +75,7 @@ export function createEditorConfigFormattingConverter(
         current = removeTrailingWhitespace(current);
       }
 
-      current = applyEndOfLine(current, props, report);
+      current = applyEndOfLine(current, props, reportAgainst(current));
       current = applyFinalNewline(current, props);
 
       return optionValue(props, 'charset') === 'utf-8' ? current : bom + current;
@@ -247,13 +256,19 @@ function braceKind(container: Node): string | undefined {
     case 'switch_body':
       return owner.type === 'switch_statement' ? 'control_blocks' : undefined;
 
-    case 'initializer_expression':
-      // As in Roslyn, array initializers (`new[] {`, `new int[] {`, `int[] a = {`) keep their brace.
-      if (owner.type === 'array_creation_expression' || owner.type === 'implicit_array_creation_expression' || owner.type === 'equals_value_clause') {
-        return undefined;
+    case 'initializer_expression': {
+      if (owner.type === 'anonymous_object_creation_expression') {
+        return 'anonymous_types';
       }
 
-      return owner.type === 'anonymous_object_creation_expression' ? 'anonymous_types' : 'object_collection_array_initializers';
+      // As dotnet format does, only the object initializer of a creation (`new T {`, `new() {`) or of
+      // `with {` moves. Array, collection (`new List<int> { 1 }`), nested (`Inner = {`) and element
+      // (`{ 1, 2 }` of a dictionary) initializers keep their brace where it is.
+      const isObjectInitializer = container.namedChildren.every((item) => item.type === 'assignment_expression' || item.type === 'comment');
+      const isCreation = owner.type === 'object_creation_expression' || owner.type === 'implicit_object_creation_expression' || owner.type === 'with_expression';
+
+      return isCreation && isObjectInitializer ? 'object_collection_array_initializers' : undefined;
+    }
 
     case 'block':
       if (METHOD_OWNERS[owner.type] === true) {
@@ -283,7 +298,8 @@ function braceKind(container: Node): string | undefined {
 }
 
 function applyOpenBraceNewLines(source: string, props: EditorConfigProperties, report: EditorConfigIssueReporter): string {
-  const value = optionValue(props, 'csharp_new_line_before_open_brace');
+  // An unsupported value (a misspelled kind) is reported as such and applies nothing.
+  const value = effectiveEditorConfigValue(props, 'csharp_new_line_before_open_brace');
   if (value === undefined) {
     return source;
   }

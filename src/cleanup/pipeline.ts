@@ -44,7 +44,11 @@ export class PreviewResult {
 export class SourceTransformationPipeline {
   readonly transformations: readonly SourceTransformation[];
 
-  constructor(transformations: readonly (SourceTransformation | null | undefined)[]) {
+  /** `beginRun` resets the state steps share within one run, so that a run never sees an earlier one's. */
+  constructor(
+    transformations: readonly (SourceTransformation | null | undefined)[],
+    private readonly beginRun?: () => void
+  ) {
     this.transformations = transformations.filter((t): t is SourceTransformation => Boolean(t));
   }
 
@@ -72,6 +76,7 @@ export class SourceTransformationPipeline {
       return source;
     }
 
+    this.beginRun?.();
     let current = source;
     for (let index = 0; index < this.transformations.length; index++) {
       const transformation = this.transformations[index];

@@ -1,0 +1,10 @@
+{
+  "name": "pattern-matching-null-checks-block-lambda-convert",
+  "description": "Block-bodied lambda null checks are still converted to pattern matching, since a block-bodied lambda can never be compiled to an expression tree.",
+  "input": "using System.Collections.Generic;\nusing System.Linq;\n\nclass C\n{\n    void M(IEnumerable<string> items)\n    {\n        var found = items.Any(x =>\n        {\n            return x == null;\n        });\n    }\n}\n",
+  "settings": {
+    "insertBlankLinePadding": false
+  },
+  "mustContain": ["x is null"],
+  "mustNotContain": ["== null"]
+}

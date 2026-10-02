@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { STRING, classifyCSharp } from '../csharpScanner';
+import { CODE, STRING, classifyCSharp } from '../csharpScanner';
 import { loadEditorConfigProperties } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import {
@@ -12,15 +12,32 @@ import {
 import { hasParseErrors, lineNumberAt } from '../transformations/editorConfigSupport';
 import { parseNamingRules } from './namingRules';
 import { invalidNewName } from './renamer';
-import { buildSourceModel, DeclaredSymbol, Occurrence, SourceModel, spans, TypeInfo } from './sourceModel';
-import { projectOf, referencingClosure, WorkspaceProject } from './workspaceScope';
+import {
+  attributeNames,
+  baseTypeNames,
+  buildSourceModel,
+  CONTEXTUAL_KEYWORDS,
+  DeclaredSymbol,
+  describeReceiver,
+  identifierName,
+  Occurrence,
+  Receiver,
+  SERIALIZATION_ATTRIBUTES,
+  SourceModel,
+  spans,
+  typeAt,
+  TypeInfo,
+  wordPattern,
+} from './sourceModel';
+import { dependencyClosure, projectOf, referencingClosure, WorkspaceProject } from './workspaceScope';
 
 /**
  * Renames non-private symbols that violate the `.editorconfig` naming rules (IDE1006) in every file
  * that may use them: the files of the declaring project and of the projects referencing it. Like the
  * in-file renamer it is syntactic, so it only renames when every use of the old name is understood:
  * the old name is declared by the renamed symbols alone (or by locals and parameters whose scope is
- * known), it does not appear as text (strings, XAML, Razor, JSON), the new name is not used yet, and
+ * known), neither name is declared by the projects these depend on, the old name does not appear as
+ * text (strings, XAML, Razor, JSON), the new name is not used yet, every changed file is UTF-8, and
  * no code outside the workspace can depend on the symbol. Everything else is reported, not renamed.
  */
 
@@ -28,8 +45,14 @@ export interface WorkspaceRenameRequest {
   readonly projects: readonly WorkspaceProject[];
   /** Files whose declarations may be renamed (full paths). */
   readonly targets: readonly string[];
-  /** Current text of a C# file: the open editor's, else the file's on disk. */
-  readonly read: (filePath: string) => string;
+  /** Current text of one of the {@link workspaceRenameInputs}: the open editor's, else the file's on disk. */
+  readonly read: (filePath: string) => SourceText;
+}
+
+export interface SourceText {
+  readonly text: string;
+  /** False when the bytes on disk are not UTF-8: `text` is a lossy decoding, and the file is never rewritten. */
+  readonly utf8: boolean;
 }
 
 export interface SymbolRename {
@@ -37,8 +60,8 @@ export interface SymbolRename {
   readonly newName: string;
   /** `field`, `method`, `class`, ... of the first declaration. */
   readonly kind: string;
-  readonly declaredIn: string;
-  readonly line: number;
+  /** Every declaration renamed (overloads, members of several types), the first one first. */
+  readonly declarations: readonly { readonly filePath: string; readonly line: number }[];
   /** Files the rename changes. */
   readonly files: readonly string[];
 }
@@ -58,11 +81,24 @@ export interface WorkspaceRenamePlan {
   readonly contents: ReadonlyMap<string, string>;
 }
 
+/**
+ * The C# files a plan for `targets` may read: the targets, the files of the projects a rename they
+ * declare is searched in or depends on, and the files of the projects whose references cannot all be
+ * resolved (see {@link WorkspacePlanner.checkUnresolvedReferences}).
+ */
+export function workspaceRenameInputs(projects: readonly WorkspaceProject[], targets: readonly string[]): string[] {
+  const needed = new Set(projects.filter((project) => project.unresolvedReferences.length > 0));
+  for (const project of new Set(targets.flatMap((target) => projectOf(projects, target) ?? []))) {
+    const scope = referencingClosure(projects, project);
+    for (const member of [...scope, ...dependencyClosure(projects, scope)]) {
+      needed.add(member);
+    }
+  }
+
+  return [...new Set([...targets.map((target) => path.resolve(target)), ...[...needed].flatMap((project) => project.csharpFiles)])];
+}
+
 const OUTCOME = 'not renamed across the workspace';
-const SERIALIZATION_ATTRIBUTES = new Set([
-  'Serializable', 'DataContract', 'DataMember', 'JsonSerializable', 'JsonProperty', 'JsonPropertyName', 'JsonObject',
-  'XmlRoot', 'XmlType', 'XmlElement', 'XmlAttribute', 'ProtoContract', 'ProtoMember', 'MessagePackObject', 'Table', 'Column',
-]);
 const MEMBER_DECLARATIONS = new Set([
   'field_declaration', 'event_field_declaration', 'property_declaration', 'event_declaration', 'method_declaration', 'enum_member_declaration',
 ]);
@@ -79,20 +115,31 @@ function refuse(reason: string): never {
 class SourceFile {
   private modelCache: SourceModel | undefined;
   private kindsCache: Uint8Array | undefined;
-  private typesCache: { name: string; bases: string[] }[] | undefined;
+  private wordsCache: Set<string> | undefined;
+  private violationsCache: NamingViolation[] | undefined;
+  private declarationsCache: { types: DeclaredType[]; qualifiers: string[] } | undefined;
   readonly bom: boolean;
   readonly text: string;
+  readonly utf8: boolean;
 
   constructor(
     readonly path: string,
-    raw: string
+    source: SourceText
   ) {
-    this.bom = raw.startsWith('\uFEFF');
-    this.text = this.bom ? raw.slice(1) : raw;
+    this.bom = source.text.startsWith('\uFEFF');
+    this.text = this.bom ? source.text.slice(1) : source.text;
+    this.utf8 = source.utf8;
   }
 
+  /** Whether `name` appears as a whole word ({@link wordPattern}), from the file's words read once. */
   mentions(name: string): boolean {
-    return wordPattern(name).test(this.text);
+    if (!/^[\p{L}\p{Nd}_]+$/u.test(name)) {
+      return wordPattern(name).test(this.text);
+    }
+
+    this.wordsCache ??= new Set(this.text.match(/[\p{L}\p{Nd}_]+/gu));
+
+    return this.wordsCache.has(name);
   }
 
   get model(): SourceModel {
@@ -103,30 +150,52 @@ class SourceFile {
     return (this.kindsCache ??= classifyCSharp(this.text));
   }
 
-  /** Types the file declares, with the simple names of their base types. */
-  get types(): { name: string; bases: string[] }[] {
-    if (!this.typesCache) {
-      const tree = parseCSharp(this.text);
-      try {
-        this.typesCache = findAll(tree.rootNode, [...TYPE_DECLARATIONS]).map((node) => ({
-          name: node.childForFieldName('name')?.text.replace(/^@/, '') ?? '',
-          bases: baseNames(node),
-        }));
-      } finally {
-        tree.delete();
-      }
+  /** The file's naming violations under its `.editorconfig` rules, computed once per plan. */
+  get violations(): readonly NamingViolation[] {
+    if (!this.violationsCache) {
+      const props = loadEditorConfigProperties(this.path);
+      this.violationsCache = findNamingViolations(this.model, parseNamingRules(props), props);
     }
 
-    return this.typesCache;
+    return this.violationsCache;
   }
 
   line(offset: number): number {
     return lineNumberAt(this.text, offset);
   }
+
+  /**
+   * Types the file declares, with the simple names of their base types; and the names that may start a
+   * namespace or type qualifier: namespace segments, names and aliases of using directives, type names.
+   */
+  get declarations(): { types: DeclaredType[]; qualifiers: string[] } {
+    if (!this.declarationsCache) {
+      const tree = parseCSharp(this.text);
+      try {
+        const types = findAll(tree.rootNode, [...TYPE_DECLARATIONS]).map((node) => ({
+          name: node.childForFieldName('name')?.text.replace(/^@/, '') ?? '',
+          kind: node.type,
+          bases: baseTypeNames(node),
+        }));
+        const namespaceNames = findAll(tree.rootNode, ['namespace_declaration', 'file_scoped_namespace_declaration']).flatMap((node) => node.childForFieldName('name') ?? []);
+        const qualifiers = [...namespaceNames, ...findAll(tree.rootNode, 'using_directive')]
+          .flatMap((node) => findAll(node, 'identifier'))
+          .map((identifier) => identifierName(identifier.text));
+        this.declarationsCache = { types, qualifiers: [...qualifiers, ...types.map((type) => type.name)] };
+      } finally {
+        tree.delete();
+      }
+    }
+
+    return this.declarationsCache;
+  }
 }
 
-function wordPattern(name: string): RegExp {
-  return new RegExp(`(?<![\\p{L}\\p{Nd}_])@?${name}(?![\\p{L}\\p{Nd}_])`, 'u');
+/** A type a file declares: its simple name, declaration node type (`class_declaration`...) and simple base type names. */
+interface DeclaredType {
+  readonly name: string;
+  readonly kind: string;
+  readonly bases: readonly string[];
 }
 
 /** A declaration that is renamed: the symbol, its file and its naming violation. */
@@ -135,12 +204,55 @@ interface Renamed {
   readonly violation: NamingViolation;
 }
 
+/** The projects a rename is searched in (a declaring project and the projects referencing it), read once per plan. */
+class Scope {
+  private basesCache: Map<string, string[]> | undefined;
+  private qualifiersCache: Set<string> | undefined;
+
+  constructor(
+    readonly projects: readonly WorkspaceProject[],
+    /** Their C# files. */
+    readonly sources: readonly SourceFile[],
+    /** The C# files of the projects they depend on, outside the scope: their symbols are visible in it. */
+    readonly dependencies: readonly SourceFile[]
+  ) {}
+
+  /** Base type names of every type declared in the scope, by simple name. */
+  get bases(): ReadonlyMap<string, readonly string[]> {
+    if (!this.basesCache) {
+      this.basesCache = new Map();
+      for (const source of this.sources) {
+        for (const declaredType of source.declarations.types) {
+          this.basesCache.set(declaredType.name, [...(this.basesCache.get(declaredType.name) ?? []), ...declaredType.bases]);
+        }
+      }
+    }
+
+    return this.basesCache;
+  }
+
+  /** Names that may start a namespace or type qualifier in the scope (see {@link SourceFile.declarations}). */
+  get qualifiers(): ReadonlySet<string> {
+    return (this.qualifiersCache ??= new Set(this.sources.flatMap((source) => source.declarations.qualifiers)));
+  }
+}
+
+/** Members every class, struct and enum inherits: a member taking one of these names hides or changes what calls bind to. */
+const OBJECT_MEMBERS = new Set(['Equals', 'GetHashCode', 'GetType', 'ToString', 'MemberwiseClone', 'Finalize', 'ReferenceEquals']);
+const ENUM_MEMBERS = new Set(['HasFlag', 'CompareTo', 'GetTypeCode']);
+/** Members records generate and `Nullable<T>` declares, which the workspace does not declare. */
+const RECORD_MEMBERS = new Set(['Deconstruct', 'PrintMembers', 'EqualityContract']);
+const NULLABLE_MEMBERS = new Set(['HasValue', 'Value', 'GetValueOrDefault']);
+
 export function planWorkspaceRenames(request: WorkspaceRenameRequest): WorkspaceRenamePlan {
   return new WorkspacePlanner(request).plan();
 }
 
 class WorkspacePlanner {
   private readonly files = new Map<string, SourceFile>();
+  private readonly scopes = new Map<string, Scope>();
+  private readonly textFiles = new Map<string, string>();
+  private readonly internalsVisible = new Map<WorkspaceProject, boolean>();
   private readonly targets: ReadonlySet<string>;
   private readonly issues: WorkspaceRenameIssue[] = [];
   private readonly renames: SymbolRename[] = [];
@@ -157,8 +269,7 @@ class WorkspacePlanner {
     for (const target of this.targets) {
       const project = projectOf(this.request.projects, target);
       const file = this.file(target);
-      const props = loadEditorConfigProperties(target);
-      const candidates = findNamingViolations(file.model, parseNamingRules(props), props).filter(isWorkspaceRenameCandidate);
+      const candidates = file.violations.filter(isWorkspaceRenameCandidate);
       for (const violation of candidates) {
         if (!project) {
           this.report(file, violation, 'the file is not in a C# project of the workspace');
@@ -198,6 +309,19 @@ class WorkspacePlanner {
     this.issues.push({ filePath: file.path, detail: describeNamingViolation(violation, reason, OUTCOME), symbol: violation.symbol.name });
   }
 
+  /** The scope made of `projects` (a declaring project and the projects referencing it), built once per plan. */
+  private scope(projects: readonly WorkspaceProject[]): Scope {
+    const key = projects.map((member) => member.projectFile).join('|');
+    let scope = this.scopes.get(key);
+    if (!scope) {
+      const read = (members: readonly WorkspaceProject[]) => members.flatMap((member) => member.csharpFiles).map((filePath) => this.file(filePath));
+      scope = new Scope(projects, read(projects), read(dependencyClosure(this.request.projects, projects)));
+      this.scopes.set(key, scope);
+    }
+
+    return scope;
+  }
+
   /** Renames every declaration named like `first` in the scope, or reports why not. */
   private planGroup(project: WorkspaceProject, first: Renamed): void {
     const oldName = first.violation.symbol.name;
@@ -209,38 +333,51 @@ class WorkspacePlanner {
         refuse(invalid);
       }
 
-      const scope = referencingClosure(this.request.projects, project);
-      const problem = scope.find((member) => member.problem)?.problem;
+      // `value` in an accessor, `await` in an async method...: the new name would bind to something else.
+      if (CONTEXTUAL_KEYWORDS.has(newName)) {
+        refuse(`'${newName}' is a C# contextual keyword`);
+      }
+
+      const projects = referencingClosure(this.request.projects, project);
+      const problem = projects.find((member) => member.problem)?.problem;
       if (problem) {
         refuse(problem);
       }
 
-      const sources = scope.flatMap((member) => member.csharpFiles).map((filePath) => this.file(filePath));
-      const shadows = this.collectDeclarations(project, sources, first, renamed);
+      const scope = this.scope(projects);
+      this.checkUnresolvedReferences(scope.projects, oldName);
+
+      const shadows = this.collectDeclarations(project, scope.sources, first, renamed);
       for (const declaration of renamed) {
-        this.checkDeclaration(project, sources, declaration);
+        this.checkDeclaration(project, scope, declaration);
       }
 
-      this.checkText(scope, sources, oldName);
-      this.checkNewName(sources, newName, oldName);
+      this.checkDependencies(scope, oldName, `'${oldName}' is also declared`);
+      this.checkDependencies(scope, newName, `'${newName}' is already declared`);
+      this.checkText(scope, oldName);
+      this.checkNewName(scope, renamed, newName, oldName);
+      this.checkExtendedTypes(scope, renamed, newName);
       if (this.touchedNames.has(oldName) || this.touchedNames.has(newName)) {
         refuse(`another rename in this cleanup uses '${oldName}' or '${newName}'; run cleanup again`);
       }
 
-      const edits = this.collectEdits(sources, renamed, shadows, oldName, newName);
+      const edits = this.collectEdits(scope, renamed, shadows, oldName, newName);
+      const undecodable = [...edits.keys()].find((filePath) => !this.file(filePath).utf8);
+      if (undecodable) {
+        refuse(`${undecodable} is not UTF-8 text, which the rename cannot rewrite safely`);
+      }
+
       this.touchedNames.add(oldName);
       this.touchedNames.add(newName);
       for (const [filePath, fileEdits] of edits) {
         this.edits.set(filePath, [...(this.edits.get(filePath) ?? []), ...fileEdits]);
       }
 
-      const symbol = first.violation.symbol;
       this.renames.push({
         oldName,
         newName,
-        kind: symbol.kind.replace('_', ' '),
-        declaredIn: first.file.path,
-        line: first.file.line(symbol.nameNode.startIndex),
+        kind: first.violation.symbol.kind.replace('_', ' '),
+        declarations: renamed.map((declaration) => ({ filePath: declaration.file.path, line: declaration.file.line(declaration.violation.symbol.nameNode.startIndex) })),
         files: [...edits.keys()],
       });
     } catch (error) {
@@ -254,6 +391,15 @@ class WorkspacePlanner {
     }
   }
 
+  /** A project whose references cannot all be resolved may reference the scope: it must not use the name. */
+  private checkUnresolvedReferences(scope: readonly WorkspaceProject[], name: string): void {
+    for (const project of this.request.projects) {
+      if (!scope.includes(project) && project.unresolvedReferences.length > 0 && project.csharpFiles.some((filePath) => this.file(filePath).mentions(name))) {
+        refuse(`${project.projectFile} references ${project.unresolvedReferences.join(', ')}, which cleanup cannot resolve, and its files use '${name}'`);
+      }
+    }
+  }
+
   /**
    * Sorts every declaration named `oldName` in the scope: the ones renamed with `first` (added to
    * `renamed`) and the locals and parameters that keep the name (returned). Anything else refuses.
@@ -262,9 +408,9 @@ class WorkspacePlanner {
     const { name } = first.violation.symbol;
     const shadows = new Map<SourceFile, DeclaredSymbol[]>();
     for (const file of sources.filter((source) => source.mentions(name))) {
-      const props = loadEditorConfigProperties(file.path);
-      const violations = findNamingViolations(file.model, parseNamingRules(props), props);
-      for (const symbol of file.model.symbols.filter((candidate) => candidate.name === name)) {
+      const violations = file.violations;
+      const named = file.model.symbolsByName.get(name) ?? [];
+      for (const symbol of named) {
         if (file === first.file && symbol === first.violation.symbol) {
           continue;
         }
@@ -286,7 +432,7 @@ class WorkspacePlanner {
           symbol.category !== first.violation.symbol.category ||
           !isWorkspaceRenameCandidate(violation)
         ) {
-          const count = file.model.symbols.filter((candidate) => candidate.name === name).length + (file === first.file ? 0 : 1);
+          const count = named.length + (file === first.file ? 0 : 1);
           refuse(`${count} declarations are named '${name}' (overloads or other symbols), including ${where}`);
         }
 
@@ -305,7 +451,7 @@ class WorkspacePlanner {
     return shadows;
   }
 
-  private checkDeclaration(project: WorkspaceProject, sources: readonly SourceFile[], declaration: Renamed): void {
+  private checkDeclaration(project: WorkspaceProject, scope: Scope, declaration: Renamed): void {
     const symbol = declaration.violation.symbol;
     const node = declarationNode(symbol.nameNode);
     if (!node) {
@@ -323,7 +469,7 @@ class WorkspacePlanner {
     }
 
     for (const container of [node, ...containingTypes(node)]) {
-      const attribute = attributeNames(container).find((name) => SERIALIZATION_ATTRIBUTES.has(name));
+      const attribute = attributeNames(container).find((name) => SERIALIZATION_ATTRIBUTES[name] === true);
       if (attribute) {
         refuse(`[${attribute}] makes the name part of a serialized format`);
       }
@@ -334,7 +480,7 @@ class WorkspacePlanner {
         refuse('it is an attribute class, used without the Attribute suffix');
       }
     } else {
-      this.checkMember(sources, symbol, node);
+      this.checkMember(scope, symbol, node);
     }
 
     const external = [node, ...containingTypes(node)].every((container) => isExternallyVisible(container));
@@ -342,13 +488,18 @@ class WorkspacePlanner {
       refuse('the project builds a NuGet package, whose public API code outside the workspace may use');
     }
 
-    const internalsVisible = project.internalsVisibleTo || project.csharpFiles.some((filePath) => this.file(filePath).text.includes('InternalsVisibleTo'));
+    let internalsVisible = this.internalsVisible.get(project);
+    if (internalsVisible === undefined) {
+      internalsVisible = project.internalsVisibleTo || project.csharpFiles.some((filePath) => this.file(filePath).text.includes('InternalsVisibleTo'));
+      this.internalsVisible.set(project, internalsVisible);
+    }
+
     if (!external && internalsVisible) {
       refuse('the assembly exposes its internals (InternalsVisibleTo)');
     }
   }
 
-  private checkMember(sources: readonly SourceFile[], symbol: DeclaredSymbol, node: Node): void {
+  private checkMember(scope: Scope, symbol: DeclaredSymbol, node: Node): void {
     const type: TypeInfo | undefined = symbol.type;
     if (!type) {
       refuse('it is not declared in a type');
@@ -367,35 +518,31 @@ class WorkspacePlanner {
     }
 
     // A base declared outside the workspace may declare the old or the new name.
-    const declared = new Map<string, string[]>();
-    for (const source of sources) {
-      for (const declaredType of source.types) {
-        declared.set(declaredType.name, [...(declared.get(declaredType.name) ?? []), ...declaredType.bases]);
-      }
+    const external = externalBase(baseTypeNames(type.node), scope.bases);
+    if (external !== undefined) {
+      refuse(`${type.name} derives from or implements ${external}, which is declared outside the workspace`);
     }
+  }
 
-    const pending = baseNames(type.node);
-    const seen = new Set<string>();
-    while (pending.length > 0) {
-      const base = pending.pop() as string;
-      if (seen.has(base)) {
-        continue;
+  /**
+   * The projects the scope depends on are compiled with it: a type, namespace or non-private member
+   * they declare under the name is visible in the scope, where cleanup would not tell it apart.
+   */
+  private checkDependencies(scope: Scope, name: string, declared: string): void {
+    for (const file of scope.dependencies.filter((source) => source.mentions(name))) {
+      const symbol = (file.model.symbolsByName.get(name) ?? []).find(
+        (candidate) => candidate.category === 'type' || candidate.category === 'namespace' || (candidate.category === 'member' && candidate.accessibility !== 'private')
+      );
+      if (symbol) {
+        refuse(`${declared} in ${file.path} line ${file.line(symbol.nameNode.startIndex)}, in a project the searched projects reference`);
       }
-
-      seen.add(base);
-      const bases = declared.get(base);
-      if (!bases) {
-        refuse(`${type.name} derives from or implements ${base}, which is declared outside the workspace`);
-      }
-
-      pending.push(...bases);
     }
   }
 
   /** The old name must not appear as text: strings, preprocessor symbols, XAML, Razor, JSON. */
-  private checkText(scope: readonly WorkspaceProject[], sources: readonly SourceFile[], name: string): void {
+  private checkText(scope: Scope, name: string): void {
     const pattern = new RegExp(wordPattern(name).source, 'gu');
-    for (const file of sources.filter((source) => source.mentions(name))) {
+    for (const file of scope.sources.filter((source) => source.mentions(name))) {
       for (const match of file.text.matchAll(pattern)) {
         if (file.kinds[match.index ?? 0] === STRING) {
           refuse(`the name appears in a string in ${file.path} line ${file.line(match.index ?? 0)}`);
@@ -409,12 +556,16 @@ class WorkspacePlanner {
       }
     }
 
-    for (const textFile of scope.flatMap((project) => project.textFiles)) {
-      let text: string;
-      try {
-        text = fs.readFileSync(textFile, 'utf8');
-      } catch (error) {
-        refuse(`${textFile} could not be read (${(error as Error).message})`);
+    for (const textFile of scope.projects.flatMap((project) => project.textFiles)) {
+      let text = this.textFiles.get(textFile);
+      if (text === undefined) {
+        try {
+          text = fs.readFileSync(textFile, 'utf8');
+        } catch (error) {
+          refuse(`${textFile} could not be read (${(error as Error).message})`);
+        }
+
+        this.textFiles.set(textFile, text);
       }
 
       if (wordPattern(name).test(text)) {
@@ -423,15 +574,34 @@ class WorkspacePlanner {
     }
   }
 
-  /** The new name must be neither declared nor used as a simple name anywhere in the scope. */
-  private checkNewName(sources: readonly SourceFile[], newName: string, oldName: string): void {
-    for (const file of sources.filter((source) => source.mentions(newName))) {
-      const declaration = file.model.symbols.find((symbol) => symbol.name === newName);
+  /**
+   * The new name must be neither declared nor used as a simple name anywhere in the scope. A member
+   * may also not take the name of a member every type inherits (`ToString`), nor one already accessed
+   * (`o.NewName`) on a receiver that may be of a declaring type: the access would bind to it instead.
+   */
+  private checkNewName(scope: Scope, renamed: readonly Renamed[], newName: string, oldName: string): void {
+    const isType = renamed[0].violation.symbol.category === 'type';
+    if (!isType && OBJECT_MEMBERS.has(newName)) {
+      refuse(`'${newName}' is a member every type inherits from System.Object`);
+    }
+
+    if (!isType && ENUM_MEMBERS.has(newName) && renamed.some((declaration) => declaration.violation.symbol.type?.kind === 'enum')) {
+      refuse(`'${newName}' is a member every enum inherits from System.Enum`);
+    }
+
+    const context = isType ? undefined : accessContext(scope, renamed);
+    for (const file of scope.sources.filter((source) => source.mentions(newName))) {
+      const declaration = file.model.symbolsByName.get(newName)?.[0];
       if (declaration) {
         refuse(`'${newName}' is already declared in ${file.path} line ${file.line(declaration.nameNode.startIndex)}`);
       }
 
-      const use = (file.model.occurrencesByName.get(newName) ?? []).find((occurrence) => occurrence.role.kind === 'reference' || occurrence.role.kind === 'type');
+      const use = (file.model.occurrencesByName.get(newName) ?? []).find(
+        (occurrence) =>
+          occurrence.role.kind === 'reference' ||
+          occurrence.role.kind === 'type' ||
+          (occurrence.role.kind === 'member' && context !== undefined && mayAccessDeclaringType(file.model, occurrence, occurrence.role.receiver, context))
+      );
       if (use) {
         refuse(`'${newName}' is already used in ${file.path} line ${file.line(use.start)}`);
       }
@@ -442,8 +612,104 @@ class WorkspacePlanner {
     }
   }
 
+  /**
+   * An instance member takes precedence over an extension method: once renamed, `x.NewName()` binds to
+   * a member `NewName` of x's type if it has one, and may still compile. Only workspace members are
+   * known (`checkNewName` refuses those named `NewName`), so every type such a call may be made on must
+   * be declared in the workspace with all its bases: the extended type, the types deriving from it, and
+   * no type parameter constrained to one of them (its other constraints may declare the name). Enums,
+   * records and nullable values also inherit or generate members the workspace does not declare.
+   */
+  private checkExtendedTypes(scope: Scope, renamed: readonly Renamed[], newName: string): void {
+    const methods = renamed.map((declaration) => declarationNode(declaration.violation.symbol.nameNode));
+    if (!methods.every(isExtensionMethod)) {
+      return;
+    }
+
+    const files = [...scope.sources, ...scope.dependencies];
+    const types = new Map<string, DeclaredType[]>();
+    for (const declaredType of files.flatMap((file) => file.declarations.types)) {
+      types.set(declaredType.name, [...(types.get(declaredType.name) ?? []), declaredType]);
+    }
+
+    // The extended types, then every workspace type deriving from one of them.
+    const extended = new Set<string>();
+    for (const method of methods) {
+      let type = method?.namedChildren.find((child) => child.type === 'parameter_list')?.namedChildren[0]?.childForFieldName('type') ?? null;
+      if (type?.type === 'nullable_type') {
+        if (NULLABLE_MEMBERS.has(newName)) {
+          refuse(`'${newName}' is a member of System.Nullable<T>`);
+        }
+
+        type = type.namedChildren[0] ?? null;
+      }
+
+      const name = typeName(type);
+      if (name === undefined) {
+        refuse(`it extends ${type?.text ?? 'a type'}, which cannot be resolved syntactically`);
+      }
+
+      if (!types.has(name)) {
+        refuse(`it extends ${name}, which is declared outside the workspace`);
+      }
+
+      extended.add(name);
+    }
+
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const [name, declared] of types) {
+        if (!extended.has(name) && declared.some((declaredType) => declaredType.bases.some((base) => extended.has(base)))) {
+          extended.add(name);
+          grew = true;
+        }
+      }
+    }
+
+    const seen = new Set<string>();
+    const pending = [...extended];
+    while (pending.length > 0) {
+      const name = pending.pop() as string;
+      if (seen.has(name)) {
+        continue;
+      }
+
+      seen.add(name);
+      for (const declaredType of types.get(name) ?? []) {
+        if (declaredType.kind === 'delegate_declaration') {
+          refuse(`calls may be made on ${name}, a delegate type`);
+        }
+
+        if (declaredType.kind === 'enum_declaration' && ENUM_MEMBERS.has(newName)) {
+          refuse(`'${newName}' is a member every enum inherits from System.Enum`);
+        }
+
+        if (declaredType.kind === 'record_declaration' && RECORD_MEMBERS.has(newName)) {
+          refuse(`'${newName}' is a member records generate`);
+        }
+
+        for (const base of declaredType.bases) {
+          if (!types.has(base)) {
+            refuse(`${name} derives from or implements ${base}, which is declared outside the workspace`);
+          }
+
+          pending.push(base);
+        }
+      }
+    }
+
+    for (const file of files.filter((source) => source.mentions('where'))) {
+      for (const clause of file.text.matchAll(/(?<![\p{L}\p{Nd}_])where\s+@?[\p{L}_][\p{L}\p{Nd}_]*\s*:([^{;]*)/gu)) {
+        const constraint = [...extended].find((name) => wordPattern(name).test(clause[1]));
+        if (constraint !== undefined) {
+          refuse(`a type parameter constrained to ${constraint} in ${file.path} line ${file.line(clause.index ?? 0)} may have other members named '${newName}'`);
+        }
+      }
+    }
+  }
+
   private collectEdits(
-    sources: readonly SourceFile[],
+    scope: Scope,
     renamed: readonly Renamed[],
     shadows: ReadonlyMap<SourceFile, readonly DeclaredSymbol[]>,
     oldName: string,
@@ -451,8 +717,10 @@ class WorkspacePlanner {
   ): Map<string, TextEdit[]> {
     const isType = renamed[0].violation.symbol.category === 'type';
     const declarations = new Set(renamed.map((declaration) => declaration.violation.symbol.nameNode));
+    const context = accessContext(scope, renamed);
     const edits = new Map<string, TextEdit[]>();
-    for (const file of sources.filter((source) => source.mentions(oldName))) {
+    let globalStaticImports: ReadonlySet<string> | undefined;
+    for (const file of scope.sources.filter((source) => source.mentions(oldName))) {
       const fileShadows = shadows.get(file) ?? [];
       const shadowNames = new Set(fileShadows.map((shadow) => shadow.nameNode));
       const fileEdits: TextEdit[] = [];
@@ -461,7 +729,20 @@ class WorkspacePlanner {
         fileEdits.push({ start: occurrence.start, end: occurrence.end, text: text.startsWith('@') ? `@${newName}` : newName });
       };
 
-      for (const occurrence of file.model.occurrencesByName.get(oldName) ?? []) {
+      // A mention in code the parser could not structure has no occurrence: it would be left stale.
+      const occurrences = file.model.occurrencesByName.get(oldName) ?? [];
+      const starts = new Set(occurrences.map((occurrence) => occurrence.start));
+      for (const match of file.text.matchAll(new RegExp(wordPattern(oldName).source, 'gu'))) {
+        const start = match.index ?? 0;
+        const lineStart = file.text.lastIndexOf('\n', start) + 1;
+        // Preprocessor lines (`#region` text and the like) are not code; `checkText` refuses `#if` symbols.
+        if (file.kinds[start] === CODE && !starts.has(start) && !/^\s*#/.test(file.text.slice(lineStart, start))) {
+          refuse(`${file.path} line ${file.line(start)} could not be fully parsed`);
+        }
+      }
+
+
+      for (const occurrence of occurrences) {
         const where = `${file.path} line ${file.line(occurrence.start)}`;
         if (occurrence.memberRoot && (file.model.opaqueRoots.has(occurrence.memberRoot) || hasParseErrors(occurrence.memberRoot))) {
           refuse(`${where} could not be fully parsed`);
@@ -480,16 +761,55 @@ class WorkspacePlanner {
             break;
           case 'reference':
             if (!shadowed) {
+              // Outside the types declaring or inheriting a member, only a `using static` of one imports it.
+              if (!checkSimpleName(file.model, occurrence.start, context, oldName, where) && !isType) {
+                globalStaticImports ??= new Set(scope.sources.filter((source) => source.mentions('static')).flatMap((source) => staticImports(source.model.root, true)));
+                const imported = [...globalStaticImports, ...staticImports(file.model.root, false)];
+                if (!imported.some((name) => context.declaringTypes?.has(name))) {
+                  refuse(`${where} is in ${typeAt(file.model, occurrence.start)?.name ?? 'top-level code'}, which neither declares nor inherits '${oldName}', and no using static imports a type declaring it`);
+                }
+              }
+
               edit(occurrence);
             }
 
             break;
           case 'member':
+            checkMemberAccess(file.model, occurrence, role.receiver, context, `'${oldName}' is accessed in ${where}`);
             edit(occurrence);
             break;
           case 'initializerMember':
+            if (!role.creation) {
+              refuse(`'${oldName}' is set in ${where} in a nested object initializer`);
+            }
+
+            // The property of an anonymous type keeps its name, whatever the renamed symbol.
+            if (role.creation.type === 'anonymous_object_creation_expression') {
+              break;
+            }
+
             if (isType) {
               refuse(`'${oldName}' is set as a member in ${where}`);
+            }
+
+            if (role.creation.type === 'with_expression') {
+              // `value with { Name = ... }` sets a member of the value's type, like `value.Name`.
+              const receiver = role.creation.namedChildren[0];
+              if (!receiver) {
+                refuse(`'${oldName}' is set in ${where} by a 'with' expression cleanup does not follow`);
+              }
+
+              checkMemberAccess(file.model, occurrence, describeReceiver(receiver), { ...context, extension: false }, `'${oldName}' is set in ${where} by a 'with' expression`);
+              edit(occurrence);
+              break;
+            }
+
+            if (role.creation.type !== 'object_creation_expression') {
+              refuse(`'${oldName}' is set in ${where} in a target-typed object initializer`);
+            }
+
+            if (!context.declaringTypes?.has(typeName(role.creation.childForFieldName('type')) ?? '')) {
+              refuse(`'${oldName}' is set in ${where} in an initializer of a type that does not declare it`);
             }
 
             edit(occurrence);
@@ -503,6 +823,7 @@ class WorkspacePlanner {
             }
 
             if (!shadowed) {
+              checkSimpleName(file.model, occurrence.start, context, oldName, where);
               edit(occurrence);
             }
 
@@ -519,7 +840,8 @@ class WorkspacePlanner {
         }
       }
 
-      fileEdits.push(...crefEdits(file, oldName, newName));
+      const checkCref = (offset: number) => checkSimpleName(file.model, offset, context, oldName, `${file.path} line ${file.line(offset)}`);
+      fileEdits.push(...crefEdits(file, oldName, newName, context.declaringTypes, checkCref));
       if (fileEdits.length > 0) {
         edits.set(file.path, fileEdits);
       }
@@ -570,18 +892,6 @@ function modifierTexts(node: Node): Set<string> {
   return new Set(node.namedChildren.filter((child) => child.type === 'modifier').map((child) => child.text.trim()));
 }
 
-function attributeNames(node: Node): string[] {
-  return node.namedChildren
-    .filter((child) => child.type === 'attribute_list')
-    .flatMap((list) => findAll(list, 'attribute'))
-    .map((attribute) => {
-      const name = attribute.childForFieldName('name')?.text ?? attribute.namedChildren[0]?.text ?? '';
-      const simple = name.split('.').pop() ?? name;
-
-      return simple.endsWith('Attribute') ? simple.slice(0, -'Attribute'.length) : simple;
-    });
-}
-
 /** Declared or default accessibility of a type or member, visible outside the assembly? */
 function isExternallyVisible(node: Node): boolean {
   const modifiers = modifierTexts(node);
@@ -601,36 +911,483 @@ function isExternallyVisible(node: Node): boolean {
   return !modifiers.has('internal') && node.parent?.parent?.type === 'interface_declaration';
 }
 
-/** Simple names of the base types in a type's base list (`List<int>` gives `List`). */
-function baseNames(typeNode: Node): string[] {
-  const list = typeNode.namedChildren.find((child) => child.type === 'base_list');
-  if (!list) {
-    return [];
-  }
-
-  return list.namedChildren.flatMap((base) => {
-    const named = base.type === 'primary_constructor_base_type' ? base.namedChildren[0] : base;
-    if (!named) {
-      return [];
-    }
-
-    const last = named.type === 'qualified_name' ? named.childForFieldName('name') ?? named : named;
-    const identifier = last.type === 'generic_name' ? last.namedChildren[0] : last;
-
-    return identifier?.type === 'identifier' ? [identifier.text.replace(/^@/, '')] : [named.text];
-  });
+/** What a member access must be checked against, for the symbols renamed together. */
+interface AccessContext {
+  /** Members: the types declaring them; types: `undefined`. */
+  readonly declaringTypes: ReadonlySet<string> | undefined;
+  /** Names that may start a namespace or type qualifier in the scope (see {@link SourceFile.declarations}). */
+  readonly qualifiers: ReadonlySet<string>;
+  /** Base type names of every type declared in the scope, by simple name. */
+  readonly bases: ReadonlyMap<string, readonly string[]>;
+  /** Every renamed symbol is an extension method. */
+  readonly extension: boolean;
+  /** Extension methods: the simple names of the types they extend. */
+  readonly extendedTypes: ReadonlySet<string>;
+  /** Names declared in the scope with a type mentioning `dynamic` (see {@link dynamicNames}). */
+  readonly dynamicNames: ReadonlySet<string>;
 }
 
-/** `cref="..."` values of the XML documentation comments naming the old name. */
-function crefEdits(file: SourceFile, oldName: string, newName: string): TextEdit[] {
+/** The access context of the symbols `renamed` together, in `scope`. */
+function accessContext(scope: Scope, renamed: readonly Renamed[]): AccessContext {
+  const isType = renamed[0].violation.symbol.category === 'type';
+  const methods = isType ? [] : renamed.map((declaration) => declarationNode(declaration.violation.symbol.nameNode));
+  const extension = !isType && methods.every(isExtensionMethod);
+  const extendedTypes = new Set<string>();
+  for (const method of extension ? methods : []) {
+    // The type of the `this` parameter, `T` for `T?`.
+    const type = method?.namedChildren.find((child) => child.type === 'parameter_list')?.namedChildren[0]?.childForFieldName('type') ?? null;
+    const name = typeName(type?.type === 'nullable_type' ? type.namedChildren[0] ?? null : type);
+    if (name !== undefined) {
+      extendedTypes.add(name);
+    }
+  }
+
+  return {
+    // Members: the types declaring them. A member access or initializer naming another type is not ours.
+    declaringTypes: isType ? undefined : new Set(renamed.flatMap((declaration) => declaration.violation.symbol.type?.name ?? [])),
+    qualifiers: scope.qualifiers,
+    bases: scope.bases,
+    extension,
+    extendedTypes,
+    dynamicNames: extension ? dynamicNames(scope.sources) : new Set(),
+  };
+}
+
+/**
+ * Names declared with a type mentioning `dynamic` in `sources` (fields, properties, methods, parameters,
+ * locals, pattern variables: `dynamic x`, `dynamic[] x`, `List<dynamic> x`), read from the text.
+ */
+function dynamicNames(sources: readonly SourceFile[]): Set<string> {
+  const names = new Set<string>();
+  for (const source of sources.filter((candidate) => candidate.mentions('dynamic'))) {
+    for (const match of source.text.matchAll(/(?<![\p{L}\p{Nd}_])dynamic(?![\p{L}\p{Nd}_])[\s?[\],<>]*@?([\p{L}_][\p{L}\p{Nd}_]*)/gu)) {
+      names.add(match[1]);
+    }
+  }
+
+  return names;
+}
+
+/** A static method of a static class whose first parameter has the `this` modifier. */
+function isExtensionMethod(node: Node | undefined): boolean {
+  const firstParameter = node?.namedChildren.find((child) => child.type === 'parameter_list')?.namedChildren[0];
+  const type = node?.parent?.parent;
+
+  return (
+    node?.type === 'method_declaration' &&
+    modifierTexts(node).has('static') &&
+    type?.type === 'class_declaration' &&
+    modifierTexts(type).has('static') &&
+    firstParameter?.type === 'parameter' &&
+    /^(?:\[[^\]]*\]\s*)*(?:(?:ref|in|scoped|readonly)\s+)*this\b/.test(firstParameter.text)
+  );
+}
+
+/**
+ * Refuses unless `receiver.Name` names the renamed symbol. Extension methods: see
+ * {@link checkExtensionAccess}; `checkExtendedTypes` refuses the renames where an instance member named
+ * like the new name could capture such a call. Other members: a receiver typed with, or naming, a type
+ * declaring it. Types: a namespace or type qualifier, not a value.
+ */
+function checkMemberAccess(model: SourceModel, occurrence: Occurrence, receiver: Receiver, context: AccessContext, access: string): void {
+  const { declaringTypes } = context;
+  const declares = (name: string | undefined) => declaringTypes !== undefined && name !== undefined && declaringTypes.has(name);
+  if (context.extension && receiver.kind !== 'base') {
+    checkExtensionAccess(model, occurrence, receiver, context, access);
+    return;
+  }
+
+  switch (receiver.kind) {
+    case 'this': {
+      const type = typeAt(model, occurrence.start);
+      if (!type || !derivesFrom(type.name, baseTypeNames(type.node), context.bases, declares)) {
+        refuse(`${access} through this in a type that does not declare or inherit it`);
+      }
+
+      return;
+    }
+    case 'base':
+      refuse(`${access} through base, whose members are not followed`);
+    case 'conditional':
+      refuse(`${access} through a conditional access whose target cannot be resolved`);
+    case 'expression': {
+      let resolved: boolean;
+      const receiverNode = receiverOf(occurrence);
+      if (receiver.name !== undefined) {
+        const value = valueDeclaration(model, occurrence, receiver.name);
+        // Not a value in scope: a type (static access) or a namespace qualifier.
+        resolved = value ? declares(declaredTypeName(value)) : declaringTypes === undefined ? context.qualifiers.has(receiver.name) : declares(receiver.name);
+      } else if (receiverNode?.type === 'member_access_expression' && receiverNode.childForFieldName('expression')?.type === 'this_expression') {
+        // `this.field.Name`: the field's declared type, in the innermost type.
+        const type = typeAt(model, occurrence.start);
+        const field = (receiver.qualifiedName !== undefined ? model.symbolsByName.get(receiver.qualifiedName) ?? [] : []).find((symbol) => symbol.category === 'member' && symbol.type === type);
+        resolved = field !== undefined && declares(declaredTypeName(field));
+      } else if (receiver.qualifiedName !== undefined) {
+        // `A.B.Name`: only a namespace or type chain names a type, or a type declaring the member.
+        resolved = hasQualifierRoot(model, occurrence, context.qualifiers) && (declaringTypes === undefined || declares(receiver.qualifiedName));
+      } else {
+        let expression = receiverNode;
+        while (expression?.type === 'parenthesized_expression') {
+          expression = expression.namedChildren[0] ?? null;
+        }
+
+        resolved = expression?.type === 'object_creation_expression' && declares(typeName(expression.childForFieldName('type')));
+      }
+
+      if (!resolved) {
+        refuse(`${access} through an expression whose type cannot be resolved syntactically`);
+      }
+    }
+  }
+}
+
+/**
+ * An instance member always wins over an extension method, so `x.Name` calls the renamed extension
+ * method only when it is invoked (a member that is not called is a field, property or tuple element of
+ * x's own type) and x is not known to be of a type the method does not extend; a dynamic receiver binds
+ * at run time to the object's own members. `Ext.Name` through the declaring class is the method itself.
+ */
+function checkExtensionAccess(model: SourceModel, occurrence: Occurrence, receiver: Receiver, context: AccessContext, access: string): void {
+  if (receiver.kind === 'expression') {
+    const declaringClass = receiver.name ?? receiver.qualifiedName;
+    const qualifies = receiver.name !== undefined ? valueDeclaration(model, occurrence, receiver.name) === undefined : hasQualifierRoot(model, occurrence, context.qualifiers);
+    if (declaringClass !== undefined && context.declaringTypes?.has(declaringClass) && qualifies) {
+      return;
+    }
+  }
+
+  if (mayBeDynamic(model, occurrence, context.dynamicNames)) {
+    refuse(`${access} through a dynamic receiver`);
+  }
+
+  const name = occurrence.node?.parent?.type === 'generic_name' ? occurrence.node.parent : occurrence.node;
+  const memberAccess = name?.parent;
+  const call = memberAccess?.parent;
+  if (call?.type !== 'invocation_expression' || call.childForFieldName('function') !== memberAccess) {
+    refuse(`${access} without being called, so it may be a member of the receiver's own type`);
+  }
+
+  const extended = (type: string, bases: readonly string[]) => derivesFrom(type, bases, context.bases, (candidate) => context.extendedTypes.has(candidate));
+  let receiverType: string | undefined;
+  if (receiver.kind === 'this') {
+    const type = typeAt(model, occurrence.start);
+    if (!type || !extended(type.name, baseTypeNames(type.node))) {
+      refuse(`${access} through this in a type the method does not extend`);
+    }
+  } else if (receiver.kind === 'expression' && receiver.name !== undefined) {
+    const value = valueDeclaration(model, occurrence, receiver.name);
+    receiverType = value ? declaredTypeName(value) : undefined;
+  } else {
+    let expression = receiverOf(occurrence);
+    while (expression?.type === 'parenthesized_expression') {
+      expression = expression.namedChildren[0] ?? null;
+    }
+
+    receiverType = expression?.type === 'object_creation_expression' ? typeName(expression.childForFieldName('type')) : undefined;
+  }
+
+  if (receiverType !== undefined && !extended(receiverType, context.bases.get(receiverType) ?? [])) {
+    refuse(`${access} on a value of type ${receiverType}, which the method does not extend`);
+  }
+}
+
+/**
+ * Whether `receiver.Name` may be a member access on a value or type of a declaring type (or one
+ * deriving from it), so that a member renamed to `Name` would capture it. Only a receiver of a known
+ * other type, or a namespace or type qualifier naming another type, may not.
+ */
+function mayAccessDeclaringType(model: SourceModel, occurrence: Occurrence, receiver: Receiver, context: AccessContext): boolean {
+  const declares = (name: string) => context.declaringTypes?.has(name) ?? false;
+  const derives = (name: string | undefined) => name === undefined || derivesFrom(name, context.bases.get(name) ?? [], context.bases, declares);
+  if (context.extension) {
+    return true;
+  }
+
+  switch (receiver.kind) {
+    case 'this': {
+      const type = typeAt(model, occurrence.start);
+
+      return !type || derivesFrom(type.name, baseTypeNames(type.node), context.bases, declares);
+    }
+    case 'base':
+    case 'conditional':
+      return true;
+    case 'expression': {
+      if (receiver.name !== undefined) {
+        const value = valueDeclaration(model, occurrence, receiver.name);
+
+        return derives(value ? declaredTypeName(value) : receiver.name);
+      }
+
+      let expression = receiverOf(occurrence);
+      while (expression?.type === 'parenthesized_expression') {
+        expression = expression.namedChildren[0] ?? null;
+      }
+
+      if (expression?.type === 'object_creation_expression') {
+        return derives(typeName(expression.childForFieldName('type')));
+      }
+
+      return receiver.qualifiedName === undefined || !hasQualifierRoot(model, occurrence, context.qualifiers) || derives(receiver.qualifiedName);
+    }
+  }
+}
+
+/** Whether `type` (with base names `bases`) is, or derives from, a type `declares` accepts, through the types declared in the scope. */
+function derivesFrom(type: string, bases: readonly string[], declared: ReadonlyMap<string, readonly string[]>, declares: (name: string) => boolean): boolean {
+  const pending = [type, ...bases];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const name = pending.pop() as string;
+    if (declares(name)) {
+      return true;
+    }
+
+    if (!seen.has(name)) {
+      seen.add(name);
+      pending.push(...(name === type ? [] : declared.get(name) ?? []));
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Refuses unless the simple name (or unqualified cref) at `offset` binds to the renamed symbol as far as
+ * the types around it go: walking out from the innermost type, each one must be, or derive from, a
+ * declaring type (where member lookup stops), or have every base declared in the scope. A base declared
+ * outside the workspace may declare a member or nested type of the old name, which the name binds to.
+ * Returns whether an enclosing type is, or derives from, a declaring type.
+ */
+function checkSimpleName(model: SourceModel, offset: number, context: AccessContext, oldName: string, where: string): boolean {
+  const declares = (name: string) => context.declaringTypes?.has(name) ?? false;
+  for (let type = typeAt(model, offset); type; type = type.parent) {
+    const bases = [...baseTypeNames(type.node), ...(context.bases.get(type.name) ?? [])];
+    if (derivesFrom(type.name, bases, context.bases, declares)) {
+      return true;
+    }
+
+    const external = externalBase(bases, context.bases);
+    if (external !== undefined) {
+      refuse(`${where} is in ${type.name}, whose base ${external} is declared outside the workspace and may declare '${oldName}'`);
+    }
+  }
+
+  return false;
+}
+
+/** Simple names of the types `using static` directives import: `global` ones only, or every one. */
+function staticImports(root: Node, globalOnly: boolean): string[] {
+  return findAll(root, 'using_directive')
+    .filter((directive) => directive.children.some((child) => child.type === 'static') && (!globalOnly || directive.children[0]?.text === 'global'))
+    .flatMap((directive) => typeName(directive.namedChildren[directive.namedChildren.length - 1] ?? null) ?? []);
+}
+
+/** A base among `bases`, or among their bases, that the scope does not declare. */
+function externalBase(bases: readonly string[], declared: ReadonlyMap<string, readonly string[]>): string | undefined {
+  const pending = [...bases];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const name = pending.pop() as string;
+    if (seen.has(name)) {
+      continue;
+    }
+
+    seen.add(name);
+    const inherited = declared.get(name);
+    if (!inherited) {
+      return name;
+    }
+
+    pending.push(...inherited);
+  }
+
+  return undefined;
+}
+
+/** The receiver expression of the member access (or conditional access) at `occurrence`. */
+function receiverOf(occurrence: Occurrence): Node | null {
+  const name = occurrence.node?.parent?.type === 'generic_name' ? occurrence.node.parent : occurrence.node;
+
+  return name?.parent?.childForFieldName('expression') ?? null;
+}
+
+/**
+ * Whether the receiver at `occurrence` may be `dynamic`: it mentions `dynamic` (a cast), or one of its
+ * names is declared with a dynamic type in the scope, or is a `var` local initialized from such an
+ * expression. Without a receiver node (an interpolation hole), it may.
+ */
+function mayBeDynamic(model: SourceModel, occurrence: Occurrence, dynamic: ReadonlySet<string>): boolean {
+  const receiver = receiverOf(occurrence);
+  if (!receiver) {
+    return true;
+  }
+
+  const pending = [receiver];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const expression = pending.pop() as Node;
+    if (/(?<![\p{L}\p{Nd}_])dynamic(?![\p{L}\p{Nd}_])/u.test(expression.text)) {
+      return true;
+    }
+
+    for (const identifier of findAll(expression, 'identifier')) {
+      const name = identifierName(identifier.text);
+      if (dynamic.has(name)) {
+        return true;
+      }
+
+      if (seen.has(name)) {
+        continue;
+      }
+
+      seen.add(name);
+      const value = valueDeclaration(model, occurrence, name);
+      const declarator = value?.nameNode.parent;
+      if (value?.declaredType?.trim() === 'var' && declarator) {
+        // `var x = initializer`, or `foreach (var x in collection)`: the collection follows the declaration.
+        const statement = declarator.parent?.parent;
+        const initializer =
+          declarator.namedChildren.find((child) => child.type === 'equals_value_clause') ??
+          (statement?.type === 'for_each_statement' ? statement.namedChildren[statement.namedChildren.findIndex((child) => child.type === 'variable_declaration') + 1] : undefined);
+        if (!initializer) {
+          return true;
+        }
+
+        pending.push(initializer);
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Whether the qualified receiver of a member access at `occurrence` starts from a namespace or type:
+ * `global::`, a predefined or generic type, or a name the scope declares or imports as a namespace,
+ * alias or type and that no local, parameter or member in scope shadows. Without a syntax node (an
+ * interpolation hole, whose names `checkText` refuses anyway), it does not.
+ */
+function hasQualifierRoot(model: SourceModel, occurrence: Occurrence, qualifiers: ReadonlySet<string>): boolean {
+  let root = receiverOf(occurrence) ?? (occurrence.node?.parent?.type === 'generic_name' ? occurrence.node.parent : occurrence.node)?.parent?.childForFieldName('qualifier') ?? null;
+  while (root?.type === 'member_access_expression' || root?.type === 'qualified_name') {
+    root = root.childForFieldName(root.type === 'member_access_expression' ? 'expression' : 'qualifier');
+  }
+
+  switch (root?.type) {
+    case 'alias_qualified_name':
+    case 'predefined_type':
+    case 'generic_name':
+      return true;
+    case 'identifier': {
+      const name = identifierName(root.text);
+
+      return qualifiers.has(name) && valueDeclaration(model, occurrence, name) === undefined;
+    }
+    default:
+      return false;
+  }
+}
+
+/** The local, parameter or member of an enclosing type of the file that `name` designates at `occurrence`. */
+function valueDeclaration(model: SourceModel, occurrence: Occurrence, name: string): DeclaredSymbol | undefined {
+  const named = model.symbolsByName.get(name) ?? [];
+  const local = named
+    .filter(
+      (symbol) =>
+        (symbol.category === 'local' || symbol.category === 'parameter' || symbol.category === 'range') &&
+        symbol.region &&
+        spans(symbol.region, occurrence.start, occurrence.end)
+    )
+    .sort((a, b) => (b.region?.startIndex ?? 0) - (a.region?.startIndex ?? 0))[0];
+  if (local) {
+    return local;
+  }
+
+  for (let type = typeAt(model, occurrence.start); type; type = type.parent) {
+    const member = named.find((symbol) => symbol.category === 'member' && symbol.type === type);
+    if (member) {
+      return member;
+    }
+  }
+
+  return undefined;
+}
+
+/** Simple name of a value's declared type, without type arguments (`Ns.Box<Ns.Item>?` gives `Box`); for `var x = new T(...)`, `T`. */
+function declaredTypeName(symbol: DeclaredSymbol): string | undefined {
+  let declared = symbol.declaredType?.trim().replace(/\?$/, '').trim();
+  if (declared === 'var') {
+    const value = symbol.nameNode.parent?.namedChildren.find((child) => child.type === 'equals_value_clause')?.namedChildren[0];
+
+    return value?.type === 'object_creation_expression' ? typeName(value.childForFieldName('type')) : undefined;
+  }
+
+  // Innermost type argument lists first, so nested ones (`Box<List<int>>`) go too.
+  while (declared !== undefined && /<[^<>]*>/.test(declared)) {
+    declared = declared.replace(/<[^<>]*>/g, '');
+  }
+
+  return declared?.split(/\s*(?:\.|::)\s*/).pop();
+}
+
+/** Name of a (possibly generic or qualified) type syntax, without type arguments. */
+function typeName(node: Node | null): string | undefined {
+  switch (node?.type) {
+    case 'identifier':
+      return identifierName(node.text);
+    case 'generic_name':
+      return typeName(node.namedChildren[0] ?? null);
+    case 'qualified_name':
+      return typeName(node.childForFieldName('name'));
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The `cref` values of the XML documentation comments naming the renamed symbol, in either quote
+ * style. A type: every segment naming it. A member (`declaringTypes` given): the member segment, when
+ * unqualified or qualified by a type declaring it. `checkUnqualified` vets each unqualified one, which
+ * binds like a simple name at the comment.
+ */
+function crefEdits(
+  file: SourceFile,
+  oldName: string,
+  newName: string,
+  declaringTypes: ReadonlySet<string> | undefined,
+  checkUnqualified: (offset: number) => void
+): TextEdit[] {
   const edits: TextEdit[] = [];
-  const pattern = new RegExp(wordPattern(oldName).source, 'gu');
+  const word = new RegExp(wordPattern(oldName).source, 'gu');
+  // An optional `X:` documentation ID prefix and `global::` (or alias) qualifier, then the dotted qualifier.
+  const member = new RegExp(`^((?:[A-Z]:)?(?:[\\p{L}_][\\p{L}\\p{N}_]*::)?)((?:[\\p{L}_][\\p{L}\\p{N}_]*(?:\\{[^}]*\\})?\\.)*)@?${oldName}(?![\\p{L}\\p{N}_])`, 'u');
   for (const comment of file.model.docComments) {
-    for (const match of comment.text.matchAll(/\bcref\s*=\s*"([^"]*)"/g)) {
-      const valueStart = comment.startIndex + (match.index ?? 0) + match[0].indexOf('"') + 1;
-      for (const name of match[1].matchAll(pattern)) {
-        const start = valueStart + (name.index ?? 0);
-        edits.push({ start, end: start + name[0].length, text: newName });
+    for (const match of comment.text.matchAll(/\bcref\s*=\s*(["'])(.*?)\1/g)) {
+      const valueStart = comment.startIndex + (match.index ?? 0) + match[0].indexOf(match[1]) + 1;
+      const value = match[2];
+      if (!declaringTypes) {
+        for (const name of value.matchAll(word)) {
+          const start = valueStart + (name.index ?? 0);
+          if (!/[.:]/.test(value[(name.index ?? 0) - 1] ?? '')) {
+            checkUnqualified(start);
+          }
+
+          edits.push({ start, end: start + name[0].length, text: newName });
+        }
+
+        continue;
+      }
+
+      const head = member.exec(value);
+      const qualifier = head?.[2].slice(0, -1).split('.').pop()?.replace(/\{.*$/, '');
+      if (head && (qualifier === undefined || qualifier === '' || declaringTypes.has(qualifier))) {
+        const start = valueStart + head[1].length + head[2].length;
+        if (head[1] === '' && head[2] === '') {
+          checkUnqualified(start);
+        }
+
+        edits.push({ start, end: valueStart + head[0].length, text: newName });
       }
     }
   }

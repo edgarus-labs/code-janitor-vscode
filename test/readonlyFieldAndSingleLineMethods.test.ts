@@ -250,6 +250,10 @@ describe('readonlyFieldConverter and writes inside interpolated strings', () => 
     ['raw interpolated string', 'class C { private int _n; string M() => $"""{System.Threading.Interlocked.Increment(ref _n)}"""; }'],
     ['nested interpolation', 'class C { private int _n; string M() => $"a{$"b{_n++}"}"; }'],
     ['format specifier after the write', 'class C { private int _n; string M() => $"{_n++:D3}"; }'],
+    ['@$ verbatim string with a backslash', 'class C { private int _n; string M() => @$"C:\\{_n++}"; }'],
+    ['@$ verbatim string with a doubled quote', 'class C { private int _n; string M() => @$"a""b{_n++}"; }'],
+    ['global:: qualified ref argument', 'class C { private int _n; string M() => $"{global::System.Threading.Interlocked.Increment(ref _n)}"; }'],
+    ['global:: qualified call with an increment', 'class C { private int _n; string M() => $"{global::System.Math.Abs(_n++)}"; }'],
   ])('keeps a field that is written in an interpolation hole: %s', (_name, input) => {
     expect(apply(input)).toBe(input);
   });
@@ -264,5 +268,54 @@ describe('readonlyFieldConverter and writes inside interpolated strings', () => 
 
   it('does not take a write to another member with the same suffix for a write to the field', () => {
     expect(apply('class C { private int _n; int other_n; string M() => $"{other_n++}"; }')).toContain('private readonly int _n');
+  });
+
+  it.each([
+    ['method call', 'class C { private Counter _c; string M() => $"{_c.Increment()}"; }'],
+    ['this-qualified call', 'class C { private Counter _c; string M() => $"{this._c.Increment()}"; }'],
+    ['element access', 'class C { private Counter _c; string M() => $"{_c[0]}"; }'],
+    ['conditional access', 'class C { private Counter? _c; string M() => $"{_c?.Increment()}"; }'],
+    ['nested interpolation', 'class C { private Counter _c; string M() => $"a{$"b{_c.Increment()}"}"; }'],
+    ['@$ verbatim string with a backslash', 'class C { private Counter _c; string M() => @$"C:\\{_c.Increment()}"; }'],
+    ['parenthesized receiver', 'class C { private Counter _c; string M() => $"{(_c).Increment()}"; }'],
+    ['global:: qualified call', 'class C { private Counter _c; string M() => $"{global::System.Convert.ToString(_c.Increment())}"; }'],
+  ])('keeps a field of a possible struct type accessed in an interpolation hole: %s', (_name, input) => {
+    expect(apply(input)).toBe(input);
+  });
+
+  it('still makes a field of a known reference type readonly when a hole accesses its members', () => {
+    expect(apply('class C { private string _s; string M() => $"{_s.Length}"; }')).toContain('private readonly string _s');
+  });
+});
+
+describe('readonlyFieldConverter and defensive copies of struct fields', () => {
+  const apply = (input: string): string => readonlyFieldConverter.apply(input);
+
+  it.each([
+    ['int', 'private int _v; public C(int v) { _v = v; } public override string ToString() => _v.ToString();'],
+    ['nullable long', 'private long? _v; bool M() => _v.HasValue;'],
+    ['bool', 'private bool _v; bool M(bool o) => _v.Equals(o);'],
+    ['System.Int32', 'private System.Int32 _v; int M(int o) => _v.CompareTo(o);'],
+    ['Guid', 'private Guid _v; string M() => _v.ToString("N");'],
+    ['DateTime', 'private System.DateTime _v; int M() => _v.Year;'],
+    ['TimeSpan in a hole', 'private TimeSpan _v; string M() => $"{_v.TotalSeconds}";'],
+    ['same-file enum', 'private Kind _v; string M() => _v.ToString(); enum Kind { A }'],
+  ])('marks a field of an immutable value type readonly when its members are accessed: %s', (_name, members) => {
+    expect(apply(`class C { ${members} }`)).toMatch(/private readonly [\w.?]+ _v;/);
+  });
+
+  it.each([
+    ['struct', 'struct IOCounter { int n; public void Increment() => n++; }'],
+    ['record struct', 'record struct IOCounter(int N) { public int n; public void Increment() => n++; }'],
+  ])('keeps a field of a same-file %s whose name looks like an interface mutable', (_name, declaration) => {
+    const input = `class C { private IOCounter _c; void M() => _c.Increment(); } ${declaration}`;
+
+    expect(apply(input)).toBe(input);
+  });
+
+  it('keeps a field of a same-file struct that shadows a known immutable type mutable', () => {
+    const input = 'class C { private Guid _g; void M() => _g.Increment(); } struct Guid { int n; public void Increment() => n++; }';
+
+    expect(apply(input)).toBe(input);
   });
 });

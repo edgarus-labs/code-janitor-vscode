@@ -1,9 +1,11 @@
 import * as path from 'node:path';
+import { resolveEffectiveCleanupSettings } from './effectiveSettings';
 import { EditorConfigProperties, hasAnalyzerConfiguration, loadEditorConfigProperties } from './editorconfig';
 import { effectiveEditorConfigValue, enforcedOptionValue, isDiagnosticEnforced, unsupportedEditorConfigSettings } from './editorConfigRegistry';
 import { SourceTransformationPipeline, delegateTransformation } from './pipeline';
 import { ProjectInfo, findProject } from './projectInfo';
 import { CleanupSettings, SourceTransformation } from './types';
+import { createReorganizeTransformation } from '../reorganize/reorganize';
 import { updateAccessorsToBothBeSingleLineOrMultiLineConverter } from './transformations/accessorFormat';
 import { createBlankLinePaddingConverter } from './transformations/blankLinePadding';
 import { createExplicitAccessModifierConverter } from './transformations/explicitAccessModifier';
@@ -25,11 +27,7 @@ import {
   singleStatementLambdaConverter,
 } from './transformations/lambdaAndJson';
 import { nameOfOperatorConverter } from './transformations/namespaceAndNameOf';
-import {
-  fileScopedNamespaceConverter,
-  hasMultipleNamespaces,
-  moveUsingsOutsideNamespaceConverter,
-} from './transformations/namespaceScope';
+import { createFileScopedNamespaceConverter, createUsingPlacementConverter } from './transformations/namespaceScope';
 import { nullCheckPatternMatchingConverter } from './transformations/nullCheckPatternMatching';
 import { inlineOutVariableDeclarations, outVarInliningConverter } from './transformations/outVarInlining';
 import {
@@ -53,13 +51,15 @@ import { varWhenApparentConverter } from './transformations/varWhenApparent';
 import { createEditorConfigNamingConverter } from './transformations/editorConfigNaming';
 import { createEditorConfigCodeStyleConverter } from './transformations/editorConfigCodeStyle';
 import { createEditorConfigFormattingConverter } from './transformations/editorConfigFormatting';
-import { EditorConfigIssueReporter, tabWidth } from './transformations/editorConfigSupport';
+import { EditorConfigIssueReporter, describeIssue, indentUnit, lineNumberAt, tabWidth } from './transformations/editorConfigSupport';
 
 /** The `.editorconfig` properties of the file being cleaned. */
 export interface EditorConfigRules {
   readonly properties: EditorConfigProperties;
   /** Receives each violation a rule found but could not fix safely. */
   readonly report: EditorConfigIssueReporter;
+  /** Receives what the step of a Code Janitor setting left undone, and why: a note, not a violation. */
+  readonly note: (message: string) => void;
   /** File name (with extension) of the file being cleaned. */
   readonly fileName?: string;
   /** Full path of the file being cleaned. */
@@ -69,11 +69,12 @@ export interface EditorConfigRules {
 }
 
 /**
- * Something about the file's `.editorconfig` that cleanup could not honor: a rule violation it
- * could not fix safely (`unresolved`) or a setting it does not implement (`unsupported`).
+ * Something cleanup could not honor: an `.editorconfig` rule violation it could not fix safely
+ * (`unresolved`), an `.editorconfig` setting it does not implement (`unsupported`), or what a Code
+ * Janitor setting (a step, an enabled Code Style rule) left undone (`note`).
  */
 export interface EditorConfigIssue {
-  readonly kind: 'unresolved' | 'unsupported';
+  readonly kind: 'unresolved' | 'unsupported' | 'note';
   readonly filePath: string;
   /** What cleanup could not honor, without the file path. */
   readonly detail: string;
@@ -101,36 +102,44 @@ export function runCleanup(
     return source;
   }
 
-  return getCleanupPipeline(source, filePath, settings, externalDisqualifiedTypeNames, onIssue).run(source);
+  return getCleanupPipeline(filePath, settings, externalDisqualifiedTypeNames, onIssue).run(source);
 }
 
 /**
  * Loads the `.editorconfig` properties of `filePath` and builds its pipeline. The settings of the
- * `.editorconfig` that cleanup does not support are passed to `onIssue` right away; violations it
- * cannot fix are passed while the pipeline runs.
+ * `.editorconfig` that cleanup does not support, and the enabled Code Style rules it does not
+ * implement, are passed to `onIssue` right away; violations it cannot fix are passed while the pipeline runs.
  */
 export function getCleanupPipeline(
-  source: string,
   filePath: string,
   settings: CleanupSettings,
   externalDisqualifiedTypeNames?: ReadonlySet<string>,
   onIssue?: EditorConfigIssueListener
 ): SourceTransformationPipeline {
-  const properties = loadEditorConfigProperties(filePath);
-  for (const message of unsupportedEditorConfigSettings(properties)) {
+  const base = loadEditorConfigProperties(filePath);
+  for (const message of unsupportedEditorConfigSettings(base)) {
     onIssue?.({ kind: 'unsupported', filePath, detail: message });
   }
 
+  // `.editorconfig` decides over the settings; the enabled Code Style rules it does not enforce are
+  // layered over it (analysis only, nothing is written) so the rule engine applies them.
+  const effective = resolveEffectiveCleanupSettings(filePath, settings, base);
+  for (const message of effective.unresolvedRules) {
+    onIssue?.({ kind: 'note', filePath, detail: message });
+  }
+
+  const properties = effective.properties;
   const rules: EditorConfigRules = {
     properties,
     report: (message, symbol) => onIssue?.({ kind: 'unresolved', filePath, detail: message, ...(symbol && { symbol }) }),
+    note: (message) => onIssue?.({ kind: 'note', filePath, detail: message }),
     fileName: filePath ? path.basename(filePath) : undefined,
     filePath: filePath || undefined,
     // Every rule depends on the project's C# version; some also on its folder or frameworks.
-    project: hasAnalyzerConfiguration(properties) ? findProject(filePath) : undefined,
+    project: hasAnalyzerConfiguration(properties) || effective.settings.convertToFileScopedNamespace ? findProject(filePath) : undefined,
   };
 
-  return buildPipeline(source, settings, rules, externalDisqualifiedTypeNames);
+  return buildPipeline(effective.settings, rules, externalDisqualifiedTypeNames);
 }
 
 /**
@@ -141,7 +150,6 @@ export function getCleanupPipeline(
  * Settings the `.editorconfig` does not decide keep applying.
  */
 export function buildPipeline(
-  source: string,
   settings: CleanupSettings,
   rules?: EditorConfigRules,
   externalDisqualifiedTypeNames?: ReadonlySet<string>
@@ -155,10 +163,9 @@ export function buildPipeline(
   const collectionExpressions = enforced('dotnet_style_prefer_collection_expression');
   const expressionBodiedLambdas = enforced('csharp_style_expression_bodied_lambdas');
 
-  // With `charset` set, the byte order mark is decided by the `.editorconfig` rules: the steps work
-  // on the text without it, and it is put back for the formatting rules, which apply `charset`.
+  // With `charset` set, the byte order mark is decided by the `.editorconfig` formatting rules, which
+  // apply `charset`: every other step works on the text after it and leaves it where it was.
   const charsetDecides = decides('charset');
-  const restoreByteOrderMark = charsetDecides && source.startsWith('\uFEFF');
 
   const hasEditorConfig = props !== undefined && hasAnalyzerConfiguration(props);
   // The final newline is ensured by a later step (unless `insert_final_newline = false`): removing
@@ -166,16 +173,85 @@ export function buildPipeline(
   const keepFinalNewline = !decides('insert_final_newline') || effectiveEditorConfigValue(props!, 'insert_final_newline') === 'true';
   const trimTrailingWhitespace = props && effectiveEditorConfigValue(props, 'trim_trailing_whitespace');
 
+  // Where the using directives go: what `.editorconfig` enforces, else the `moveUsingsOutsideNamespace` setting.
+  const placementValue = props && effectiveEditorConfigValue(props, 'csharp_using_directive_placement');
+  const placement =
+    placementValue === 'inside_namespace' ? 'inside' : placementValue === 'outside_namespace' ? 'outside' : settings.moveUsingsOutsideNamespace ? 'outside' : undefined;
+  const indentOf = (text: string): string => (props ? indentUnit(props, text) : '    ');
+
+  // A rename can give code style more to do (a `this.` the renamed field no longer needs): code style
+  // runs once more, without reporting again, when naming changed what it produced, so that one cleanup
+  // leaves nothing for the next. With rules left out (the preview), the rerun leaves out the same ones.
+  // Code style may be called more than once on the same text (the analysis applies its rules one by
+  // one): the call that counts is the one whose output naming then received.
+  const codeStyle =
+    hasEditorConfig && rules
+      ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, { fileName: rules.fileName, filePath: rules.filePath, project: rules.project })
+      : undefined;
+  // Reset by the pipeline at the start of each run, so that a preview never reruns code style for an earlier one.
+  const codeStyleRuns = new Map<string, ReadonlySet<string> | undefined>();
+  let renamed: { output: string; excluded?: ReadonlySet<string> } | undefined;
+  const trackedCodeStyle: SourceTransformation | undefined = codeStyle && {
+    ...codeStyle,
+    apply(text) {
+      const output = codeStyle.apply(text);
+      codeStyleRuns.set(output, undefined);
+      return output;
+    },
+    applyRules: codeStyle.applyRules && ((text, excluded) => {
+      const result = codeStyle.applyRules!(text, excluded);
+      // A copy: the caller may go on to leave out more rules with the same set.
+      codeStyleRuns.set(result.output, new Set(excluded));
+      return result;
+    }),
+  };
+  const naming = hasEditorConfig && rules ? createEditorConfigNamingConverter(rules.properties, rules.report) : undefined;
+  const trackedNaming: SourceTransformation | undefined = naming && {
+    ...naming,
+    apply(text) {
+      const output = naming.apply(text);
+      renamed = output !== text && codeStyleRuns.has(text) ? { output, excluded: codeStyleRuns.get(text) } : undefined;
+      codeStyleRuns.clear();
+      return output;
+    },
+  };
+  const silentCodeStyle =
+    hasEditorConfig && rules
+      ? createEditorConfigCodeStyleConverter(rules.properties, () => undefined, { fileName: rules.fileName, filePath: rules.filePath, project: rules.project })
+      : undefined;
+  const codeStyleAfterRenames = silentCodeStyle && delegateTransformation('C# code style after renames (.editorconfig)', (text) => {
+    const previous = renamed;
+    renamed = undefined;
+    codeStyleRuns.clear();
+    if (!previous || text !== previous.output) {
+      return text;
+    }
+
+    return previous.excluded && silentCodeStyle.applyRules ? silentCodeStyle.applyRules(text, previous.excluded).output : silentCodeStyle.apply(text);
+  });
+
   const transformations: (SourceTransformation | undefined)[] = [
+    settings.reorganize.runAtStartOfCleanup ? createReorganizeTransformation(settings.reorganize, settings) : undefined,
     settings.removeRegions ? regionDirectiveRemover : undefined,
-    settings.removeByteOrderMark || charsetDecides ? byteOrderMarkConverter : undefined,
-    settings.moveUsingsOutsideNamespace && !decides('csharp_using_directive_placement')
-      ? moveUsingsOutsideNamespaceConverter
+    settings.removeByteOrderMark && !charsetDecides ? byteOrderMarkConverter : undefined,
+    placement
+      ? createUsingPlacementConverter({
+          direction: placement,
+          filePath: rules?.filePath,
+          fromEditorConfig: decides('csharp_using_directive_placement'),
+          indent: indentOf,
+          report: (message, text, offset) =>
+            decides('csharp_using_directive_placement')
+              ? rules?.report(describeIssue('IDE0065', 'csharp_using_directive_placement', text, offset, message))
+              : rules?.note(`${message.charAt(0).toUpperCase()}${message.slice(1)}`),
+        })
       : undefined,
-    settings.convertToFileScopedNamespace &&
-    !decides('csharp_style_namespace_declarations') &&
-    !hasMultipleNamespaces(source)
-      ? fileScopedNamespaceConverter
+    settings.convertToFileScopedNamespace && !decides('csharp_style_namespace_declarations')
+      ? createFileScopedNamespaceConverter({
+          project: rules?.project,
+          indent: indentOf,
+          report: (message, text, offset) => rules?.note(`Line ${lineNumberAt(text, offset)}: ${message}`),
+        })
       : undefined,
     settings.convertToVarWhenApparent && !varStyleKeys.some(decides) ? varWhenApparentConverter : undefined,
     settings.makeFieldsReadonlyWhenSafe && !decides('dotnet_style_readonly_field') ? readonlyFieldConverter : undefined,
@@ -250,21 +326,36 @@ export function buildPipeline(
     // The `.editorconfig` rules run after every other step: code style, naming (after code style,
     // so the names code-style rewrites introduce follow the naming rules too), then formatting
     // (last, so it formats code the other rules created).
-    hasEditorConfig && rules
-      ? createEditorConfigCodeStyleConverter(rules.properties, rules.report, {
-          fileName: rules.fileName,
-          filePath: rules.filePath,
-          project: rules.project,
-        })
-      : undefined,
-    hasEditorConfig && rules ? createEditorConfigNamingConverter(rules.properties, rules.report) : undefined,
-    restoreByteOrderMark
-      ? delegateTransformation('Restore byte order mark for charset', (text) => `\uFEFF${text}`)
-      : undefined,
-    hasEditorConfig && rules ? createEditorConfigFormattingConverter(rules.properties, rules.report) : undefined,
+    trackedCodeStyle,
+    trackedNaming,
+    codeStyleAfterRenames,
   ];
+  const formatting = hasEditorConfig && rules ? createEditorConfigFormattingConverter(rules.properties, rules.report) : undefined;
+  const steps = charsetDecides ? transformations.map((step) => step && afterByteOrderMark(step)) : transformations;
 
-  return new SourceTransformationPipeline(transformations);
+  return new SourceTransformationPipeline([...steps, formatting], () => {
+    codeStyleRuns.clear();
+    renamed = undefined;
+  });
+}
+
+/** `step` applied to the text after a byte order mark, which it keeps. */
+function afterByteOrderMark(step: SourceTransformation): SourceTransformation {
+  return {
+    ...step,
+    apply: (text) => (text.startsWith('\uFEFF') ? `\uFEFF${step.apply(text.slice(1))}` : step.apply(text)),
+    ...(step.applyRules && {
+      applyRules: (text: string, excluded: ReadonlySet<string>) => {
+        if (!text.startsWith('\uFEFF')) {
+          return step.applyRules!(text, excluded);
+        }
+
+        const result = step.applyRules!(text.slice(1), excluded);
+
+        return { ...result, output: `\uFEFF${result.output}` };
+      },
+    }),
+  };
 }
 
 function anyExplicitAccessModifierEnabled(settings: CleanupSettings): boolean {

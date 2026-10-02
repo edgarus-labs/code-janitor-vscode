@@ -1,23 +1,31 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
+import { loadEditorConfigProperties, resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import { EditorConfigIssueLog, editorConfigSignature } from '../src/cleanup/editorConfigIssueLog';
 
 const unsupported = (filePath: string, detail: string) => ({ kind: 'unsupported' as const, filePath, detail });
 const unresolved = (filePath: string, detail: string) => ({ kind: 'unresolved' as const, filePath, detail });
+const note = (filePath: string, detail: string) => ({ kind: 'note' as const, filePath, detail });
 
 describe('EditorConfigIssueLog', () => {
-  it('logs violations per file right away and each unsupported setting once, with the files it affects', () => {
+  it('logs violations and notes per file right away, counted apart, and each unsupported setting once, with the files it affects', () => {
     const lines: string[] = [];
     const log = new EditorConfigIssueLog((line) => lines.push(line));
 
     log.report(unsupported('/r/A.cs', '"max_line_length = 120" is not supported and was not applied.'));
     log.report(unresolved('/r/A.cs', 'IDE0011 line 3: braces not added.'));
+    log.report(note('/r/A.cs', 'Line 1: namespace not converted to a file-scoped one.'));
     log.report(unsupported('/r/B.cs', '"max_line_length = 120" is not supported and was not applied.'));
     log.report(unsupported('/r/B.cs', '"csharp_prefer_static_anonymous_function = true" is not supported and was not applied.'));
-    expect(lines).toEqual(['.editorconfig rule not fixed: /r/A.cs: IDE0011 line 3: braces not added.']);
+    expect(lines).toEqual([
+      '.editorconfig rule not fixed: /r/A.cs: IDE0011 line 3: braces not added.',
+      'Cleanup note: /r/A.cs: Line 1: namespace not converted to a file-scoped one.',
+    ]);
 
-    expect(log.finish()).toEqual({ unresolved: 1, unsupported: 2 });
-    expect(lines.slice(1)).toEqual([
+    expect(log.finish()).toEqual({ unresolved: 1, notes: 1, unsupported: 2 });
+    expect(lines.slice(2)).toEqual([
       '.editorconfig setting not supported: "max_line_length = 120" is not supported and was not applied. (2 files)',
       '.editorconfig setting not supported: "csharp_prefer_static_anonymous_function = true" is not supported and was not applied. (1 file)',
     ]);
@@ -34,9 +42,9 @@ describe('EditorConfigIssueLog', () => {
       return log.finish();
     };
 
-    expect(run('/a/A.cs')).toEqual({ unresolved: 0, unsupported: 1 });
-    expect(run('/a/B.cs')).toEqual({ unresolved: 0, unsupported: 0 });
-    expect(run('/b/C.cs')).toEqual({ unresolved: 0, unsupported: 1 });
+    expect(run('/a/A.cs')).toEqual({ unresolved: 0, notes: 0, unsupported: 1 });
+    expect(run('/a/B.cs')).toEqual({ unresolved: 0, notes: 0, unsupported: 0 });
+    expect(run('/b/C.cs')).toEqual({ unresolved: 0, notes: 0, unsupported: 1 });
     expect(lines).toHaveLength(2);
   });
 });
@@ -51,5 +59,26 @@ describe('editorConfigSignature', () => {
     expect(editorConfigSignature(resolveEditorConfigProperties(files, '/r/A.cs'))).not.toBe(
       editorConfigSignature(resolveEditorConfigProperties([{ directory: '/r', text: 'root = true\n[*.cs]\nindent_size = 2\n' }], '/r/A.cs'))
     );
+  });
+
+  it('differs between projects whose NoWarn or analysis mode differ under the same .editorconfig', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-signature-'));
+    try {
+      const project = (name: string, properties: string) => {
+        fs.mkdirSync(path.join(root, name));
+        fs.writeFileSync(path.join(root, name, `${name}.csproj`), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework>${properties}</PropertyGroup></Project>`);
+
+        return editorConfigSignature(loadEditorConfigProperties(path.join(root, name, 'A.cs')));
+      };
+      fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n[*.cs]\ndotnet_diagnostic.IDE0055.severity = warning\n');
+
+      const plain = project('Plain', '');
+      expect(project('Same', '')).toBe(plain);
+      expect(project('NoWarn', '<NoWarn>IDE0055</NoWarn>')).not.toBe(plain);
+      expect(project('Mode', '<AnalysisMode>All</AnalysisMode>')).not.toBe(plain);
+      expect(project('Errors', '<TreatWarningsAsErrors>true</TreatWarningsAsErrors>')).not.toBe(plain);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

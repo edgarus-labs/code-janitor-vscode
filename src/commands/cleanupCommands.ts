@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import {
+  cleanupFileGlob,
   createEditorConfigIssueLog,
   discoverDisqualifiedTypeNamesForFile,
   expandToCSharpFiles,
   expandToCleanableFiles,
+  isCSharp,
+  isCleanupTarget,
   isSupportedFile,
   runCleanupOnUris,
   runFixNamespaceOnUris,
@@ -12,10 +15,57 @@ import {
   runRemoveXmlDocOnUris,
   runSplitTopLevelTypesOnUris,
 } from './cleanupCore';
+import { runCleanupPreview } from './cleanupPreviewUi';
 import { PreviewResult } from '../cleanup/pipeline';
 import { getCleanupPipeline } from '../cleanup/runCleanup';
-import { readCleanupSettings } from './settings';
+import { readCleanupSettingsForUri } from './settings';
 import { logInfo } from '../logging';
+
+const NO_FILES_MESSAGE = 'Code Janitor: no C# files to preview in the selection.';
+const WORKSPACE_EXCLUDE = '**/{bin,obj,node_modules,.git}/**';
+
+/** The files a menu command acts on: the multi-selection when there is one, otherwise the clicked file. */
+function selectedTargets(clicked?: vscode.Uri, selected?: vscode.Uri[]): vscode.Uri[] {
+  return selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
+}
+
+/** The open files cleanup acts on (Razor files included while they are formatted). */
+function openFileUris(): vscode.Uri[] {
+  return vscode.workspace.textDocuments.filter((doc) => !doc.isClosed && doc.uri.scheme === 'file' && isCleanupTarget(doc.uri)).map((doc) => doc.uri);
+}
+
+/** Folders expand to their C# files; a file the user selected stays in the preview, which says why it is skipped. */
+async function expandSelectedForPreview(targets: readonly vscode.Uri[]): Promise<vscode.Uri[]> {
+  return (await Promise.all(targets.map((uri) => expandToCSharpFiles(uri)))).flat();
+}
+
+const START_CLEANUP = 'Start Cleanup';
+const PREVIEW_CLEANUP = 'Preview C# Text Changes';
+
+/**
+ * The one-time options dialog of Cleanup Selected Code (`codeJanitor.cleanup.showOptionsDialog`):
+ * start the cleanup, or preview its C# text changes first. Off by default - the command then
+ * starts the cleanup at once. `undefined` when the user cancels.
+ */
+async function chooseSelectedScopeAction(fileCount: number): Promise<'start' | 'preview' | undefined> {
+  if (!vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.showOptionsDialog', false)) {
+    return 'start';
+  }
+
+  const choice = await vscode.window.showQuickPick(
+    [
+      { label: START_CLEANUP, description: 'Clean the selected files now', detail: `${fileCount} file(s) in the selection` },
+      {
+        label: PREVIEW_CLEANUP,
+        description: 'Review the changes per file and rule before applying them',
+        detail: 'Nothing is written and no AI is used; C# files only',
+      },
+    ],
+    { title: 'Code Janitor: Cleanup Selected Code', placeHolder: 'Start the cleanup, or preview the changes first', ignoreFocusOut: true }
+  );
+
+  return choice === undefined ? undefined : choice.label === PREVIEW_CLEANUP ? 'preview' : 'start';
+}
 
 export function registerCleanupCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
@@ -42,7 +92,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
     }),
 
     vscode.commands.registerCommand('codeJanitor.cleanupSelectedFiles', async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
-      const targets = selected && selected.length > 0 ? selected : clicked ? [clicked] : [];
+      const targets = selectedTargets(clicked, selected);
       if (targets.length === 0) {
         void vscode.window.showInformationMessage('Code Janitor: no files selected.');
 
@@ -50,8 +100,52 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
       }
 
       const expanded = (await Promise.all(targets.map((u) => expandToCleanableFiles(u)))).flat();
+      const choice = await chooseSelectedScopeAction(expanded.length);
+      if (choice === 'start') {
+        await runWithProgress('Cleaning up selected files...', () => runCleanupOnUris(context, expanded, { renameAcrossWorkspace: true }));
+      } else if (choice === 'preview') {
+        await runCleanupPreview(context, { uris: await expandSelectedForPreview(targets), emptyMessage: NO_FILES_MESSAGE });
+      }
+    }),
 
-      await runWithProgress('Cleaning up selected files...', () => runCleanupOnUris(context, expanded, { renameAcrossWorkspace: true }));
+    vscode.commands.registerCommand('codeJanitor.previewCleanupSelectedFiles', async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
+      const targets = selectedTargets(clicked, selected);
+      if (targets.length === 0) {
+        void vscode.window.showInformationMessage('Code Janitor: no files selected.');
+
+        return;
+      }
+
+      await runCleanupPreview(context, { uris: await expandSelectedForPreview(targets), emptyMessage: NO_FILES_MESSAGE });
+    }),
+
+    vscode.commands.registerCommand('codeJanitor.previewCleanupOpenFiles', async () => {
+      await runCleanupPreview(context, {
+        uris: openFileUris().filter(isCSharp),
+        emptyMessage: 'Code Janitor: no open C# files to preview.',
+      });
+    }),
+
+    vscode.commands.registerCommand('codeJanitor.previewCleanupChangedFiles', async () => {
+      const changed = await collectSourceControlChanges();
+      if (changed === undefined) {
+        void vscode.window.showWarningMessage('Code Janitor: the built-in Git extension is not available.');
+
+        return;
+      }
+
+      await runCleanupPreview(context, {
+        uris: changed.filter(isCSharp),
+        emptyMessage: 'Code Janitor: no changed C# files to preview.',
+        honorOnlyChangedLines: true,
+      });
+    }),
+
+    vscode.commands.registerCommand('codeJanitor.previewCleanupWorkspace', async () => {
+      await runCleanupPreview(context, {
+        uris: await vscode.workspace.findFiles('**/*.cs', WORKSPACE_EXCLUDE),
+        emptyMessage: 'Code Janitor: no C# files found in the workspace.',
+      });
     }),
 
     vscode.commands.registerCommand(
@@ -135,9 +229,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
     ),
 
     vscode.commands.registerCommand('codeJanitor.cleanupOpenFiles', async () => {
-      const open = vscode.workspace.textDocuments
-        .filter((doc) => !doc.isClosed && doc.uri.scheme === 'file' && isSupportedFile(doc.uri))
-        .map((doc) => doc.uri);
+      const open = openFileUris();
 
       if (open.length === 0) {
         void vscode.window.showInformationMessage('Code Janitor: no open files to clean up.');
@@ -168,14 +260,7 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
     }),
 
     vscode.commands.registerCommand('codeJanitor.cleanupWorkspace', async () => {
-      const includeOthers = vscode.workspace
-        .getConfiguration('codeJanitor')
-        .get<boolean>('cleanup.includeOtherFileTypes', false);
-
-      const files = await vscode.workspace.findFiles(
-        includeOthers ? '**/*' : '**/*.cs',
-        '**/{bin,obj,node_modules,.git}/**'
-      );
+      const files = await vscode.workspace.findFiles(cleanupFileGlob(), WORKSPACE_EXCLUDE);
 
       if (files.length === 0) {
         void vscode.window.showInformationMessage('Code Janitor: no files found in the workspace.');
@@ -247,7 +332,15 @@ export function registerCleanupCommands(context: vscode.ExtensionContext): void 
   );
 }
 
-/** Uses the built-in Git extension; returns `undefined` when it is not installed. */
+/** The Git extension's `Status` numbers before `IGNORED`, the same in every version of its API. */
+const INDEX_DELETED = 2;
+const DELETED = 6;
+
+/**
+ * The changed files that still exist: a file deleted from the working tree is left out, and so is one
+ * deleted from the index unless the working tree has it again. Uses the built-in Git extension;
+ * returns `undefined` when it is not installed.
+ */
 async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> {
   const gitExtension = vscode.extensions.getExtension('vscode.git');
   if (!gitExtension) {
@@ -260,8 +353,15 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
   }
 
   const seen = new Map<string, vscode.Uri>();
+  const deleted = new Set<string>();
 
   for (const repository of api.repositories ?? []) {
+    for (const change of repository.state.workingTreeChanges ?? []) {
+      if (change.status === DELETED) {
+        deleted.add(change.uri.toString());
+      }
+    }
+
     const changes = [
       ...(repository.state.workingTreeChanges ?? []),
       ...(repository.state.indexChanges ?? []),
@@ -270,7 +370,7 @@ async function collectSourceControlChanges(): Promise<vscode.Uri[] | undefined> 
 
     for (const change of changes) {
       const uri: vscode.Uri = change.uri;
-      if (isSupportedFile(uri)) {
+      if (isCleanupTarget(uri) && change.status !== INDEX_DELETED && !deleted.has(uri.toString())) {
         seen.set(uri.toString(), uri);
       }
     }
@@ -337,13 +437,12 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   }
 
   const content = document.getText();
-  const root = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
-  const settings = readCleanupSettings(root);
+  const settings = readCleanupSettingsForUri(document.uri);
   const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
   // Only the first, complete preview reports issues: previews without some rules repeat them.
   const issues = createEditorConfigIssueLog(true);
   let reporting = true;
-  const pipeline = getCleanupPipeline(content, document.uri.fsPath, settings, disqualifiedTypeNames, (issue) => {
+  const pipeline = getCleanupPipeline(document.uri.fsPath, settings, disqualifiedTypeNames, (issue) => {
     if (reporting) {
       issues.report(issue);
     }

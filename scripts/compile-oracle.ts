@@ -1,8 +1,9 @@
 // Compile oracle: checks that cleanup never turns compiling C# into code the compiler rejects.
 // For each project: copy it to a temporary folder with the generated .editorconfig (every rule
 // cleanup applies set to warning), build it, run cleanup over its .cs files (one type per file
-// included), build again and fail on every new compiler error (CSxxxx). When there are new errors,
-// the rule responsible is found by running cleanup again with one rule at a time.
+// included), build again and fail on every new compiler error (CSxxxx, RZxxxx), and on a build that
+// fails after cleanup without one. When there are new errors, the rule responsible is found by
+// running cleanup again with one rule at a time.
 //
 // Development-time only: the extension never runs .NET. Needs the .NET SDK on PATH.
 //
@@ -20,7 +21,8 @@ import { runCleanup } from '../src/cleanup/runCleanup';
 import { discoverDisqualifiedTypeNames } from '../src/cleanup/transformations/sealedClass';
 import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
 import { editorConfigCatalog } from '../src/cleanup/editorConfigRegistry';
-import { CompilerError, compilerErrors, editorConfigVariant, newCompilerErrors, settingsVariant } from './compileOracle';
+import { CODE_STYLE_RULES } from '../src/cleanup/codeStyleRules';
+import { BuildResult, CompilerError, cleanupBuildErrors, compilerErrors, editorConfigVariant, settingsVariant } from './compileOracle';
 import { renderEditorConfig } from './editorConfigTemplate';
 import { planWorkspaceRenames } from '../src/cleanup/naming/workspaceRenamer';
 import { discoverProjects } from '../src/cleanup/naming/workspaceScope';
@@ -70,16 +72,25 @@ function removeNestedEditorConfigs(dir: string): void {
   }
 }
 
-function build(copy: string, project: string, restore: boolean): { output: string; errors: CompilerError[]; ok: boolean } {
+function build(copy: string, project: string, restore: boolean): BuildResult {
   const args = ['build', path.join(copy, project), ...BUILD_ARGUMENTS, ...(restore ? [] : ['--no-restore'])];
-  const result = spawnSync('dotnet', args, { cwd: copy, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  if (result.error) {
-    throw new Error(`dotnet could not be started: ${result.error.message}`);
+  // The .NET host sometimes dies with an internal CLR error before it compiles anything; that says nothing about the code.
+  let output = '';
+  let status: number | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = spawnSync('dotnet', args, { cwd: copy, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    if (result.error) {
+      throw new Error(`dotnet could not be started: ${result.error.message}`);
+    }
+
+    output = `${result.stdout}\n${result.stderr}`;
+    status = result.status;
+    if (!/Internal CLR error/.test(output)) {
+      break;
+    }
   }
 
-  const output = `${result.stdout}\n${result.stderr}`;
-
-  return { output, errors: compilerErrors(output, copy), ok: result.status === 0 };
+  return { output, errors: compilerErrors(output, copy), ok: status === 0 };
 }
 
 /** Runs cleanup like the batch command: one type per file first, then the pipeline on every file. */
@@ -124,7 +135,14 @@ function cleanUp(copy: string, projectDir: string, settings: CleanupSettings): C
     const plan = planWorkspaceRenames({
       projects: discoverProjects([copy]),
       targets: csharpFiles(projectDir),
-      read: (file) => fs.readFileSync(file, 'utf8'),
+      read: (file) => {
+        const bytes = fs.readFileSync(file);
+        try {
+          return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), utf8: true };
+        } catch {
+          return { text: new TextDecoder('utf-8').decode(bytes), utf8: false };
+        }
+      },
     });
     unresolved += plan.issues.length;
     for (const [file, content] of plan.contents) {
@@ -195,7 +213,7 @@ function checkTarget(target: Target, editorConfig: string): number {
     const settings = { ...createDefaultSettings(), renamePublicSymbolsAcrossWorkspace: true };
     const outcome = cleanUp(copy, projectDir, settings);
     const after = build(copy, target.project, false);
-    const added = newCompilerErrors(baseline.errors, after.errors);
+    const added = cleanupBuildErrors(baseline, after);
     console.log(`  cleanup changed ${outcome.changed.length} file(s), ${outcome.unresolved} violation(s) left unresolved`);
     console.log(`  after cleanup: ${after.errors.length} compiler error(s), ${added.length} new`);
     if (added.length === 0) {
@@ -213,7 +231,7 @@ function checkTarget(target: Target, editorConfig: string): number {
         continue;
       }
 
-      const errors = newCompilerErrors(baseline.errors, build(copy, target.project, false).errors);
+      const errors = cleanupBuildErrors(baseline, build(copy, target.project, false));
       if (errors.length > 0) {
         blamed++;
         console.log(`    ${candidate.label}: ${errors.length} new error(s)\n${describe(errors)}`);
@@ -226,11 +244,53 @@ function checkTarget(target: Target, editorConfig: string): number {
 
     return added.length;
   } finally {
-    if (process.env.ORACLE_KEEP) {
-      console.log(`  kept the cleaned copy: ${copy}`);
-    } else {
-      fs.rmSync(copy, { recursive: true, force: true });
+    keepOrRemove(copy);
+  }
+}
+
+/** `ORACLE_KEEP=1` keeps the cleaned copy for inspection. */
+function keepOrRemove(copy: string): void {
+  if (process.env.ORACLE_KEEP) {
+    console.log(`  kept the cleaned copy: ${copy}`);
+  } else {
+    fs.rmSync(copy, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The Code Style rules opt-in layer: the same project cleaned with no `.editorconfig` rule and every rule of
+ * the layer enabled with the value it proposes (as the `codeJanitor.cleanup.codeStyleRules` setting or
+ * `.codejanitor` would), so the rules `.editorconfig` would enforce in the pass above are applied by the layer.
+ */
+function checkCodeStyleLayer(target: Target): number {
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-compile-oracle-'));
+  try {
+    fs.cpSync(target.folder, copy, { recursive: true, filter: (source) => !SKIPPED_FOLDERS.has(path.basename(source)) });
+    removeNestedEditorConfigs(copy);
+    fs.writeFileSync(path.join(copy, '.editorconfig'), 'root = true\n\n[*.cs]\n', 'utf8');
+    const projectDir = path.dirname(path.join(copy, target.project));
+
+    console.log(`\n=== ${target.folder} (${target.project}): Code Style rules opt-in layer`);
+    const baseline = build(copy, target.project, true);
+    if (!baseline.ok && baseline.errors.length === 0) {
+      console.log('  NOT BUILDABLE before cleanup (no compiler errors, the build itself failed)');
+
+      return 1;
     }
+
+    const settings = { ...createDefaultSettings(), codeStyleRules: Object.fromEntries(CODE_STYLE_RULES.map((rule) => [rule.key, rule.defaultValue])) };
+    const outcome = cleanUp(copy, projectDir, settings);
+    const after = build(copy, target.project, false);
+    const added = cleanupBuildErrors(baseline, after);
+    console.log(`  cleanup changed ${outcome.changed.length} file(s), ${outcome.unresolved} violation(s) left unresolved`);
+    console.log(`  after cleanup: ${after.errors.length} compiler error(s), ${added.length} new`);
+    if (added.length > 0) {
+      console.log(describe(added, 20));
+    }
+
+    return added.length;
+  } finally {
+    keepOrRemove(copy);
   }
 }
 
@@ -259,7 +319,8 @@ const editorConfig = renderEditorConfig();
 let failures = 0;
 for (const target of targets(process.argv.slice(2))) {
   failures += checkTarget(target, editorConfig);
+  failures += checkCodeStyleLayer(target);
 }
 
-console.log(failures === 0 ? '\nCompile oracle: no new compiler errors.' : `\nCompile oracle: ${failures} new compiler error(s).`);
+console.log(failures === 0 ? '\nCompile oracle: no new compiler errors.' : `\nCompile oracle: ${failures} new compiler error(s) or failed build(s).`);
 process.exitCode = failures === 0 ? 0 : 1;

@@ -171,11 +171,30 @@ describe('newer rules', () => {
     expect(codeStyle(before, 'csharp_style_prefer_simple_property_accessors = true:warning', { ...LATEST, languageVersion: 13 }).output).toBe(before);
   });
 
-  it('IDE0380 removes unsafe when the declaration uses no pointer syntax', () => {
-    const before = lines('unsafe class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    unsafe void O(int v) { System.Console.WriteLine(v); }', '}');
-    const after = lines('class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    void O(int v) { System.Console.WriteLine(v); }', '}');
+  it('IDE0380 removes unsafe when the declaration uses no pointer syntax and only file members without pointer types', () => {
+    const before = lines('unsafe class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    unsafe void O(int v) { P(v); }', '    void P(int v) { }', '}');
+    const after = lines('class A', '{', '    void M() { var x = 5; }', '}', 'class B', '{', '    unsafe void N(int* p) { }', '    void O(int v) { P(v); }', '    void P(int v) { }', '}');
 
     expect(codeStyle(before, enforced('IDE0380')).output).toBe(after);
+  });
+
+  it('IDE0380 keeps unsafe on code that handles pointers without pointer syntax', () => {
+    const source = lines(
+      'class B',
+      '{',
+      '    private unsafe int* _p;',
+      '    static unsafe void* Alloc(int n) => null;',
+      '    static unsafe void Free(void* p) { }',
+      '    public static unsafe void Copy() { Free(Alloc(16)); }',
+      '    public unsafe bool Read() { var q = _p; return q == null; }',
+      '    unsafe void Log(int v) { System.Console.WriteLine(v); }',
+      '}'
+    );
+    const { output, issues } = codeStyle(source, enforced('IDE0380'));
+
+    // A member of another file (here Console.WriteLine) may take or return a pointer: reported, not changed.
+    expect(output).toBe(source);
+    expect(issues).toEqual([expect.stringMatching(/^IDE0380 .*line 8: .*'WriteLine'/)]);
   });
 
   it('IDE0064 makes the readonly fields of a struct that assigns `this` writable', () => {
@@ -190,7 +209,8 @@ describe('newer rules', () => {
     const { output, issues } = codeStyle(before, `${enforced('IDE0240')}\n${enforced('IDE0241')}`);
 
     expect(output).toBe(lines('class C', '{', '}', '#nullable disable', 'enum E { A }', '#nullable restore'));
-    expect(issues).toEqual([expect.stringMatching(/^IDE0241 line 4: /)]);
+    // Issue lines count in the step's input: `#nullable disable` is line 5 before IDE0240 removes line 1.
+    expect(issues).toEqual([expect.stringMatching(/^IDE0241 line 5: /)]);
     const unknownProject = codeStyle(before, enforced('IDE0240'), { directory: '/repo' });
     expect(unknownProject.output).toBe(before);
   });
@@ -253,6 +273,32 @@ describe('newer rules', () => {
     }
   });
 
+  it('IDE0001 keeps a namespace that tells apart types of the same name in imported namespaces', () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-ide0001-'));
+    try {
+      fs.writeFileSync(path.join(folder, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+      const project: ProjectInfo = { ...LATEST, directory: folder };
+      const known = lines('using System.IO.Pipelines;', 'using System.IO.Pipes;', '', 'class C', '{', '    System.IO.Pipes.PipeOptions Options;', '}');
+      const outsideIndex = lines(
+        'using System.Data.SqlClient;',
+        'using Microsoft.Data.SqlClient;',
+        'using System.Windows;',
+        'using System.Windows.Forms;',
+        '',
+        'class C',
+        '{',
+        '    System.Windows.Forms.MessageBox Box;',
+        '    Microsoft.Data.SqlClient.SqlConnection Open() => null;',
+        '}'
+      );
+
+      expect(codeStyle(known, enforced('IDE0001'), project).output).toBe(known);
+      expect(codeStyle(outsideIndex, enforced('IDE0001'), project).output).toBe(outsideIndex);
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
   it('IDE0058 discards the unused value of a call to a method of the file; IDE0059 drops an initializer overwritten right away', () => {
     const before = lines(
       'class C',
@@ -279,6 +325,141 @@ describe('newer rules', () => {
 
     expect(output).toBe(after);
     expect(issues).toEqual([expect.stringMatching(/^IDE0059 .*line 11: /)]);
+  });
+
+  it('IDE0058 only discards the value of a method of the type that makes the call', () => {
+    const source = lines(
+      'class A',
+      '{',
+      '    int Run() => 1;',
+      '    int Own() => 1;',
+      '    void M() { Run(); Own(); }',
+      '}',
+      'class B : Base',
+      '{',
+      '    int Own() => 1;',
+      '    void M() { Run(); Own(); }',
+      '}',
+      'class C',
+      '{',
+      '    void M() { Run(); }',
+      '}',
+      'partial class D',
+      '{',
+      '    int Twice(int x) => x * 2;',
+      '    void M() { Twice(1); }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('void M() { Run(); Own(); }', 'void M() { _ = Run(); _ = Own(); }'));
+  });
+
+  it('IDE0058 leaves the call alone where _ is a parameter, local or member rather than a discard', () => {
+    const source = lines(
+      'using System.Collections.Generic;',
+      'class A',
+      '{',
+      '    int Compute() => 42;',
+      '    void Lambda(List<string> items) { items.ForEach(_ => { Compute(); }); }',
+      '    void Local() { var _ = "x"; Compute(); }',
+      '    void Parameter(string _) { Compute(); }',
+      '    void Free() { Compute(); }',
+      '}',
+      'class B',
+      '{',
+      '    private string _;',
+      '    int Compute() => 42;',
+      '    void M() { Compute(); }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('void Free() { Compute(); }', 'void Free() { _ = Compute(); }'));
+  });
+
+  it('IDE0058 leaves the call alone where _ is a primary constructor parameter', () => {
+    const source = lines('class A(string _)', '{', '    int Compute() => 42;', '    void M() { Compute(); }', '}');
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source);
+  });
+
+  it('IDE0058 binds a call in an interface nested in a class to the interface, not the outer class', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    static int Run() => 1;',
+      '    interface I',
+      '    {',
+      '        void Run();',
+      '        void M() { Run(); }',
+      '    }',
+      '    interface J',
+      '    {',
+      '        int Count();',
+      '        void M() { Count(); }',
+      '    }',
+      '    interface K : I',
+      '    {',
+      '        int Own();',
+      '        void N() { Own(); }',
+      '    }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('void M() { Count(); }', 'void M() { _ = Count(); }'));
+  });
+
+  it('IDE0058 still discards in a class whose base list names only interfaces', () => {
+    const source = lines(
+      'using System;',
+      'interface IService { void M(); }',
+      'class Service : IService',
+      '{',
+      '    int Save() => 1;',
+      '    public void M() { Save(); }',
+      '}',
+      'record R(int X) : IEquatable<R>, IService',
+      '{',
+      '    int Load() => 1;',
+      '    public void M() { Load(); }',
+      '}',
+      'class Derived : Service, IService',
+      '{',
+      '    int Keep() => 1;',
+      '    public void N() { Keep(); }',
+      '}'
+    );
+    const { output } = codeStyle(source, 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning');
+
+    expect(output).toBe(source.replace('{ Save(); }', '{ _ = Save(); }').replace('{ Load(); }', '{ _ = Load(); }'));
+  });
+
+  it('IDE0058 and IDE0320 treat an interface declared in another file of the project as an interface', () => {
+    const source = lines(
+      'using System;',
+      'class Service : IService',
+      '{',
+      '    int Save() => 1;',
+      '    static int Twice(int x) => x * 2;',
+      '    public void M() { Save(); Func<int, int> f = x => Twice(x); }',
+      '}'
+    );
+    const rules = 'csharp_style_unused_value_expression_statement_preference = discard_variable:warning\ncsharp_prefer_static_anonymous_function = true:warning';
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-ide0058-'));
+    try {
+      fs.writeFileSync(path.join(folder, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>');
+      fs.writeFileSync(path.join(folder, 'IService.cs'), 'interface IService { void M(); }\n');
+      const project: ProjectInfo = { ...LATEST, directory: folder };
+
+      expect(codeStyle(source, rules, project).output).toBe(source.replace('{ Save();', '{ _ = Save();').replace('= x => Twice', '= static x => Twice'));
+      fs.writeFileSync(path.join(folder, 'IService.cs'), 'class IService { public virtual int Save() => 0; }\n');
+      expect(codeStyle(source, rules, { ...project }).output).toBe(source);
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
   });
 
   it('reports top-level statements, hidden foreach casts, unneeded suppressions and async methods without await', () => {
@@ -410,6 +591,58 @@ describe('IDE0320 never makes a capturing lambda static (shapes found in real co
     unchanged(lines('using System;', 'using System.Linq;', '', ...statements, '', 'record Item(string Name);'));
   });
 
+  it.each([
+    ['a local of a var deconstruction', ['var (a, b) = (new int[0], 1);', 'Func<int> h = () => a.Length;']],
+    ['a local of a nested var deconstruction', ['var (a, (b, c)) = (1, (2, new int[0]));', 'Func<int> h = () => c.Length;']],
+    ['a local of a typed deconstruction', ['(int p, int q) = (1, 2);', 'Func<int> h = () => p.GetHashCode();']],
+    ['a case label pattern variable', ['switch (o)', '{', '    case string t:', '        Func<int> h = () => t.Length;', '        break;', '}']],
+    ['a switch expression arm pattern variable', ['var n = o switch { string s => ((Func<int>)(() => s.Length))(), _ => 0 };']],
+  ])('keeps a lambda that reads %s', (_name, statements) => {
+    unchanged(lines('using System;', '', 'class C', '{', '    void M(object o)', '    {', ...statements.map((line) => `        ${line}`), '    }', '}'));
+  });
+
+  it('keeps a lambda that reads a field in a tuple literal or a case guard of its own body', () => {
+    unchanged(lines(
+      'using System;',
+      '',
+      'class C',
+      '{',
+      '    string _name = "";',
+      '    int _count;',
+      '    void M()',
+      '    {',
+      '        Func<int, (int, int)> pair = x => (x, _count);',
+      '        Func<object, int> length = x => { switch (x) { case string t when t == _name: return t.Length; } return 0; };',
+      '    }',
+      '}'
+    ));
+  });
+
+  it('keeps a lambda that reads a local a lambda nested in it declares again', () => {
+    unchanged(lines(
+      'using System;',
+      '',
+      'class C',
+      '{',
+      '    void M()',
+      '    {',
+      '        var item = Get();',
+      '        Action a = () => { Console.WriteLine(item); Func<int, int> f = item => item; };',
+      '    }',
+      '',
+      '    static int Get() => 1;',
+      '}'
+    ).replace('f = item => item', 'f = static item => item'));
+  });
+
+  it('still makes lambdas static whose locals share a name declared only in a sibling lambda', () => {
+    const before = method('Func<int, int> f = a => { var t = a; return t; };', 'Func<int, int> g = b => { var t = b; return t; };');
+    const output = codeStyle(before, RULE).output;
+
+    expect(output).toContain('f = static a =>');
+    expect(output).toContain('g = static b =>');
+  });
+
   it('still makes a lambda static inside a type of a file that also has top-level statements', () => {
     const source = lines('using System;', 'using System.Linq;', '', 'var total = 3;', 'Console.WriteLine(total);', '', 'class Helper', '{', '    public int[] Doubled(int[] items) => items.Select(x => x * 2).ToArray();', '}');
 
@@ -420,5 +653,27 @@ describe('IDE0320 never makes a capturing lambda static (shapes found in real co
     const before = lines('using System;', '', 'class P', '{', '    Func<int, string> M() => x => $"{x} {Math.Abs(x)} {string.Empty}";', '}');
 
     expect(codeStyle(before, RULE).output).toContain('static x => $"{x}');
+  });
+
+  it('keeps a lambda in an interface nested in a class that calls an instance member of the interface', () => {
+    unchanged(lines('using System;', '', 'class C', '{', '    static int Run() => 1;', '    interface I', '    {', '        int Run();', '        Func<int> M() => () => Run();', '    }', '}'));
+  });
+
+  it('keeps a lambda in a partial class that qualifies a member another part may declare', () => {
+    unchanged(lines('using System;', '', 'partial class P', '{', '    Func<string> M() => () => Other.ToString();', '}'));
+  });
+
+  it('still makes a lambda static in a class whose base list names only interfaces', () => {
+    const before = lines('using System;', '', 'interface IService { }', 'class S : IService, IDisposable', '{', '    static int Twice(int x) => x * 2;', '    public void Dispose() { }', '    Func<int, int> M() => x => Twice(x);', '}');
+
+    expect(codeStyle(before, RULE).output).toContain('static x => Twice(x)');
+  });
+});
+
+describe('IDE0002 inside a nested interface', () => {
+  it('keeps the type qualifier where the interface declares a member of the same name', () => {
+    const source = lines('class C', '{', '    static int X = 1;', '    interface I', '    {', '        int X { get; }', '        int M() => C.X;', '    }', '}');
+
+    expect(codeStyle(source, enforced('IDE0002')).output).toBe(source);
   });
 });

@@ -131,6 +131,8 @@ class Indenter {
   private readonly memo = new Map<number, number>();
   private readonly computing = new Set<number>();
   private readonly containers = new Map<Node, { open: number; content: number; close: number }>();
+  /** Start of the lines kept as they are, to the end of the file, after a preprocessor group. */
+  private keptFrom = Infinity;
 
   constructor(
     private readonly source: string,
@@ -143,6 +145,7 @@ class Indenter {
 
   run(): string {
     this.readLines();
+    this.keepLinesAfterUnbalancedConditional();
     this.collect(this.root);
     this.collectTokens(this.root);
     this.tokenStarts.sort((a, b) => a - b);
@@ -212,6 +215,82 @@ class Indenter {
     }
   }
 
+  /**
+   * The parser reads every branch of `#if`/`#elif`/`#else`, while the compiler (and Roslyn's
+   * formatter) sees one. When a branch leaves a brace or parenthesis open or closes one it did not
+   * open (each branch opening its own `foreach (...) {`), or an `#elif`/`#else` branch starts with
+   * a brace (each branch holding its own copy of a body or of a `} else {`), the parsed nesting is
+   * off from there to the end of the file, so those lines keep their indentation and the group is
+   * reported.
+   */
+  private keepLinesAfterUnbalancedConditional(): void {
+    const source = this.source;
+    // Per open `#if`: its first line, the brace and parenthesis depth of its current branch, and
+    // whether that branch is an `#elif`/`#else` branch whose first code character is still to come.
+    const groups: { line: number; braces: number; parens: number; awaitingBranchStart: boolean }[] = [];
+    let keepFrom = -1;
+    let reason = '';
+    const keep = (line: number, why: string): void => {
+      if (keepFrom < 0 || line < keepFrom) {
+        keepFrom = line;
+        reason = why;
+      }
+    };
+
+    this.lines.forEach((line, index) => {
+      const end = index + 1 < this.lines.length ? this.lines[index + 1].start : source.length;
+      const isDirective = line.fixed && source[line.first] === '#' && this.kinds[line.first] === CODE;
+      const directive = isDirective ? /^#\s*(if|elif|else|endif)\b/.exec(source.slice(line.first, end))?.[1] : undefined;
+      if (directive !== undefined) {
+        const group = groups[groups.length - 1];
+        if (directive === 'if') {
+          groups.push({ line: index, braces: 0, parens: 0, awaitingBranchStart: false });
+        } else if (group) {
+          if (group.braces !== 0 || group.parens !== 0) {
+            keep(group.line, 'a branch of this #if group leaves a brace or parenthesis unbalanced.');
+          }
+
+          group.braces = 0;
+          group.parens = 0;
+          group.awaitingBranchStart = directive !== 'endif';
+          if (directive === 'endif') {
+            groups.pop();
+          }
+        }
+
+        return;
+      }
+
+      for (let i = line.start; i < end && groups.length > 0; i++) {
+        if (this.kinds[i] !== CODE || /\s/.test(source[i])) {
+          continue;
+        }
+
+        const braces = source[i] === '{' ? 1 : source[i] === '}' ? -1 : 0;
+        const parens = source[i] === '(' ? 1 : source[i] === ')' ? -1 : 0;
+        for (const group of groups) {
+          if (group.awaitingBranchStart && braces !== 0) {
+            keep(group.line, 'a branch of this #if group starts with a brace, so the branches repeat a body or a block boundary.');
+          }
+
+          group.awaitingBranchStart = false;
+          group.braces += braces;
+          group.parens += parens;
+        }
+      }
+    });
+
+    if (keepFrom < 0) {
+      return;
+    }
+
+    this.report(describeIssue('IDE0055', 'indentation', source, this.lines[keepFrom].first, `the lines from here to the end of the file keep their indentation: ${reason}`));
+    this.keptFrom = this.lines[keepFrom].start;
+    for (let index = keepFrom; index < this.lines.length; index++) {
+      this.lines[index] = { ...this.lines[index], fixed: true };
+    }
+  }
+
   private lineOf(position: number): number {
     let low = 0;
     let high = this.lines.length - 1;
@@ -265,6 +344,7 @@ class Indenter {
       for (const child of node.namedChildren) {
         if (child !== name && child.type !== 'comment' && !child.type.startsWith('preproc')) {
           this.set(child.startIndex, { kind: 'top', node: child });
+          this.alignAttributes(child);
         }
       }
     }
@@ -343,7 +423,8 @@ class Indenter {
       const clean = !isRecoveredNode(child) && (!previous || isComplete(previous));
       previous = child;
       if (!clean) {
-        if (!reported) {
+        // Inside the region kept after a preprocessor group the lines do not move; that is reported.
+        if (!reported && child.startIndex < this.keptFrom) {
           reported = true;
           this.report(describeIssue('IDE0055', 'indentation', this.source, child.startIndex, 'some lines keep their relative indentation, the code could not be fully parsed.'));
         }

@@ -67,7 +67,8 @@ export const regionDirectiveRemover: SourceTransformation = {
       return source;
     }
 
-    return source.replace(/^[ \t]*#(?:end)?region\b[^\r\n]*(?:\r?\n)?/gm, '');
+    // A byte order mark in front of a `#region` on the first line belongs to the file, not to the directive.
+    return source.replace(/^(\uFEFF?)[ \t]*#(?:end)?region\b[^\r\n]*(?:\r?\n)?/gm, '$1');
   },
 };
 

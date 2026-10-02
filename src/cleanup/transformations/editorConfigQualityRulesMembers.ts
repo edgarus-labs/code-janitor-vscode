@@ -3,7 +3,7 @@ import { Node, TextEdit, applyEdits, walk } from '../parser';
 import { lex } from '../syntax/lexer';
 import type { RuleContext } from './editorConfigCodeStyle';
 import { hasModifier, hasParseErrors, lineNumberAt, parseErrorCount } from './editorConfigSupport';
-import { ProjectFacts, loadProjectFacts } from './editorConfigQualityRulesProject';
+import { ProjectFacts, exposesInternals, loadProjectFacts, suppressionsOf } from './editorConfigQualityRulesProject';
 import {
   DeclaredTypes,
   Suppressions,
@@ -229,6 +229,92 @@ const WELL_KNOWN_STATIC_TYPES: Record<string, true> = {
   Volatile: true,
 };
 
+/**
+ * Members the compiler binds to by name for a language pattern, with no reference in the source,
+ * and what the type needs for the pattern to apply: `foreach` (`GetEnumerator`, `MoveNext`,
+ * `Current` and their async forms), deconstruction, `await` (the awaiter members), `fixed`,
+ * `await using`, ranges (`Slice`), interpolated string handlers (`AppendLiteral`,
+ * `AppendFormatted`), async method builders (the members named like common ones only on a type
+ * with the builder's distinctive `SetStateMachine` or `AwaitOnCompleted`), a collection initializer
+ * (`Add`, on an `IEnumerable`), `using` on a ref struct (`Dispose`), implicit index support
+ * (`Length`, `Count`, on a type that has or may inherit an indexer) and query expressions
+ * (`Select`, `Where`, ...; see `mayBindQuery`). They must stay instance members, and are used even
+ * when nothing names them.
+ */
+const PATTERN_MEMBERS: Record<string, 'always' | 'baseList' | 'refStruct' | 'indexer' | 'builder' | 'query'> = {
+  GetEnumerator: 'always',
+  GetAsyncEnumerator: 'always',
+  MoveNext: 'always',
+  MoveNextAsync: 'always',
+  Current: 'always',
+  Deconstruct: 'always',
+  GetAwaiter: 'always',
+  GetResult: 'always',
+  IsCompleted: 'always',
+  GetPinnableReference: 'always',
+  DisposeAsync: 'always',
+  Slice: 'always',
+  AppendLiteral: 'always',
+  AppendFormatted: 'always',
+  SetStateMachine: 'always',
+  AwaitOnCompleted: 'always',
+  AwaitUnsafeOnCompleted: 'always',
+  Start: 'builder',
+  Task: 'builder',
+  SetResult: 'builder',
+  SetException: 'builder',
+  Add: 'baseList',
+  Dispose: 'refStruct',
+  Length: 'indexer',
+  Count: 'indexer',
+  Select: 'query',
+  SelectMany: 'query',
+  Where: 'query',
+  OrderBy: 'query',
+  OrderByDescending: 'query',
+  ThenBy: 'query',
+  ThenByDescending: 'query',
+  GroupBy: 'query',
+  Join: 'query',
+  GroupJoin: 'query',
+  Cast: 'query',
+};
+
+/** Whether `type` declares a member only an async method builder has, so its `Start`, `Task`, ... are the builder's. */
+function isAsyncMethodBuilder(type: Node): boolean {
+  return (type.childForFieldName('body')?.namedChildren ?? []).some(
+    (member) => member.type === 'method_declaration' && /^(?:SetStateMachine|AwaitOnCompleted|AwaitUnsafeOnCompleted)$/.test(member.childForFieldName('name')?.text ?? '')
+  );
+}
+
+/** `from x in` (or `from T x in`), a query expression, also in comments or strings: over-matching only makes a rule report. */
+const QUERY_EXPRESSION = /\bfrom\s+(?:[\w.<>,?()[\]\s]+?\s+)?@?\w+\s+in\b/;
+
+/**
+ * Whether a query expression may bind to a `query` pattern member: one of the file (a private
+ * member is only reachable from it), or, for a member visible to the project, of any file. A query
+ * clause passes a lambda to every such method but `Cast`, which it calls with a type argument, so a
+ * method that is not generic and takes no parameter a lambda converts to never binds.
+ */
+function mayBindQuery(source: string, member: Node): boolean {
+  if (member.type === 'method_declaration' && !member.namedChildren.some((child) => child.type === 'type_parameter_list')) {
+    const parameters = member.childForFieldName('parameters')?.namedChildren.filter((child) => child.type === 'parameter') ?? [];
+    const lambdaTarget = parameters.some((parameter) => {
+      let type = parameter.childForFieldName('type');
+      while (type?.type === 'nullable_type') {
+        type = type.childForFieldName('type');
+      }
+
+      return !type || !['predefined_type', 'array_type', 'tuple_type', 'pointer_type'].includes(type.type);
+    });
+    if (!lambdaTarget) {
+      return false;
+    }
+  }
+
+  return resultantVisibility(member) !== 'private' || QUERY_EXPRESSION.test(source);
+}
+
 interface ApiSurface {
   readonly all: boolean;
   readonly groups: ReadonlySet<Visibility>;
@@ -281,6 +367,10 @@ class StaticMembers {
   private readonly suppressions: Suppressions;
   private readonly occurrences: Occurrence[];
   private readonly interfaceMemberNames: ReadonlySet<string>;
+  /** The bases of the interfaces the file and project declare, by interface name. */
+  private readonly interfaceBases = new Map<string, string[]>();
+  /** The project, or this file's current text, applies InternalsVisibleTo. */
+  private readonly internalsExposed: boolean;
 
   constructor(
     private readonly source: string,
@@ -291,10 +381,18 @@ class StaticMembers {
   ) {
     this.model = buildSourceModel(source);
     this.types = new DeclaredTypes(this.model, project?.others.typeNames);
-    this.suppressions = new Suppressions(source);
+    this.suppressions = suppressionsOf(source, context);
     this.occurrences = [...this.model.occurrencesByName.values()].flat();
     const interfaces = this.model.symbols.filter((symbol) => symbol.category === 'member' && symbol.type?.kind === 'interface');
     this.interfaceMemberNames = new Set([...interfaces.map((symbol) => symbol.name), ...(project?.others.interfaceMemberNames ?? [])]);
+    const edges = [
+      ...this.model.types.filter((type) => type.kind === 'interface').flatMap((type) => baseNames(type).map((base): [string, string] => [type.name, base])),
+      ...[...(project?.others.interfaceBases ?? [])].map((edge): [string, string] => [edge.slice(0, edge.indexOf(':')), edge.slice(edge.indexOf(':') + 1)]),
+    ];
+    for (const [name, base] of edges) {
+      this.interfaceBases.set(name, [...(this.interfaceBases.get(name) ?? []), base]);
+    }
+    this.internalsExposed = exposesInternals(project, source);
   }
 
   apply(): string {
@@ -341,19 +439,27 @@ class StaticMembers {
       return SKIP;
     }
 
-    // A public member of a type with a base list may implicitly implement an interface member,
-    // which Roslyn does not analyze.
+    // A public member may implicitly implement an interface member, of its type or of a type
+    // deriving from it, which Roslyn does not analyze.
     const baseList = type.node.namedChildren.find((child) => child.type === 'base_list');
-    let unknownBases: string[] = [];
-    if (baseList && hasModifier(member, 'public')) {
-      if (this.interfaceMemberNames.has(name) || WELL_KNOWN_INTERFACE_MEMBERS[name] === true) {
+    const interfaceName = this.interfaceMemberNames.has(name) || WELL_KNOWN_INTERFACE_MEMBERS[name] === true;
+    const unknownBases: string[] = [];
+    let derivedImplementation: string | undefined;
+    if (hasModifier(member, 'public')) {
+      if (baseList && interfaceName) {
         return SKIP;
       }
 
-      unknownBases = baseList.namedChildren
-        .filter((base) => base.type !== 'argument_list')
-        .map((base) => base.text.replace(/<.*$/s, '').split('.').pop()?.trim() ?? '')
-        .filter((base) => !this.types.declaresType(base) && WELL_KNOWN_INTERFACES[base] !== true);
+      const derived = this.derivedTypes(type);
+      if (derived.length > 0 && interfaceName) {
+        derivedImplementation = `a derived type may implement an interface member named '${name}' with it`;
+      } else if (this.project?.others.derivedOrConstrainedNames.has(type.name)) {
+        derivedImplementation = `a type of another file derives from ${type.name} and may implement an interface member with it`;
+      }
+
+      for (const info of [type, ...derived]) {
+        unknownBases.push(...this.withInheritedInterfaces(baseNames(info)).filter((base) => !this.types.declaresType(base) && WELL_KNOWN_INTERFACES[base] !== true && !unknownBases.includes(base)));
+      }
     }
 
     // From here on the member is a violation Roslyn reports; anything unproven is reported.
@@ -381,6 +487,29 @@ class StaticMembers {
 
     if (unknownBases.length > 0) {
       return report(`it is public and may implement a member of ${unknownBases.join(', ')}`);
+    }
+
+    if (derivedImplementation) {
+      return report(derivedImplementation);
+    }
+
+    const pattern = Object.hasOwn(PATTERN_MEMBERS, name) ? PATTERN_MEMBERS[name] : undefined;
+    // Collection initializers and implicit index and range support look Add or Length/Count up on
+    // the receiver, which may also be a type deriving from this one, of this file or of another file.
+    const derivedReceivers = pattern === 'baseList' || pattern === 'indexer' ? this.derivedTypes(type) : [];
+    const derivedElsewhere = this.project?.others.derivedOrConstrainedNames.has(type.name) === true;
+    if (
+      pattern === 'always' ||
+      // A derived type implementing IEnumerable lists it after its base class.
+      (pattern === 'baseList' && (baseList || derivedElsewhere || derivedReceivers.some((derived) => baseNames(derived).length > 1))) ||
+      (pattern === 'refStruct' && type.node.type === 'struct_declaration' && hasModifier(type.node, 'ref')) ||
+      (pattern === 'indexer' && (derivedElsewhere || [type, ...derivedReceivers].some((receiver) => this.mayHaveIndexer(receiver)))) ||
+      (pattern === 'builder' && isAsyncMethodBuilder(type.node)) ||
+      (pattern === 'query' && mayBindQuery(this.source, member))
+    ) {
+      return report(
+        `the compiler binds a language pattern (foreach, deconstruction, fixed, using, collection initializers, indexing, queries, interpolated string handlers or async method builders) to an instance member named '${name}'`
+      );
     }
 
     if (use?.kind === 'report') {
@@ -417,6 +546,23 @@ class StaticMembers {
     }
 
     return { kind: 'fix', edits: [addModifierEdit(this.context.props, member, 'static', first), ...references.edits] };
+  }
+
+  /** The types of this file deriving from `type`, directly or through other types of the file. */
+  private derivedTypes(type: TypeInfo): TypeInfo[] {
+    const derived: TypeInfo[] = [];
+    const pending = [type.name];
+    while (pending.length > 0) {
+      const base = pending.pop() as string;
+      for (const info of this.model.types) {
+        if (info !== type && !derived.includes(info) && baseNames(info).includes(base)) {
+          derived.push(info);
+          pending.push(info.name);
+        }
+      }
+    }
+
+    return derived;
   }
 
   /** The members CA1822 analyzes (Roslyn's `ShouldAnalyze`), minus those suppressed or outside `api_surface`. */
@@ -546,7 +692,9 @@ class StaticMembers {
         return INSTANCE;
       }
 
-      if (inheritsUnknown && !type.memberNames.has(used) && !this.isTypeName(used, occurrence)) {
+      // A name read as a type (`Encoding.UTF8`, `User.Identity`) may be an inherited member instead:
+      // member lookup in the class comes before type lookup.
+      if (inheritsUnknown && !type.memberNames.has(used)) {
         unresolved.add(used);
       }
     }
@@ -590,6 +738,16 @@ class StaticMembers {
     return names;
   }
 
+  /** `bases` with the interfaces the project interfaces among them extend, transitively. */
+  private withInheritedInterfaces(bases: readonly string[]): string[] {
+    const all = [...bases];
+    for (let index = 0; index < all.length; index++) {
+      all.push(...(this.interfaceBases.get(all[index]) ?? []).filter((base) => !all.includes(base)));
+    }
+
+    return all;
+  }
+
   /** True when a class may inherit members this file does not show: a base class, or other parts of a partial type. */
   private inheritsUnknownMembers(type: TypeInfo): boolean {
     if (type.isPartial) {
@@ -614,18 +772,65 @@ class StaticMembers {
     });
   }
 
+  /**
+   * True when `type` has an indexer or a `Slice` method implicit index or range support may use:
+   * its own, one a class of the file it derives from has, or possibly one of a base type this file
+   * does not declare (or of its other parts, for a partial type).
+   */
+  private mayHaveIndexer(type: TypeInfo, seen = new Set<TypeInfo>()): boolean {
+    const members = type.node.childForFieldName('body')?.namedChildren ?? [];
+    if (members.some((child) => child.type === 'indexer_declaration' || (child.type === 'method_declaration' && child.childForFieldName('name')?.text === 'Slice'))) {
+      return true;
+    }
+
+    if (type.isPartial) {
+      return true;
+    }
+
+    if (seen.has(type) || type.node.type === 'struct_declaration' || isRecordStruct(type.node)) {
+      return false;
+    }
+
+    seen.add(type);
+    const interfaces = this.project?.others.interfaceNames;
+
+    return baseNames(type).some((base) => {
+      const declared = this.model.types.filter((info) => info.name === base);
+      if (declared.length === 0) {
+        return WELL_KNOWN_INTERFACES[base] !== true && interfaces?.has(base) !== true;
+      }
+
+      return declared.some((info) => info.kind !== 'interface' && this.mayHaveIndexer(info, seen));
+    });
+  }
+
+  /** True when `other` derives from `type`, or may through a base (or another part) this file does not show. */
+  private mayDeriveFrom(other: TypeInfo, type: TypeInfo, seen = new Set<TypeInfo>()): boolean {
+    if (other.isPartial) {
+      return true;
+    }
+
+    if (seen.has(other)) {
+      return false;
+    }
+
+    seen.add(other);
+    const interfaces = this.project?.others.interfaceNames;
+
+    return baseNames(other).some((base) => {
+      const declared = this.model.types.filter((info) => info.name === base);
+      if (declared.length === 0) {
+        return WELL_KNOWN_INTERFACES[base] !== true && interfaces?.has(base) !== true;
+      }
+
+      return declared.some((info) => info === type || (info.kind !== 'interface' && this.mayDeriveFrom(info, type, seen)));
+    });
+  }
+
   private isTypeParameter(name: string, offset: number): boolean {
     return this.model.symbols.some(
       (symbol) => symbol.category === 'typeParameter' && symbol.name === name && symbol.region !== undefined && spans(symbol.region, offset, offset)
     );
-  }
-
-  /** A name used as the receiver of a member access that names a known type (`Console.WriteLine`). */
-  private isTypeName(name: string, occurrence: Occurrence): boolean {
-    const node = occurrence.node;
-    const receiver = node?.parent?.type === 'member_access_expression' && node.parent.childForFieldName('expression') === node;
-
-    return receiver && (this.types.declaresType(name) || WELL_KNOWN_STATIC_TYPES[name] === true);
   }
 
   /**
@@ -653,7 +858,13 @@ class StaticMembers {
       switch (role.kind) {
         case 'member':
           if (role.receiver.kind === 'this') {
-            if (typeAt(this.model, occurrence.start) !== type) {
+            const other = typeAt(this.model, occurrence.start);
+            if (other !== type) {
+              // `this.Name` in a type deriving from ours (or that may) can call our member: CS0176 once static.
+              if (other && this.mayDeriveFrom(other, type)) {
+                blocker ??= `this.${name} on line ${line} is used in a derived type`;
+              }
+
               break;
             }
 
@@ -729,7 +940,11 @@ class StaticMembers {
       return report(`it is visible to the whole project, whose files could not all be checked (${this.project.incomplete})`);
     }
 
-    if (this.project.internalsVisibleTo) {
+    if (this.project.markup) {
+      return report(`it is visible to markup of the project the cleanup does not read (${this.project.markup})`);
+    }
+
+    if (this.internalsExposed) {
       return report('InternalsVisibleTo exposes it to other assemblies');
     }
 
@@ -739,6 +954,15 @@ class StaticMembers {
 
     return undefined;
   }
+}
+
+/** The simple names in the base list of `type` (`Base<T>`, `Ns.IFace` -> `Base`, `IFace`). */
+function baseNames(type: TypeInfo): string[] {
+  const baseList = type.node.namedChildren.find((child) => child.type === 'base_list');
+
+  return (baseList?.namedChildren ?? [])
+    .filter((base) => base.type !== 'argument_list')
+    .map((base) => base.text.replace(/<.*$/s, '').split('.').pop()?.trim() ?? '');
 }
 
 function accessorKeyword(accessor: Node): string {
@@ -899,7 +1123,7 @@ export function applyRemoveUnusedPrivateMembers(source: string, context: RuleCon
   return untilStable(source, context, 'IDE0051', (current, issues) => {
     const model = buildSourceModel(current);
     const uses = new NameUses(current);
-    const suppressions = new Suppressions(current);
+    const suppressions = suppressionsOf(current, context);
     const declarationNames = new Set(model.symbols.filter((symbol) => symbol.category === 'member' || symbol.category === 'type').map((symbol) => symbol.nameNode.startIndex));
     const edits: TextEdit[] = [];
     const issue = (member: PrivateMember, reason: string): void => {
@@ -929,6 +1153,12 @@ export function applyRemoveUnusedPrivateMembers(source: string, context: RuleCon
           issue(member, 'the cleanup parser could not fully analyze its type');
         } else if (attributesOf(member.declaration).length > 0) {
           issue(member, 'it has attributes that may use it (serialization, reflection or framework hooks)');
+        } else if (
+          member.kind !== 'field' &&
+          Object.hasOwn(PATTERN_MEMBERS, member.name) &&
+          (PATTERN_MEMBERS[member.name] === 'query' ? mayBindQuery(current, member.declaration) : PATTERN_MEMBERS[member.name] !== 'builder' || isAsyncMethodBuilder(type))
+        ) {
+          issue(member, 'the compiler may bind a language pattern (deconstruction, foreach, await, using, indexing, a query, an interpolated string handler or an async method builder) to it without naming it');
         } else if (uses.mentioned(uses.strings, member.name)) {
           issue(member, 'its name appears in a string literal, so it may be used through reflection or data binding');
         } else if (uses.mentioned(uses.comments, member.name)) {
@@ -975,7 +1205,7 @@ export function reportUnreadPrivateMembers(source: string, context: RuleContext)
 
   const model = buildSourceModel(source);
   const uses = new NameUses(source);
-  const suppressions = new Suppressions(source);
+  const suppressions = suppressionsOf(source, context);
   for (const type of memberTypes(model.root)) {
     if (hasModifier(type, 'partial') || hasBrokenMemberDeclarations(type)) {
       continue;

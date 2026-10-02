@@ -130,6 +130,64 @@ describe('editorconfig formatting: indentation', () => {
     );
   });
 
+  it('never touches lines inside a $@ string whose interpolation hole holds a string literal', () => {
+    const source = lines('class C', '{', '  string M(bool c) => $@"{(c ? "a" : "b")}', '  keep two spaces', '  ";', '  int y;', '}');
+
+    expect(format(source, 'indent_size = 4')).toBe(
+      lines('class C', '{', '    string M(bool c) => $@"{(c ? "a" : "b")}', '  keep two spaces', '  ";', '    int y;', '}')
+    );
+  });
+
+  it('keeps the lines from an #if whose branches each open a brace to the end of the file, and reports them', () => {
+    const source = lines(
+      'class C',
+      '{',
+      '    void M()',
+      '    {',
+      '      Use(0);',
+      '#if NET8_0_OR_GREATER',
+      '        foreach (var item in Span())',
+      '        {',
+      '#else',
+      '        foreach (var item in Array())',
+      '        {',
+      '#endif',
+      '            Use(item);',
+      '        }',
+      '    }',
+      '',
+      '    void Other() { }',
+      '}'
+    );
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n\n[*.cs]\ndotnet_diagnostic.IDE0055.severity = warning\n' }], '/repo/Sample.cs');
+    const issues: string[] = [];
+
+    const output = createEditorConfigFormattingConverter(props, (issue) => issues.push(issue)).apply(source);
+
+    expect(output).toBe(source.replace('      Use(0);', '        Use(0);'));
+    expect(issues).toEqual([expect.stringMatching(/^IDE0055 \(indentation\) line 6: /)]);
+  });
+
+  it.each([
+    ['a member body', ['    void M(bool a)', '#if X', '    { Y(); }', '#else', '    { }', '#endif'], 4],
+    ['a "} else {" header', ['    void M(bool a)', '    {', '        if (a)', '        {', '#if X', '        } else if (!a) {', '#else', '        } else {', '#endif', '            Y();', '        }', '    }'], 7],
+  ])('keeps the lines from an #if whose balanced branches each duplicate %s to the end of the file, and reports them', (_name, group, reportedLine) => {
+    const source = lines('class C', '{', ...(group as string[]), '', '      void N(bool a)', '    {', '      Y();', '    }', '}');
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n\n[*.cs]\ndotnet_diagnostic.IDE0055.severity = warning\n' }], '/repo/Sample.cs');
+    const issues: string[] = [];
+
+    const output = createEditorConfigFormattingConverter(props, (issue) => issues.push(issue)).apply(source);
+
+    expect(output).toBe(source);
+    expect(issues).toEqual([expect.stringMatching(new RegExp(`^IDE0055 \\(indentation\\) line ${reportedLine}: `))]);
+  });
+
+  it('still indents the branches of an #if whose branches are each balanced', () => {
+    const source = lines('class C', '{', '    void M()', '    {', '#if DEBUG', '      if (A()) { B(); }', '#else', '          C();', '#endif', '      D();', '    }', '}');
+
+    expect(format(source)).toBe(lines('class C', '{', '    void M()', '    {', '#if DEBUG', '        if (A()) { B(); }', '#else', '        C();', '#endif', '        D();', '    }', '}'));
+  });
+
   it('indents switch labels, case contents and case blocks per the csharp_indent_* options', () => {
     const source = lines(
       'class C',
@@ -203,11 +261,17 @@ describe('editorconfig formatting: indentation', () => {
   });
 
   it('places labels per csharp_indent_labels', () => {
-    const source = lines('class C', '{', '    void M()', '    {', '        A();', '    retry:', '        B();', '    }', '}');
+    // At column 6, where neither of the other options would put it.
+    const source = lines('class C', '{', '    void M()', '    {', '        A();', '      retry:', '        B();', '    }', '}');
 
     expect(format(source, 'csharp_indent_labels = flush_left')).toContain('\nretry:\n');
     expect(format(source, 'csharp_indent_labels = one_less_than_current')).toContain('\n    retry:\n');
-    expect(format(source, 'csharp_indent_labels = no_change')).toContain('\n    retry:\n');
+    expect(format(source, 'csharp_indent_labels = no_change')).toContain('\n      retry:\n');
+  });
+
+  it('aligns the attribute lines of top-level and file-scoped namespace members with the member', () => {
+    expect(format(lines('namespace N;', '', '  [A]', '    [B]', '  public class C { }'))).toBe(lines('namespace N;', '', '[A]', '[B]', 'public class C { }'));
+    expect(format(lines('  [A]', '    [B]', '  public class C { }'))).toBe(lines('[A]', '[B]', 'public class C { }'));
   });
 
   it('indents lambda bodies and object initializers from the line owning their brace, leaving collection initializers as Roslyn does', () => {

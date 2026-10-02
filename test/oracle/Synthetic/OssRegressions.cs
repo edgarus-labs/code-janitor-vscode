@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 
 namespace Oracle.Regressions
 {
-    // Constructs from GuardClauses and MediatR that cleanup once broke.
+    // Constructs from open-source libraries that cleanup once broke.
     public interface IHandler<TMessage>
     {
         Task Handle(TMessage message, CancellationToken cancellationToken);

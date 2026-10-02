@@ -69,6 +69,40 @@ describe('severity from .globalconfig files', () => {
 
     expect(severities(root, 'CA1805', 'CA1852')).toEqual({ CA1805: 'none', CA1852: undefined });
   });
+
+  it('resolves relative <GlobalAnalyzerConfigFiles> items of Directory.Build.props against the project, as MSBuild does', () => {
+    const root = fixture({
+      '.editorconfig': EDITORCONFIG_ROOT,
+      'Directory.Build.props':
+        '<Project><ItemGroup><GlobalAnalyzerConfigFiles Include="rules.globalconfig" /><GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)shared.globalconfig" /></ItemGroup></Project>',
+      'rules.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1805.severity = error\n',
+      'shared.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1825.severity = warning\n',
+      'App/App.csproj': sdkProject('', '', 'net472'),
+      'App/Sample.cs': '',
+    });
+    expect(severities(root, 'CA1805', 'CA1825')).toEqual({ CA1805: undefined, CA1825: 'warning' });
+
+    fs.writeFileSync(path.join(root, 'App', 'rules.globalconfig'), 'is_global = true\ndotnet_diagnostic.CA1805.severity = suggestion\n');
+    expect(severities(root, 'CA1805')).toEqual({ CA1805: 'suggestion' });
+  });
+
+  it('reads .globalconfig files above every folder holding compile items of the project, as the SDK does', () => {
+    const files = {
+      '.editorconfig': EDITORCONFIG_ROOT,
+      'App/Sub/.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1805.severity = warning\n',
+      'App/Sub/Other.cs': '',
+      'App/obj/.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1825.severity = warning\n',
+      'App/obj/Generated.cs': '',
+      'Shared/.globalconfig': 'is_global = true\ndotnet_diagnostic.CA1852.severity = error\n',
+      'Shared/Shared.cs': '',
+      'App/Sample.cs': '',
+    };
+    const sdk = fixture({ ...files, 'App/App.csproj': sdkProject('', '    <Compile Include="..\\Shared\\Shared.cs" />', 'net472') });
+    expect(severities(sdk, 'CA1805', 'CA1825', 'CA1852')).toEqual({ CA1805: 'warning', CA1825: undefined, CA1852: 'error' });
+
+    const explicit = fixture({ ...files, 'App/App.csproj': sdkProject('<EnableDefaultCompileItems>false</EnableDefaultCompileItems>', '    <Compile Include="Sample.cs" />', 'net472') });
+    expect(severities(explicit, 'CA1805', 'CA1825', 'CA1852')).toEqual({ CA1805: undefined, CA1825: undefined, CA1852: undefined });
+  });
 });
 
 describe('severity from the project (MSBuild)', () => {

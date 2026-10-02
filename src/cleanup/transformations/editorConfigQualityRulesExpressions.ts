@@ -1,8 +1,8 @@
-import { SourceModel, buildSourceModel } from '../naming/sourceModel';
+import { SourceModel, buildSourceModel, typeAt } from '../naming/sourceModel';
 import { Node, TextEdit, applyEdits, parseCSharp, walk } from '../parser';
 import type { RuleContext } from './editorConfigCodeStyle';
 import { hasModifier, hasParseErrors } from './editorConfigSupport';
-import { loadProjectFacts, targetFrameworksOf } from './editorConfigQualityRulesProject';
+import { loadProjectFacts, suppressionsOf, targetFrameworksOf } from './editorConfigQualityRulesProject';
 import {
   DeclaredTypes,
   Suppressions,
@@ -10,6 +10,7 @@ import {
   charLiteral,
   containingTypeDeclaration,
   describeDiagnostic,
+  enclosingNames,
   frameworksSupport,
   isGenericType,
   isInsideAttribute,
@@ -49,7 +50,7 @@ export function viewOf(source: string, context: RuleContext): FileView {
     source,
     model,
     types: new DeclaredTypes(model, project?.others.typeNames),
-    suppressions: new Suppressions(source),
+    suppressions: suppressionsOf(source, context),
     edits: [],
     report: (diagnosticId, node, message) => context.report(describeDiagnostic(diagnosticId, source, node.startIndex, message)),
   };
@@ -80,6 +81,65 @@ export function importsNamespace(view: FileView, context: RuleContext, name: str
   const project = context.project ? loadProjectFacts(context.project, context.filePath) : undefined;
 
   return name === 'System' ? project?.importsSystem === true : project?.others.globalUsings.has(name) === true;
+}
+
+/**
+ * True when a simple name at `at` may bind to something the file or project declares rather than
+ * to the namespace or imported type of that name: a type, member, local, parameter or namespace of
+ * the file, a type of the project, a namespace of the project nested in a namespace around `at`
+ * (`Acme.System` inside `Acme` or `Acme.Models`), or a using alias.
+ */
+function mayBeHidden(view: FileView, context: RuleContext, name: string, at: Node): boolean {
+  if (view.types.declaresType(name) || view.model.symbolsByName.has(name)) {
+    return true;
+  }
+
+  const alias = new RegExp(`^(?:global\\s+)?using\\s+@?${name}\\s*=`);
+  if (view.model.root.descendantsOfType('using_directive').some((directive) => alias.test(directive.text))) {
+    return true;
+  }
+
+  const project = context.project ? loadProjectFacts(context.project, context.filePath) : undefined;
+  if (!project) {
+    return false;
+  }
+
+  // Namespace lookup sees the members of each namespace around `at`, innermost first.
+  const around = enclosingNames(at).namespaces;
+  const nested = around.some((_, index) => project.others.nestedNamespaces.has([...around.slice(0, index + 1), name].join('.')));
+
+  return nested || project.others.globalUsingAliases.has(name);
+}
+
+/** True when a simple name at `at` certainly binds to a type of an imported namespace: nothing of the file, project or a base type declares it. */
+function namesImportedType(view: FileView, context: RuleContext, name: string, at: Node): boolean {
+  if (mayBeHidden(view, context, name, at)) {
+    return false;
+  }
+
+  // Member lookup comes before namespace lookup and also sees inherited members and other partial parts.
+  for (let type = typeAt(view.model, at.startIndex); type; type = type.parent) {
+    if (type.hasBaseList || type.isPartial) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * How to write the `System` type `name` (`Array`, `StringComparison`) at `at`: unqualified where the
+ * file imports `System` and no member, local, parameter, type, namespace or alias of that name can
+ * bind instead, else `System.`-qualified; `undefined` when the file or project declares something
+ * named `System` too (the `global::` alias the fix would need is outside what the cleanup can verify).
+ */
+export function systemTypeReference(view: FileView, context: RuleContext, name: string, at: Node): string | undefined {
+  if (importsNamespace(view, context, 'System') && namesImportedType(view, context, name, at)) {
+    return name;
+  }
+
+  // An inherited member named `System` is too unlikely to give up the fix for; a declared one is not.
+  return mayBeHidden(view, context, 'System', at) ? undefined : `System.${name}`;
 }
 
 export const STRING_TYPES: Record<string, true> = { string: true, String: true, 'System.String': true };
@@ -277,7 +337,6 @@ export function applyArrayEmpty(source: string, context: RuleContext): string {
 
   const view = viewOf(source, context);
   const support = frameworksSupport(targetFrameworksOf(context.project), 'arrayEmpty');
-  let qualifier: string | undefined;
   for (const creation of walk(view.model.root)) {
     if (creation.type !== 'array_creation_expression' || !isZeroLengthArray(creation) || isInsideAttribute(creation) || support === false) {
       continue;
@@ -292,13 +351,15 @@ export function applyArrayEmpty(source: string, context: RuleContext): string {
       continue;
     }
 
-    if (support === undefined) {
+    const arrayType = support === undefined || isInsideLambda(creation) ? undefined : systemTypeReference(view, context, 'Array', creation);
+    if (arrayType !== undefined) {
+      view.edits.push({ start: creation.startIndex, end: creation.endIndex, text: `${arrayType}.Empty<${elementType.text}>()` });
+    } else if (support === undefined) {
       view.report('CA1825', creation, `${creation.text} allocates an empty array, but the project's target framework is unknown, so Array.Empty<T>() may not exist; it was kept.`);
     } else if (isInsideLambda(creation)) {
       view.report('CA1825', creation, `${creation.text} allocates an empty array inside a lambda that may be an expression tree; it was kept.`);
     } else {
-      qualifier ??= importsNamespace(view, context, 'System') && !view.types.declaresType('Array') ? 'Array' : 'System.Array';
-      view.edits.push({ start: creation.startIndex, end: creation.endIndex, text: `${qualifier}.Empty<${elementType.text}>()` });
+      view.report('CA1825', creation, `${creation.text} allocates an empty array, but the file or project declares something named System, so System.Array cannot be named safely; it was kept.`);
     }
   }
 
@@ -486,7 +547,16 @@ export function applyCountPreferences(source: string, context: RuleContext): str
     if ((name === 'Count' || name === 'LongCount') && args.length <= 1) {
       const kind = collectionKind(view, receiver);
       const comparison = countComparison(invocation);
-      const predicate = args.length === 1;
+      // Only a lambda or anonymous method is certainly LINQ's predicate: `s.Count(',')` may bind MemoryExtensions.Count(span, item).
+      const predicate = args.length === 1 && /^(?:lambda_expression|anonymous_method_expression)$/.test(unwrapParentheses(args[0]).type);
+      if (comparison && args.length === 1 && !predicate) {
+        if (check('CA1827')) {
+          view.report('CA1827', invocation, `${invocation.text} is compared with a constant where Any() would do, but its argument may not be a predicate (Any has no overload taking an item); it was kept.`);
+        }
+
+        continue;
+      }
+
       if (comparison && (predicate || (kind && !kind.property))) {
         if (!check('CA1827')) {
           continue;
@@ -499,13 +569,13 @@ export function applyCountPreferences(source: string, context: RuleContext): str
         } else {
           view.edits.push({ start: comparison.comparison.startIndex, end: comparison.comparison.endIndex, text: `${comparison.empty ? '!' : ''}${receiver.text}.Any(${argumentText})` });
         }
-      } else if (kind?.property && !predicate && (name === 'Count' || comparison) && check('CA1829')) {
+      } else if (kind?.property && args.length === 0 && (name === 'Count' || comparison) && check('CA1829')) {
         if (lambda) {
           view.report('CA1829', invocation, `${invocation.text} could use the ${kind.property} property, but it is inside a lambda that may be an expression tree; it was kept.`);
         } else {
           view.edits.push({ start: invocation.startIndex, end: invocation.endIndex, text: `${receiver.text}.${kind.property}` });
         }
-      } else if (comparison && !kind && !predicate && check('CA1827')) {
+      } else if (comparison && !kind && args.length === 0 && check('CA1827')) {
         view.report('CA1827', invocation, `${receiver.text}.${name}() is compared with a constant where Any() would do, but the type of ${receiver.text} cannot be determined syntactically; it was kept.`);
       }
     } else if (name === 'Any' && args.length === 0 && check('CA1860')) {
@@ -554,7 +624,7 @@ export function applyNameOf(source: string, context: RuleContext): string {
 
   const tree = parseCSharp(source);
   try {
-    const suppressions = new Suppressions(source);
+    const suppressions = suppressionsOf(source, context);
     const edits: TextEdit[] = [];
     for (const argument of walk(tree.rootNode)) {
       const literal = argument.type === 'argument' ? argument.namedChildren[argument.namedChildren.length - 1] : undefined;
@@ -785,6 +855,9 @@ export function applyStringCharOverloads(source: string, context: RuleContext): 
 
       if (support === undefined) {
         view.report('CA1865', invocation, `${invocation.text} passes a single-character string, ${frameworkMessage}`);
+      } else if (name === 'LastIndexOf' && overload.integers.length > 0) {
+        // LastIndexOf(string, startIndex) accepts startIndex == Length; LastIndexOf(char, startIndex) throws for it.
+        view.report('CA1865', invocation, `${invocation.text} passes a single-character string, but the char overload throws when the start index equals the string length, which this one accepts; it was kept.`);
       } else {
         const argumentList = invocation.childForFieldName('arguments');
         const kept = overload.integers.map((integer) => `, ${integer.text}`).join('');
@@ -840,7 +913,6 @@ export function applyStringContains(source: string, context: RuleContext): strin
 
   const view = viewOf(source, context);
   const support = frameworksSupport(targetFrameworksOf(context.project), 'stringCharOverloads');
-  let systemPrefix: string | undefined;
   for (const binary of walk(view.model.root)) {
     if (binary.type !== 'binary_expression' || support === false) {
       continue;
@@ -875,8 +947,13 @@ export function applyStringContains(source: string, context: RuleContext): strin
     if (argumentType === 'char') {
       newArguments += comparison && !ordinal ? `, ${args[1].text}` : '';
     } else if (comparison === undefined) {
-      systemPrefix ??= importsNamespace(view, context, 'System') ? '' : 'System.';
-      newArguments += `, ${systemPrefix}StringComparison.CurrentCulture`;
+      const comparisonType = systemTypeReference(view, context, 'StringComparison', binary);
+      if (comparisonType === undefined) {
+        view.report('CA2249', binary, `${binary.text} could use Contains, but the file or project declares something named System, so StringComparison cannot be named safely; it was kept.`);
+        continue;
+      }
+
+      newArguments += `, ${comparisonType}.CurrentCulture`;
     } else if (!ordinal) {
       newArguments += `, ${args[1].text}`;
     }
@@ -1016,7 +1093,7 @@ export function applyUnnecessaryUsings(source: string, context: RuleContext): st
   const tree = parseCSharp(source);
   try {
     const root = tree.rootNode;
-    const suppressions = new Suppressions(source);
+    const suppressions = suppressionsOf(source, context);
     const containers = [root, ...root.namedChildren.filter((child) => /namespace_declaration$/.test(child.type)).map((namespace) => namespace.childForFieldName('body') ?? namespace)];
     const namespaces = root.namedChildren.filter((child) => /namespace_declaration$/.test(child.type));
     const firstNamespace = namespaces[0];
@@ -1028,8 +1105,15 @@ export function applyUnnecessaryUsings(source: string, context: RuleContext): st
 
     const removed = new Set<Node>();
     for (const container of containers) {
+      const directives = container.namedChildren.filter((child) => child.type === 'using_directive');
+      // A conditional directive among the container's usings could make duplicates alternatives of each other.
+      const usingBlock = directives.length > 0 ? source.slice(container.startIndex, directives[directives.length - 1].endIndex) : '';
+      if (/^[ \t]*#\s*(?:if|else|elif|endif)\b/m.test(usingBlock)) {
+        continue;
+      }
+
       const seen = new Set<string>();
-      for (const directive of container.namedChildren.filter((child) => child.type === 'using_directive')) {
+      for (const directive of directives) {
         const key = directive.text.replace(/\s+/g, ' ').replace(/\s*;$/, '');
         if (key.startsWith('global ') || key.includes('=')) {
           continue;

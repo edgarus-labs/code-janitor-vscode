@@ -83,6 +83,54 @@ describe('CA1854 prefer TryGetValue', () => {
     );
   });
 
+  it('keeps a conditional guard inside a lambda, which may be an expression tree that cannot declare an out variable', () => {
+    expectReport(
+      'CA1854',
+      method(
+        'Dictionary<int, string> d, int[] ids',
+        'var a = ids.AsQueryable().Select(id => d.ContainsKey(id) ? d[id] : null);',
+        'var b = ids.AsQueryable().Select(id => d.ContainsKey(id) ? d[id] + "!" : null);',
+        'return a.Concat(b);'
+      ),
+      /^CA1854 line 14: /,
+      /^CA1854 line 15: .*expression tree/
+    );
+  });
+
+  it('still rewrites a guard in a statement lambda, which is never an expression tree', () => {
+    expectRewrite(
+      'CA1854',
+      method('Dictionary<int, string> d', 'Action<int> a = id => { if (d.ContainsKey(id)) Console.WriteLine(d[id]); };', 'return a;'),
+      method('Dictionary<int, string> d', 'Action<int> a = id => { if (d.TryGetValue(id, out var value)) Console.WriteLine(value); };', 'return a;')
+    );
+  });
+
+  it('rewrites a conditional guard whose read is the whole branch inside a local function', () => {
+    expectRewrite(
+      'CA1854',
+      method('Dictionary<string, int> d, string k', 'int F() => d.ContainsKey(k) ? d[k] : 0;', 'return F();'),
+      method('Dictionary<string, int> d, string k', 'int F() => d.TryGetValue(k, out var value) ? value : 0;', 'return F();')
+    );
+  });
+
+  it.each([
+    ['a foreach loop runs an effect after the read', 'foreach (var x in xs) { if (d[k] > x) { Refresh(); } }', /Refresh\(\)/],
+    ['a for loop runs an effect after the read', 'for (; xs.Length > 0;) { if (d[k] > 0) { Refresh(); } }', /Refresh\(\)/],
+    ['a while loop runs an effect after the read', 'while (xs.Length > 0) { if (d[k] > 0) { Refresh(); } }', /Refresh\(\)/],
+    ['a do loop runs an effect after the read', 'do { if (d[k] > 0) { Refresh(); } } while (xs.Length > 0);', /Refresh\(\)/],
+    ['a loop passes the read to a call', 'foreach (var x in xs) { Console.WriteLine(d[k]); }', /Console\.WriteLine\(d\[k\]\)/],
+  ])('keeps the guard when %s, before the read runs again', (_case, body, culprit) => {
+    expectReport('CA1854', method('Dictionary<string, int> d, string k, int[] xs, Action Refresh', `if (d.ContainsKey(k)) { ${body} }`, 'return null;'), new RegExp(`^CA1854 line 14: .*${culprit.source} runs`));
+  });
+
+  it('still rewrites a loop read when nothing in the loop may change the dictionary', () => {
+    expectRewrite(
+      'CA1854',
+      method('Dictionary<string, int> d, string k, int[] xs', 'if (d.ContainsKey(k)) { foreach (var x in xs) { if (x > d[k]) { return x; } } }', 'return null;'),
+      method('Dictionary<string, int> d, string k, int[] xs', 'if (d.TryGetValue(k, out var value)) { foreach (var x in xs) { if (x > value) { return x; } } }', 'return null;')
+    );
+  });
+
   it('reports a guard on a dictionary whose type is unknown and ignores guards without a read', () => {
     expectReport(
       'CA1854',
@@ -219,6 +267,23 @@ describe('CA1862 compare strings case-insensitively without changing case', () =
       /^CA1862 line 14: s\.ToLowerInvariant\(\) == "k"/
     );
   });
+
+  it('qualifies StringComparison when a member of that name would bind instead of the type', () => {
+    const source = method('string s', 'return s.ToUpperInvariant() == "ABC";').replace('class C\n{\n', 'class C\n{\n    int StringComparison;\n');
+
+    expect(cleanup(source, 'dotnet_diagnostic.CA1862.severity = warning')).toEqual({
+      output: source.replace('s.ToUpperInvariant() == "ABC"', 'string.Equals(s, "ABC", System.StringComparison.OrdinalIgnoreCase)'),
+      issues: [],
+    });
+  });
+
+  it('qualifies StringComparison in a class whose base type may declare a member of that name', () => {
+    const source = method('string s', 'return s.ToUpperInvariant() == "ABC";').replace('class C\n', 'class C : Base\n');
+
+    expect(cleanup(source, 'dotnet_diagnostic.CA1862.severity = warning').output).toBe(
+      source.replace('s.ToUpperInvariant() == "ABC"', 'string.Equals(s, "ABC", System.StringComparison.OrdinalIgnoreCase)')
+    );
+  });
 });
 
 describe('CA1305 / CA1307 / CA1310 report calls without a culture or comparison', () => {
@@ -292,6 +357,20 @@ describe('CA2016 forward the CancellationToken', () => {
     const old = body('await stream.CopyToAsync(target);');
     expect(cleanup(old, 'dotnet_diagnostic.CA2016.severity = warning', targeting('net472'))).toEqual({ output: old, issues: [] });
   });
+
+  it('reports ReadLineAsync whose Task result is not awaited directly, because the token overload returns a ValueTask', () => {
+    const body = (...statements: string[]): string =>
+      lines(...USINGS, 'class C', '{', '    async Task<string> M(StreamReader reader, CancellationToken ct)', '    {', ...statements.map((statement) => `        ${statement}`), '    }', '}');
+    expectRewrite(
+      'CA2016',
+      body('var a = await reader.ReadLineAsync();', 'return await reader.ReadLineAsync().ConfigureAwait(false);'),
+      body('var a = await reader.ReadLineAsync(ct);', 'return await reader.ReadLineAsync(ct).ConfigureAwait(false);')
+    );
+    const stored = body('var readTask = reader.ReadLineAsync();', 'var done = await Task.WhenAny(readTask, Task.Delay(1000));', 'return done == readTask ? await readTask : null;');
+    const result = cleanup(stored, 'dotnet_diagnostic.CA2016.severity = warning');
+    expect(result.output).toBe(body('var readTask = reader.ReadLineAsync();', 'var done = await Task.WhenAny(readTask, Task.Delay(1000, ct));', 'return done == readTask ? await readTask : null;'));
+    expect(result.issues).toEqual([expect.stringMatching(/^CA2016 line 14: reader\.ReadLineAsync\(\)/)]);
+  });
 });
 
 describe('CA2263 prefer the generic overload', () => {
@@ -325,6 +404,26 @@ describe('CA1861 constant arrays as arguments', () => {
         '        return s.Trim(TrimCharacters).Split(Separators);',
         '    }',
         '}'
+      )
+    );
+  });
+
+  it('inserts the fields with the file\'s CRLF line endings', () => {
+    const crlf = (text: string): string => text.replace(/\n/g, '\r\n');
+    expectRewrite(
+      'CA1861',
+      crlf(lines('class C', '{', '    string[] M(string s) => s.Split(new[] { \',\' });', '    int N(string s) => s.TrimEnd(new[] { \' \' }).Length;', '}')),
+      crlf(
+        lines(
+          'class C',
+          '{',
+          "    private static readonly char[] Separators = new[] { ',' };",
+          "    private static readonly char[] TrimCharacters = new[] { ' ' };",
+          '',
+          '    string[] M(string s) => s.Split(Separators);',
+          '    int N(string s) => s.TrimEnd(TrimCharacters).Length;',
+          '}'
+        )
       )
     );
   });
@@ -395,6 +494,65 @@ describe('CA1869 cache JsonSerializerOptions', () => {
         '    object M(object value)',
         '    {',
         '        return JsonSerializer.Serialize(value, JsonOptions);',
+        '    }',
+        '}'
+      )
+    );
+  });
+
+  it('caches options passed to the generic serializer methods', () => {
+    expectRewrite(
+      'CA1869',
+      method('string json, object o', 'var a = JsonSerializer.Deserialize<int[]>(json, new JsonSerializerOptions { WriteIndented = true });', 'return JsonSerializer.Serialize<object>(o, new JsonSerializerOptions { WriteIndented = true });'),
+      lines(
+        ...USINGS,
+        'class C',
+        '{',
+        '    private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions { WriteIndented = true };',
+        '    private static readonly JsonSerializerOptions JsonOptions1 = new JsonSerializerOptions { WriteIndented = true };',
+        '',
+        '    object M(string json, object o)',
+        '    {',
+        '        var a = JsonSerializer.Deserialize<int[]>(json, JsonOptions);',
+        '        return JsonSerializer.Serialize<object>(o, JsonOptions1);',
+        '    }',
+        '}'
+      )
+    );
+  });
+
+  it('separates the fields it adds with the blank line padding gives a multi-line field', () => {
+    expectRewrite(
+      'CA1869',
+      lines(
+        ...USINGS,
+        'class C',
+        '{',
+        '    private readonly int _count;',
+        '',
+        '    object M(string json)',
+        '    {',
+        '        return JsonSerializer.Deserialize<int[]>(json, new JsonSerializerOptions',
+        '        {',
+        '            WriteIndented = true',
+        '        });',
+        '    }',
+        '}'
+      ),
+      lines(
+        ...USINGS,
+        'class C',
+        '{',
+        '    private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions',
+        '        {',
+        '            WriteIndented = true',
+        '        };',
+        '',
+        '    private readonly int _count;',
+        '',
+        '    object M(string json)',
+        '    {',
+        '        return JsonSerializer.Deserialize<int[]>(json, JsonOptions);',
         '    }',
         '}'
       )

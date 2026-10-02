@@ -121,15 +121,15 @@ describe('stringInterpolationConverter', () => {
 
   it('handles verbatim format string', () => {
     expect(apply('class C { void M() { var s = string.Format(@"path\\{0}", x); } }')).toBe(
-      'class C { void M() { var s = $"path\\{x}"; } }'
+      'class C { void M() { var s = $"path\\\\{x}"; } }'
     );
   });
 
   it('converts format string with escaped backslash', () => {
     const input = 'class C { void M() { var s = string.Format("C:\\\\{0}", x); } }';
 
-    // The converter decodes \\ to \ and produces an interpolated string with a bare backslash
-    expect(apply(input)).toBe('class C { void M() { var s = $"C:\\{x}"; } }');
+    // The converter decodes \\ to \ and escapes it again in the interpolated string
+    expect(apply(input)).toBe('class C { void M() { var s = $"C:\\\\{x}"; } }');
   });
 
   it('handles escaped single quote in format', () => {
@@ -147,8 +147,8 @@ describe('stringInterpolationConverter', () => {
   it('converts format string with null character escape', () => {
     const input = 'class C { void M() { var s = string.Format("null\\0{0}", x); } }';
 
-    // The converter decodes \0 to null character and produces an interpolated string with it
-    expect(apply(input)).toBe('class C { void M() { var s = $"null\0{x}"; } }');
+    // The converter decodes \0 to a null character and escapes it again in the interpolated string
+    expect(apply(input)).toBe('class C { void M() { var s = $"null\\0{x}"; } }');
   });
 
   it('is named', () => {

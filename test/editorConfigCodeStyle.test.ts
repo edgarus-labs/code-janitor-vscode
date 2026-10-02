@@ -12,7 +12,9 @@ function codeStyle(source: string, rules: string, fileName = 'Sample.cs'): { out
     `/repo/src/${fileName}`
   );
   const issues: string[] = [];
-  const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName }).apply(source);
+  // A project on the latest C# version, so that no rule is held back by the language version.
+  const project = { directory: '/repo', languageVersion: 99 };
+  const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName, project }).apply(source);
 
   return { output, issues };
 }
@@ -102,13 +104,51 @@ describe('csharp_style_namespace_declarations', () => {
     );
   });
 
-  it('reports instead of re-indenting a multi-line verbatim string', () => {
+  it('converts a namespace with a multi-line verbatim string and leaves the string as it is', () => {
     const source = lines('namespace Demo', '{', '    class Sample', '    {', '        string Text = @"a', '    b";', '    }', '}');
     const { output, issues } = codeStyle(source, 'csharp_style_namespace_declarations = file_scoped:warning');
 
-    expect(output).toBe(source);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatch(/^IDE0161 \(csharp_style_namespace_declarations\) line 1: .*multi-line string/);
+    expect(output).toBe(lines('namespace Demo;', '', 'class Sample', '{', '    string Text = @"a', '    b";', '}'));
+    expect(issues).toEqual([]);
+  });
+
+  it('keeps a file-scoped namespace block-scoped when the project C# version is unknown or older than 10', () => {
+    const source = lines('namespace Demo', '{', '    class Sample', '    {', '    }', '}');
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n\n[*.cs]\ncsharp_style_namespace_declarations = file_scoped:warning\n' }], '/repo/src/Sample.cs');
+
+    for (const [project, reason] of [
+      [undefined, /version is unknown/],
+      [{ directory: '/repo' }, /version of its project is unknown/],
+      [{ directory: '/repo', languageVersion: 9 }, /C# 9 and file-scoped namespaces need C# 10/],
+    ] as const) {
+      const issues: string[] = [];
+      const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName: 'Sample.cs', project }).apply(source);
+
+      expect(output).toBe(source);
+      expect(issues).toEqual([expect.stringMatching(reason)]);
+    }
+  });
+
+  it('reports the unknown or older C# version only for a file with a block-scoped namespace to convert', () => {
+    const props = resolveEditorConfigProperties([{ directory: '/repo', text: 'root = true\n\n[*.cs]\ncsharp_style_namespace_declarations = file_scoped:warning\n' }], '/repo/src/Sample.cs');
+
+    for (const project of [undefined, { directory: '/repo' }, { directory: '/repo', languageVersion: 9 }]) {
+      for (const source of [lines('namespace Demo;', '', 'class C { }'), lines('class C { }')]) {
+        const issues: string[] = [];
+        const output = createEditorConfigCodeStyleConverter(props, (issue) => issues.push(issue), { fileName: 'Sample.cs', project }).apply(source);
+
+        expect({ output, issues }).toEqual({ output: source, issues: [] });
+      }
+    }
+  });
+
+  it('converts a namespace that follows global attributes', () => {
+    const source = lines('using System;', '[assembly: System.CLSCompliant(true)]', '', 'namespace Demo', '{', '    class C { }', '}');
+
+    expect(codeStyle(source, 'csharp_style_namespace_declarations = file_scoped:warning')).toEqual({
+      output: lines('using System;', '[assembly: System.CLSCompliant(true)]', '', 'namespace Demo;', '', 'class C { }'),
+      issues: [],
+    });
   });
 
   it('does not treat files with several namespaces as candidates', () => {
@@ -278,6 +318,33 @@ describe('csharp_style_var_*', () => {
     expect(issues).toEqual([
       "IDE0008 (csharp_style_var_for_built_in_types/csharp_style_var_when_type_is_apparent): 1 local kept as 'var' (line 12): its type is not known without a compiler.",
     ]);
+  });
+
+  it('types an integer literal as the first of its suffix types its value fits', () => {
+    const source = method(
+      'var a = 9223372036854775807L;',
+      'var b = 9223372036854775808L;',
+      'var c = 0x8000_0000_0000_0000L;',
+      'var d = 0b1L;',
+      'var e = 18_446_744_073_709_551_615UL;',
+      'var f = 0xFFFF_FFFFu;',
+      'var g = 0x1_0000_0000u;',
+      'var h = 2_147_483_648;'
+    );
+    const { output } = codeStyle(source, 'csharp_style_var_for_built_in_types = false:warning');
+
+    expect(output).toBe(
+      method(
+        'long a = 9223372036854775807L;',
+        'ulong b = 9223372036854775808L;',
+        'ulong c = 0x8000_0000_0000_0000L;',
+        'long d = 0b1L;',
+        'ulong e = 18_446_744_073_709_551_615UL;',
+        'uint f = 0xFFFF_FFFFu;',
+        'var g = 0x1_0000_0000u;',
+        'var h = 2_147_483_648;'
+      )
+    );
   });
 
   it('reports the locals whose type is not known once per file', () => {
@@ -518,33 +585,6 @@ describe('dotnet_style_qualification_for_*', () => {
   });
 });
 
-describe('csharp_using_directive_placement', () => {
-  it('moves fully qualified usings outside the namespace', () => {
-    const source = lines('namespace Contoso.App', '{', '    using System;', '    using Contoso.Data;', '', '    class Sample { }', '}');
-
-    expect(codeStyle(source, 'csharp_using_directive_placement = outside_namespace:warning')).toEqual({
-      output: lines('using System;', 'using Contoso.Data;', '', 'namespace Contoso.App', '{', '    class Sample { }', '}'),
-      issues: [],
-    });
-  });
-
-  it('reports and keeps usings whose names may be relative to the namespace', () => {
-    const source = lines('namespace Contoso.App', '{', '    using System;', '    using Data;', '', '    class Sample { }', '}');
-    const { output, issues } = codeStyle(source, 'csharp_using_directive_placement = outside_namespace:warning');
-
-    expect(output).toBe(source);
-    expect(issues).toEqual([expect.stringMatching(/^IDE0065 .* line 4: 'using Data;' was not moved/)]);
-  });
-
-  it('reports instead of moving usings into the namespace', () => {
-    const source = lines('using System;', '', 'namespace Demo', '{', '}');
-    const { output, issues } = codeStyle(source, 'csharp_using_directive_placement = inside_namespace:warning');
-
-    expect(output).toBe(source);
-    expect(issues).toHaveLength(1);
-  });
-});
-
 describe('csharp_style_inlined_variable_declaration', () => {
   it('inlines the declaration keeping its type when the scope stays the same', () => {
     const source = lines(
@@ -682,5 +722,30 @@ describe('csharp_prefer_simple_using_statement', () => {
 
     expect(output).toBe(source);
     expect(issues).toEqual([expect.stringMatching(/^IDE0063 .* line 6: .*'stream'/)]);
+  });
+
+  it('reports a using statement whose pattern designations or labels are declared elsewhere in the block', () => {
+    const block = (...body: string[]) => lines('class Sample', '{', '    void M(object o, IDisposable d)', '    {', ...body.map((line) => `        ${line}`), '    }', '}');
+    const cases = [
+      block('{ var t = ""; Use(t); }', 'using (var r = d)', '{', '    var ok = o is string t && t.Length > 0;', '}'),
+      block('{ var t = 1; }', 'using (var r = d)', '{', '    var ok = o is { } t;', '}'),
+      block('{ var a = 1; }', 'using (var r = d)', '{', '    var ok = o is var (a, b);', '}'),
+      block('{ L: ; }', 'using (var r = d)', '{', '    L: r.Dispose();', '}'),
+    ];
+
+    for (const source of cases) {
+      const { output, issues } = codeStyle(source, 'csharp_prefer_simple_using_statement = true:warning');
+
+      expect(output).toBe(source);
+      expect(issues).toEqual([expect.stringMatching(/^IDE0063 .* line 6: .*'(t|a|L)' is also used/)]);
+    }
+  });
+
+  it('converts a using statement whose pattern names nothing declared elsewhere', () => {
+    const source = lines('class Sample', '{', '    void M(object o, IDisposable d)', '    {', '        Use(typeof(Uri));', '        using (var r = d)', '        {', '            var ok = o is string t || o is Exception or Uri;', '        }', '    }', '}');
+
+    expect(codeStyle(source, 'csharp_prefer_simple_using_statement = true:warning').output).toBe(
+      lines('class Sample', '{', '    void M(object o, IDisposable d)', '    {', '        Use(typeof(Uri));', '        using var r = d;', '        var ok = o is string t || o is Exception or Uri;', '    }', '}')
+    );
   });
 });

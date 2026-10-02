@@ -119,6 +119,23 @@ describe('planOneTypePerFile', () => {
     expect(outcome.plan.newFiles.map((file) => file.filePath)).toEqual(['/w/Helper.cs']);
   });
 
+  it('keeps the type whose file name is exactly the file name before a generic type named like its stem', () => {
+    const source = 'namespace Demo;\n\ninternal class Result<T>\n{\n}\n\ninternal class Result\n{\n}\n';
+    const outcome = plan(source, 'dotnet_diagnostic.SA1402.severity = warning', '/w/Result.cs', ['Result.cs'])!;
+
+    expect(outcome.issues).toEqual([]);
+    expect(outcome.plan.newFiles.map((file) => file.filePath)).toEqual(['/w/Result{T}.cs']);
+    expect(outcome.plan.updatedSource).not.toContain('Result<T>');
+  });
+
+  it('without moving, reports the generic type, not the one whose file name is exactly the file name', () => {
+    const rules = readOneTypePerFileRules(props('dotnet_diagnostic.SA1402.severity = warning'))!;
+    const source = 'namespace Demo;\n\ninternal class Result<T>\n{\n}\n\ninternal class Result\n{\n}\n';
+    const outcome = planOneTypePerFile(source, '/w/Result.cs', rules, new Set(['Result.cs']), false);
+
+    expect(outcome.issues).toEqual([expect.stringMatching(/^SA1402 \(warning\) line 3: type 'Result' was not moved .*cleanup on save/)]);
+  });
+
   it('keeps a matching type that cannot move and moves every other movable type', () => {
     const partial = plan(
       'namespace Demo;\n\ninternal partial class Foo\n{\n}\n\ninternal class Bar\n{\n}\n\ninternal class Baz\n{\n}\n',

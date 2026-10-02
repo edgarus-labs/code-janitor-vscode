@@ -1,6 +1,7 @@
 import { CODE, classifyCSharp } from '../csharpScanner';
 import { isEnforced, resolveDiagnosticSeverity } from '../editorconfig';
 import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
+import { BCL_TYPES } from '../usings/bclIndex.generated';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { declaredTypeText } from './editorConfigExpressionPreferences';
 import { operatorOf, precedenceOf } from './editorConfigPrecedence';
@@ -177,12 +178,136 @@ const collectParameterNameOf: Collect = (_source, root, _context, { suppressed }
 
 const TYPE_DECLARATIONS = ['class_declaration', 'struct_declaration', 'record_declaration'];
 
-/** Names declared in `scope` outside `except`: locals, parameters, local functions, pattern and loop variables. */
+/** The innermost class, struct, record or interface declaration around `node`: the type whose members a simple name sees first. */
+function enclosingType(node: Node): Node | undefined {
+  for (let current = node.parent; current; current = current.parent) {
+    if (TYPE_DECLARATIONS.includes(current.type) || current.type === 'interface_declaration') {
+      return current;
+    }
+  }
+
+  return undefined;
+}
+
+/** Interfaces of the .NET base library that base lists commonly name. */
+const BCL_INTERFACES: Record<string, true> = {
+  IDisposable: true, IAsyncDisposable: true, IEquatable: true, IComparable: true, IComparer: true, IEqualityComparer: true,
+  IEnumerable: true, IEnumerator: true, IAsyncEnumerable: true, IAsyncEnumerator: true, ICollection: true, IList: true,
+  IDictionary: true, IReadOnlyCollection: true, IReadOnlyList: true, IReadOnlyDictionary: true, ISet: true, ICloneable: true,
+  IFormattable: true, ISpanFormattable: true, IParsable: true, ISpanParsable: true, IObservable: true, IObserver: true,
+  IServiceProvider: true, INotifyPropertyChanged: true, INotifyPropertyChanging: true,
+};
+
+/** The simple name a base-list entry ends in: `IFoo` for `IFoo`, `IFoo<T>`, `N.IFoo` or `global::N.IFoo<T>`. */
+function baseName(entry: Node): string | undefined {
+  if (entry.type === 'identifier') {
+    return entry.text;
+  }
+
+  if (entry.type === 'generic_name') {
+    return entry.namedChildren.find((child) => child.type === 'identifier')?.text;
+  }
+
+  const name = entry.type === 'qualified_name' || entry.type === 'alias_qualified_name' ? entry.childForFieldName('name') : null;
+  return name ? baseName(name) : undefined;
+}
+
+/**
+ * The interfaces a base list can name: those the file declares, those the other files of a fully
+ * known project declare and well-known base-library ones, except names the file also gives to a
+ * class, struct, record, enum or delegate.
+ */
+function knownInterfaces(root: Node, context: RuleContext): Set<string> {
+  const names = (kinds: string[]): string[] => findAll(root, kinds).map((type) => type.childForFieldName('name')?.text ?? '');
+  const others = new Set(names([...TYPE_DECLARATIONS, 'enum_declaration', 'delegate_declaration']));
+  const facts = context.project ? loadProjectFacts(context.project, context.filePath) : undefined;
+  const project = facts && !facts.incomplete ? facts.others.interfaceNames : [];
+  return new Set([...names(['interface_declaration']), ...project, ...Object.keys(BCL_INTERFACES)].filter((name) => name && !others.has(name)));
+}
+
+/**
+ * True when simple names in `type` may bind to members it does not declare: a partial type, an
+ * interface with base interfaces, or a class or record whose base list names a base class (an
+ * entry not among `interfaces`). Implemented interfaces add nothing to lookup inside a class.
+ */
+function inheritsMembers(type: Node, interfaces: Set<string>): boolean {
+  const bases = type.namedChildren.find((child) => child.type === 'base_list')?.namedChildren ?? [];
+  if (hasModifier(type, 'partial')) {
+    return true;
+  }
+
+  if (type.type === 'struct_declaration' || bases.length === 0) {
+    return false;
+  }
+
+  return type.type === 'interface_declaration' || bases.some((entry) => !interfaces.has(baseName(entry) ?? ''));
+}
+
+/**
+ * The variables a flat token run declares: `(int p, Foo q)` in a deconstruction, `case string t:`
+ * in a switch statement (up to `when`). The parser keeps both as plain tokens; as no expression is
+ * followed directly by a name, a designation is an identifier right after a named node (its type),
+ * and a tuple literal `(a, b)` declares nothing.
+ */
+function designations(node: Node): string[] {
+  const names: string[] = [];
+  const inner = node.children.slice(1, -1);
+  let inLabel = node.type !== 'switch_body';
+  let depth = 0;
+  inner.forEach((child, index) => {
+    const previous = inner[index - 1];
+    if (child.type === 'case') {
+      inLabel = true;
+    } else if (child.type === '(' || child.type === '{' || child.type === '[') {
+      depth++;
+    } else if (child.type === ')' || child.type === '}' || child.type === ']') {
+      depth--;
+    } else if (node.type === 'switch_body' && ((child.type === ':' && depth === 0) || (child.type === 'identifier' && child.text === 'when'))) {
+      inLabel = false;
+    } else if (inLabel && child.type === 'identifier' && previous && (previous.isNamed || /^[)\]}>]$/.test(previous.type)) && previous.type !== 'comment') {
+      names.push(child.text);
+    } else if (inLabel && child.type === 'conditional_expression' && !child.children.some((part) => part.type === ':')) {
+      // `(Foo? z, ...)`: a nullable type and its designation read as a conditional without `:`.
+      const last = child.namedChildren[child.namedChildCount - 1];
+      if (last?.type === 'identifier') {
+        names.push(last.text);
+      }
+    }
+  });
+
+  return names;
+}
+
+/**
+ * Names declared in `scope` outside `except`: locals, parameters, local functions, pattern,
+ * deconstruction and loop variables. With `except`, names declared in other anonymous and local
+ * functions (except a local function's own name) are left out: they are not in scope there.
+ */
 function declaredNames(scope: Node, except?: Node): Set<string> {
   const names = new Set<string>();
   const outside = (node: Node): boolean => !except || node.startIndex < except.startIndex || node.startIndex >= except.endIndex;
-  for (const node of findAll(scope, ['variable_declarator', 'parameter', 'local_function_statement', 'declaration_expression', 'pattern', 'catch_declaration', 'from_clause', 'let_clause', 'join_clause', 'lambda_expression'])) {
-    if (!outside(node)) {
+  const otherFunctions = except
+    ? findAll(scope, ['lambda_expression', 'anonymous_method_expression', 'local_function_statement']).filter((fn) => outside(fn) && !(fn.startIndex <= except.startIndex && except.endIndex <= fn.endIndex))
+    : [];
+  const kinds = ['variable_declarator', 'parameter', 'local_function_statement', 'declaration_expression', 'pattern', 'catch_declaration', 'from_clause', 'let_clause', 'join_clause', 'lambda_expression', 'invocation_expression', 'tuple_expression', 'switch_body'];
+  for (const node of findAll(scope, kinds)) {
+    // A local function's own name is declared in the enclosing scope; anything else in another function is not.
+    const inOtherFunction = otherFunctions.some((fn) => fn.startIndex <= node.startIndex && node.endIndex <= fn.endIndex && !(fn === node && node.type === 'local_function_statement'));
+    if (!outside(node) || inOtherFunction) {
+      continue;
+    }
+
+    if (node.type === 'invocation_expression') {
+      // `var (a, (b, c)) = ...` reads as a call of `var` whose arguments are all designations.
+      if (node.childForFieldName('function')?.text === 'var') {
+        node.childForFieldName('arguments')?.descendantsOfType('identifier').forEach((identifier) => names.add(identifier.text));
+      }
+
+      continue;
+    }
+
+    if (node.type === 'tuple_expression' || node.type === 'switch_body') {
+      designations(node).forEach((name) => names.add(name));
       continue;
     }
 
@@ -225,21 +350,15 @@ function membersOf(type: Node): Map<string, { isStatic: boolean }> {
 /**
  * True when the anonymous function provably captures nothing: no `this`/`base`, no local or
  * parameter of the enclosing code, no instance member. Other names must be types or namespaces
- * (followed by `.`, or used as a type), or static members of the type; in a type with a base
- * class, where inherited members are unknown, only names declared in the function itself.
+ * (followed by `.`, or used as a type), or static members of the type; in a type that may inherit
+ * or share members (base class, base interface, partial), only names declared in the function itself.
  */
-function capturesNothing(lambda: Node, root: Node): boolean {
+function capturesNothing(lambda: Node, root: Node, interfaces: Set<string>): boolean {
   if (findAll(lambda, ['this_expression', 'base_expression']).length > 0 || /\bnameof\s*\(/.test(lambda.text) || /\b(?:this|base)\b/.test(lambda.text)) {
     return false;
   }
 
-  let type: Node | undefined;
-  for (let current = lambda.parent; current; current = current.parent) {
-    if (TYPE_DECLARATIONS.includes(current.type)) {
-      type = current;
-      break;
-    }
-  }
+  const type = enclosingType(lambda);
 
   const member = enclosingMember(lambda) ?? root;
   const outer = declaredNames(member, lambda);
@@ -252,19 +371,31 @@ function capturesNothing(lambda: Node, root: Node): boolean {
     }
   }
   const inner = declaredNames(lambda);
+  // Its own parameters hide an outer name in the whole lambda; another name it declares (a nested
+  // lambda's parameter, a block's local) may not be in scope where an outer one of that name is used.
+  const parameters = lambda.childForFieldName('parameters');
+  const own = new Set(parameters?.type === 'identifier' ? [parameters.text] : (parameters?.namedChildren ?? []).map((parameter) => parameter.childForFieldName('name')?.text ?? ''));
   const members = type ? membersOf(type) : new Map<string, { isStatic: boolean }>();
-  const hasBase = type !== undefined && type.type !== 'struct_declaration' && type.namedChildren.some((child) => child.type === 'base_list');
+  const hasBase = type !== undefined && inheritsMembers(type, interfaces);
 
   for (const identifier of findAll(lambda, 'identifier')) {
     const name = identifier.text;
     const parent = identifier.parent;
     const isMemberName = parent?.type === 'member_access_expression' && parent.childForFieldName('name') === identifier;
     const isKeyword = (isAsyncWrapper(parent) && asyncKeyword(parent!) === identifier) || (parent?.type === 'await_expression' && parent.children[0] === identifier);
-    if (isMemberName || isKeyword || inner.has(name) || name === 'var' || name === '_') {
+    if (isMemberName || isKeyword || own.has(name) || name === 'var' || name === '_') {
       continue;
     }
 
-    if (outer.has(name) || hasBase) {
+    if (outer.has(name)) {
+      return false;
+    }
+
+    if (inner.has(name)) {
+      continue;
+    }
+
+    if (hasBase) {
       return false;
     }
 
@@ -317,11 +448,12 @@ const asyncKeyword = (node: Node): Node | undefined => {
 };
 const isAsyncWrapper = (node: Node | null): boolean => node?.type === 'lambda_expression' && asyncKeyword(node) !== undefined;
 
-function collectStaticLambdas(_source: string, root: Node): TextEdit[] {
+function collectStaticLambdas(_source: string, root: Node, context: RuleContext): TextEdit[] {
+  const interfaces = knownInterfaces(root, context);
   return findAll(root, ['lambda_expression', 'anonymous_method_expression']).flatMap((lambda): TextEdit[] => {
     // The lambda an `async` wrapper modifies is decided with (and made static through) its wrapper.
     const isStatic = lambda.children[0]?.type === 'static' || isAsyncWrapper(lambda.parent);
-    if (isStatic || hasParseErrors(lambda) || isInTopLevelStatements(lambda) || isInPossibleExpressionTree(lambda) || !capturesNothing(lambda, root)) {
+    if (isStatic || hasParseErrors(lambda) || isInTopLevelStatements(lambda) || isInPossibleExpressionTree(lambda) || !capturesNothing(lambda, root, interfaces)) {
       return [];
     }
 
@@ -336,16 +468,22 @@ function collectStaticLambdas(_source: string, root: Node): TextEdit[] {
 /** `get { return field; }` / `get => field;` become `get;`, `set { field = value; }` / `set => field = value;` become `set;` (C# 14). */
 function collectSimpleAccessors(_source: string, root: Node): TextEdit[] {
   const edits: TextEdit[] = [];
+  // Whether a type has a member named `field`: in its accessors `field` may read that member. Once per type.
+  const declaresField = new Map<Node, boolean>();
   for (const accessor of findAll(root, 'accessor_declaration')) {
     const keyword = accessor.children.find((child) => !child.isNamed && ['get', 'set', 'init'].includes(child.type));
-    const type = findAll(root, TYPE_DECLARATIONS).filter((declaration) => declaration.startIndex < accessor.startIndex && declaration.endIndex > accessor.endIndex).pop();
-    if (!keyword || hasParseErrors(accessor) || (type && membersOf(type).has('field'))) {
+    const body = keyword ? accessor.text.slice(keyword.endIndex - accessor.startIndex).replace(/\s+/g, ' ').trim() : '';
+    const simple = keyword?.type === 'get' ? /^(?:\{ return field; \}|=> field;)$/.test(body) : /^(?:\{ field = value; \}|=> field = value;)$/.test(body);
+    if (!keyword || !simple || hasParseErrors(accessor)) {
       continue;
     }
 
-    const body = accessor.text.slice(keyword.endIndex - accessor.startIndex).replace(/\s+/g, ' ').trim();
-    const simple = keyword.type === 'get' ? /^(?:\{ return field; \}|=> field;)$/.test(body) : /^(?:\{ field = value; \}|=> field = value;)$/.test(body);
-    if (simple) {
+    const type = enclosingType(accessor);
+    if (type && !declaresField.has(type)) {
+      declaresField.set(type, membersOf(type).has('field'));
+    }
+
+    if (!type || !declaresField.get(type)) {
       edits.push({ start: keyword.endIndex, end: accessor.endIndex, text: ';' });
     }
   }
@@ -360,10 +498,76 @@ function collectSimpleAccessors(_source: string, root: Node): TextEdit[] {
 /** Pointer syntax, or anything else that may need an unsafe context. */
 const UNSAFE_SYNTAX = /\*|&(?!&)|->|\b(?:stackalloc|fixed|sizeof|__arglist|__makeref|__refvalue)\b/;
 
-/** `unsafe` on a declaration whose code (strings and comments aside) holds no pointer syntax goes. */
-const collectUnsafeModifiers: Collect = (source, root, _context, { suppressed }) => {
+/** Parents whose identifiers name a type, namespace, attribute, label or argument name: never a pointer value. */
+const NAME_ONLY_PARENTS: Record<string, true> = {
+  attribute: true, type_parameter: true, type_parameter_constraints_clause: true, qualified_name: true, alias_qualified_name: true, base_list: true,
+  type_argument_list: true, implicit_type: true, array_type: true, nullable_type: true, ref_type: true, tuple_element: true, name_colon: true,
+  name_equals: true, goto_statement: true, labeled_statement: true,
+};
+
+/**
+ * Whether each member name of the file is declared with a pointer or function pointer type (in
+ * its type or parameters) by any of its declarations. The parser does not read pointer-typed
+ * fields and properties (`int* _p;`), so every member of a type it misreads counts as a pointer.
+ */
+function pointerMembers(root: Node): Map<string, boolean> {
+  const pointers = new Map<string, boolean>();
+  for (const type of findAll(root, [...TYPE_DECLARATIONS, 'interface_declaration'])) {
+    const body = type.childForFieldName('body') ?? type.namedChildren.find((child) => child.type === 'declaration_list');
+    const misread = (body?.namedChildren ?? []).some((member) => member.type === 'incomplete_declaration' || hasParseErrors(member));
+    for (const member of body?.namedChildren ?? []) {
+      const variables = member.namedChildren.find((child) => child.type === 'variable_declaration');
+      const signature = `${(member.childForFieldName('type') ?? variables?.childForFieldName('type'))?.text ?? ''} ${member.childForFieldName('parameters')?.text ?? ''}`;
+      const declared = variables ? findAll(variables, 'variable_declarator').map((declarator) => declarator.childForFieldName('name')?.text) : [member.childForFieldName('name')?.text];
+      // A misread `int* _p;` leaves a declaration of just `_p;`, without a declarator (or any identifier node).
+      const names = misread && declared.every((name) => !name) ? member.text.match(/[A-Za-z_]\w*/g) ?? [] : declared;
+      for (const name of names) {
+        if (name) {
+          pointers.set(name, pointers.get(name) === true || misread || UNSAFE_SYNTAX.test(signature));
+        }
+      }
+    }
+  }
+
+  return pointers;
+}
+
+/**
+ * The names `declaration` reads or calls as values: not its own locals, nor the receiver of a
+ * member access (a pointer has no members), nor types, namespaces and other names that are no value.
+ */
+function valueReferences(declaration: Node): string[] {
+  const locals = declaredNames(declaration);
+  const isField = (parent: Node, field: string, node: Node): boolean => parent.childForFieldName(field)?.startIndex === node.startIndex && parent.childForFieldName(field)?.endIndex === node.endIndex;
+
+  return findAll(declaration, 'identifier').flatMap((identifier) => {
+    let top = identifier.parent?.type === 'generic_name' ? identifier.parent : identifier;
+    while (top.parent?.type === 'member_access_expression' && isField(top.parent, 'name', top)) {
+      top = top.parent;
+    }
+
+    const parent = top.parent;
+    const nameOnly =
+      !parent ||
+      NAME_ONLY_PARENTS[parent.type] === true ||
+      (parent.type === 'member_access_expression' && isField(parent, 'expression', top)) ||
+      isField(parent, 'type', top) ||
+      (/_declaration$/.test(parent.type) && isField(parent, 'name', top));
+
+    return nameOnly || locals.has(identifier.text) || identifier.text === 'value' || identifier.text === 'nameof' ? [] : [identifier.text];
+  });
+}
+
+/**
+ * `unsafe` on a declaration goes when its code (strings and comments aside) holds no pointer
+ * syntax and every member it reads or calls is declared in the file without pointer types: a
+ * pointer passed from one call to another, or read from a field, needs the unsafe context too.
+ * A member of another file may have pointer types, so its use is reported instead.
+ */
+const collectUnsafeModifiers: Collect = (source, root, _context, { suppressed, report }) => {
   const kinds = classifyCSharp(source);
   const codeOf = (node: Node): string => [...source.slice(node.startIndex, node.endIndex)].map((ch, i) => (kinds[node.startIndex + i] === CODE ? ch : ' ')).join('');
+  const pointers = pointerMembers(root);
 
   return findAll(root, 'modifier').flatMap((modifier): TextEdit[] => {
     const declaration = modifier.parent;
@@ -372,7 +576,15 @@ const collectUnsafeModifiers: Collect = (source, root, _context, { suppressed })
     }
 
     const code = codeOf(declaration).replace(/\bunsafe\b/g, '');
-    if (UNSAFE_SYNTAX.test(code)) {
+    const references = valueReferences(declaration);
+    if (UNSAFE_SYNTAX.test(code) || references.some((name) => pointers.get(name) === true)) {
+      return [];
+    }
+
+    const unknown = references.find((name) => !pointers.has(name));
+    if (unknown !== undefined) {
+      report(declaration, `'unsafe' was kept: '${unknown}' is not declared in the file, so whether it has pointer types is not known.`);
+
       return [];
     }
 
@@ -575,6 +787,8 @@ const collectOfType: Collect = (_source, root, _context, { suppressed }) => {
 /** IDE0002: inside type `C`, `C.Member` becomes `Member` for a static member of `C` no local hides. */
 const collectTypeQualifiedMembers: Collect = (_source, root, _context, { suppressed }) => {
   const edits: TextEdit[] = [];
+  // Names a member declares, worked out once per member: a type can hold thousands of accesses.
+  const scopeNames = new Map<Node, Set<string>>();
   for (const type of findAll(root, TYPE_DECLARATIONS)) {
     const name = type.childForFieldName('name')?.text;
     if (!name || type.namedChildren.some((child) => child.type === 'type_parameter_list')) {
@@ -585,18 +799,19 @@ const collectTypeQualifiedMembers: Collect = (_source, root, _context, { suppres
     for (const access of findAll(type, 'member_access_expression')) {
       const qualifier = access.childForFieldName('expression');
       const member = access.childForFieldName('name');
-      const innermost = findAll(type, TYPE_DECLARATIONS).filter((declaration) => declaration.startIndex <= access.startIndex && declaration.endIndex >= access.endIndex).pop() ?? type;
+      if (qualifier?.type !== 'identifier' || qualifier.text !== name || !member || members.get(member.text)?.isStatic !== true) {
+        continue;
+      }
+
+      const innermost = enclosingType(access) ?? type;
       const scope = enclosingMember(access) ?? type;
-      if (
-        qualifier?.type !== 'identifier' ||
-        qualifier.text !== name ||
-        !member ||
-        innermost !== type && innermost.startIndex !== type.startIndex ||
-        members.get(member.text)?.isStatic !== true ||
-        declaredNames(scope).has(member.text) ||
-        declaredNames(scope).has(name) ||
-        suppressed(access)
-      ) {
+      let declared = scopeNames.get(scope);
+      if (!declared) {
+        declared = declaredNames(scope);
+        scopeNames.set(scope, declared);
+      }
+
+      if ((innermost !== type && innermost.startIndex !== type.startIndex) || declared.has(member.text) || declared.has(name) || suppressed(access)) {
         continue;
       }
 
@@ -618,9 +833,10 @@ const AMBIGUOUS_BCL_NAMES: Record<string, true> = {
 
 /**
  * IDE0001: in type positions, `N.T` becomes `T` when the file imports `N`, every namespace it
- * imports is a .NET one (`System*`, `Microsoft*`, whose type names are known not to clash except
- * for the names above), and no type, member, local or parameter named `T` is declared in the file
- * or the project.
+ * imports is a .NET one in the reference-assembly index ({@link BCL_TYPES}), `N` is the only
+ * imported namespace declaring a type named `T` (nor is it one of the names above, which other
+ * .NET versions declare in several namespaces), and no type, member, local or parameter named `T`
+ * is declared in the file or the project.
  */
 const collectQualifiedNames: Collect = (_source, root, context, { suppressed }) => {
   const project = context.project;
@@ -631,10 +847,11 @@ const collectQualifiedNames: Collect = (_source, root, context, { suppressed }) 
   const facts = loadProjectFacts(project, context.filePath);
   const usings = findAll(root, 'using_directive').map((directive) => /^(?:global\s+)?using\s+([\w.]+)\s*;$/.exec(directive.text.trim())?.[1]);
   const imported = [...usings, ...facts.others.globalUsings];
-  if (facts.incomplete || imported.some((namespace) => namespace === undefined || !/^(?:System|Microsoft)(?:\.|$)/.test(namespace))) {
+  if (facts.incomplete || imported.some((namespace) => namespace === undefined || BCL_TYPES[namespace] === undefined)) {
     return [];
   }
 
+  const typesOf = new Map((imported as string[]).map((namespace) => [namespace, new Set(BCL_TYPES[namespace].split(' '))]));
   const values = valueNames(root);
   const localTypes = new Set(findAll(root, [...TYPE_DECLARATIONS, 'interface_declaration', 'enum_declaration', 'delegate_declaration']).map((type) => type.childForFieldName('name')?.text ?? ''));
   const members = new Set(findAll(root, TYPE_DECLARATIONS).flatMap((type) => [...membersOf(type).keys()]));
@@ -651,7 +868,8 @@ const collectQualifiedNames: Collect = (_source, root, context, { suppressed }) 
       !qualifier ||
       !simple ||
       !simpleName ||
-      !imported.includes(qualifier.text.replace(/\s+/g, '').replace(/^global::/, '')) ||
+      // The qualifier must be the only imported namespace declaring the name.
+      [...typesOf].filter(([, types]) => types.has(simpleName)).map(([namespace]) => namespace).join() !== qualifier.text.replace(/\s+/g, '').replace(/^global::/, '') ||
       AMBIGUOUS_BCL_NAMES[simpleName] === true ||
       localTypes.has(simpleName) ||
       facts.others.typeNames.has(simpleName) ||
@@ -675,24 +893,46 @@ const ASSIGNMENT_OPTION = 'csharp_style_unused_value_assignment_preference';
 const AWAITABLE = /^(?:System\.Threading\.Tasks\.)?(?:Task|ValueTask)(?:<.+>)?$/;
 
 /**
- * IDE0058: a call to a method of the file that returns a value, as a statement, becomes
- * `_ = Call();` (`discard_variable`). Only methods declared once in the file (no overloads); the
- * value of any other call is unknown.
+ * IDE0058: a call to a method of the calling type that returns a value, as a statement, becomes
+ * `_ = Call();` (`discard_variable`). Only methods declared once in a type whose members are all
+ * in view (no base class or base interface, not partial); the value of any other call is unknown.
  */
 function collectDiscardedValues(_source: string, root: Node, context: RuleContext, value: string, report: (node: Node, message: string) => void): TextEdit[] {
   if (languageVersion(context) < 7) {
     return [];
   }
 
-  const methods = findAll(root, 'method_declaration');
+  // The methods of each type a call can bind to without seeing members declared elsewhere.
+  const methodsOf = new Map<Node, Node[]>();
+  let interfaces: Set<string> | undefined;
   const edits: TextEdit[] = [];
   for (const statement of findAll(root, 'expression_statement')) {
     const call = statement.namedChildren[0];
     const callee = call?.type === 'invocation_expression' ? call.childForFieldName('function') : undefined;
     const name = callee?.type === 'identifier' ? callee.text : callee?.type === 'member_access_expression' && callee.childForFieldName('expression')?.type === 'this_expression' ? callee.childForFieldName('name')?.text : undefined;
+    const type = name ? enclosingType(statement) : undefined;
+    if (!call || !name || !type) {
+      continue;
+    }
+
+    let methods = methodsOf.get(type);
+    if (!methods) {
+      const hidden = inheritsMembers(type, (interfaces ??= knownInterfaces(root, context)));
+      const body = type.childForFieldName('body') ?? type.namedChildren.find((child) => child.type === 'declaration_list');
+      methods = hidden ? [] : (body?.namedChildren ?? []).filter((member) => member.type === 'method_declaration');
+      methodsOf.set(type, methods);
+    }
+
     const declared = methods.filter((method) => method.childForFieldName('name')?.text === name);
     const returns = declared.length === 1 ? declared[0].childForFieldName('type')?.text.replace(/\s+/g, '') : undefined;
-    if (!call || !returns || returns === 'void' || returns === 'dynamic' || AWAITABLE.test(returns) || declaredNames(enclosingMember(statement) ?? root).has(name ?? '')) {
+    const inScope = declaredNames(enclosingMember(statement) ?? root);
+    if (!returns || returns === 'void' || returns === 'dynamic' || AWAITABLE.test(returns) || inScope.has(name)) {
+      continue;
+    }
+
+    // A parameter, local, member or primary constructor parameter named `_` turns `_ = Call();` into an assignment to it.
+    const primaryParameters = type.childForFieldName('parameters')?.namedChildren ?? [];
+    if (inScope.has('_') || membersOf(type).has('_') || primaryParameters.some((parameter) => parameter.childForFieldName('name')?.text === '_')) {
       continue;
     }
 

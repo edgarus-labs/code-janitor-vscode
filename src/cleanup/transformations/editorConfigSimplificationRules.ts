@@ -2,7 +2,8 @@ import { Node, TextEdit, applyEdits, findAll, parseCSharp } from '../parser';
 import type { Rule, RuleContext } from './editorConfigCodeStyle';
 import { declaredTypeText } from './editorConfigExpressionPreferences';
 import { operatorOf } from './editorConfigPrecedence';
-import { Suppressions, attributeName, describeDiagnostic, isRuleActive } from './editorConfigQualityRulesSupport';
+import { attributeName, describeDiagnostic, isRuleActive } from './editorConfigQualityRulesSupport';
+import { loadProjectFacts, suppressionsOf } from './editorConfigQualityRulesProject';
 import { describeIssue, hasParseErrors, readCodeStyleOption } from './editorConfigSupport';
 import { isInPossibleExpressionTree } from './nullCheckPatternMatching';
 
@@ -32,7 +33,7 @@ export function diagnosticRule(diagnosticId: string, collect: Collect): Rule {
 
       const tree = parseCSharp(source);
       try {
-        const suppressions = new Suppressions(source);
+        const suppressions = suppressionsOf(source, context);
         const suppressed = (node: Node): boolean => suppressions.isSuppressed(diagnosticId, node);
         const report = (node: Node, message: string): void => {
           if (!suppressed(node)) {
@@ -193,13 +194,22 @@ const CLR_NAMES: Record<string, string> = {
 /**
  * `typeof(T).Name` becomes `nameof(T)` when both give the same name: not for generic types
  * (`List`1`), type parameters (their runtime name) or using aliases (the aliased type's name).
+ * A single name may be an alias of another file (`global using`, a project `<Using Alias>`): it
+ * changes only when it names a type of the file, or the project facts show it is no such alias.
  * Built-in types become their CLR name, when `System` is imported.
  */
-const collectTypeofNames: Collect = (source, root, _context, { suppressed }) => {
+const collectTypeofNames: Collect = (source, root, context, { suppressed }) => {
   const aliases = new Set(
     findAll(root, 'using_directive').flatMap((directive) => /^using\s+(?:static\s+)?(@?\w+)\s*=/.exec(directive.text)?.[1] ?? [])
   );
   const importsSystem = findAll(root, 'using_directive').some((directive) => /^(?:global\s+)?using\s+System\s*;$/.test(directive.text.trim()));
+  const facts = context.project ? loadProjectFacts(context.project, context.filePath) : undefined;
+  const otherAliases = facts && !facts.incomplete ? facts.others.globalUsingAliases : undefined;
+  const fileTypes = new Set(
+    findAll(root, ['class_declaration', 'struct_declaration', 'record_declaration', 'interface_declaration', 'enum_declaration', 'delegate_declaration']).map(
+      (declaration) => declaration.childForFieldName('name')?.text
+    )
+  );
 
   return findAll(root, 'member_access_expression').flatMap((access): TextEdit[] => {
     const typeOf = access.childForFieldName('expression');
@@ -214,7 +224,8 @@ const collectTypeofNames: Collect = (source, root, _context, { suppressed }) => 
 
     const plainName = (type.type === 'identifier' || type.type === 'qualified_name') && /^[\w.:@]+$/.test(type.text);
     const first = type.text.replace(/^global::/, '').split('.')[0];
-    if (!plainName || aliases.has(first) || typeParametersAround(access).has(first)) {
+    const mayBeOtherAlias = type.type === 'identifier' && !fileTypes.has(type.text) && (otherAliases === undefined || otherAliases.has(type.text.replace(/^@/, '')));
+    if (!plainName || aliases.has(first) || mayBeOtherAlias || typeParametersAround(access).has(first)) {
       return [];
     }
 

@@ -5,8 +5,9 @@ import {
   resolveDiagnosticSeverity,
   splitOptionSeverity,
 } from '../editorconfig';
-import { STRING } from '../csharpScanner';
+import { CODE, STRING } from '../csharpScanner';
 import { Node, parseCSharp, walk } from '../parser';
+import { diffLineHunks } from '../lineDiff';
 import { memoizeBySource } from '../sourceCache';
 
 /**
@@ -14,6 +15,54 @@ import { memoizeBySource } from '../sourceCache';
  * names a type or non-private member the naming rules would rename (see `EditorConfigIssue`).
  */
 export type EditorConfigIssueReporter = (issue: string, symbol?: string) => void;
+
+/**
+ * `issue` with its `line N`, a line of `against` (a text the rules made of `input`), renumbered for
+ * `input`: a line the rules wrote is located at the first line of `input` they replaced, or at the
+ * line they inserted it before. `toInput` caches the line maps of the texts already seen.
+ */
+export function renumberIssue(issue: string, input: string, against: string, toInput: Map<string, (line: number) => number>): string {
+  if (against === input) {
+    return issue;
+  }
+
+  return issue.replace(/ line (\d+):/, (_, line: string) => {
+    let map = toInput.get(against);
+    if (!map) {
+      map = inputLineMap(input, against);
+      toInput.set(against, map);
+    }
+
+    return ` line ${map(Number(line) - 1) + 1}:`;
+  });
+}
+
+/**
+ * Maps a line (0-based) of `text`, made of `input` by the rules, to the line of `input` it comes
+ * from. Lines that differ in indentation only are the same line: a namespace made file-scoped
+ * re-indents every line in it.
+ */
+function inputLineMap(input: string, text: string): (line: number) => number {
+  const hunks = diffLineHunks(input.replace(/^[ \t]+/gm, ''), text.replace(/^[ \t]+/gm, ''));
+  const lastLine = input.split('\n').length - 1;
+
+  return (line) => {
+    let shift = 0;
+    for (const hunk of hunks) {
+      if (line < hunk.afterStart) {
+        break;
+      }
+
+      if (line < hunk.afterEnd) {
+        return Math.min(hunk.beforeStart, lastLine);
+      }
+
+      shift = hunk.beforeEnd - hunk.afterEnd;
+    }
+
+    return Math.min(line + shift, lastLine);
+  };
+}
 
 /** A code-style option read as `option = value[:severity]`, with its diagnostic's effective severity. */
 export interface CodeStyleOption {
@@ -264,6 +313,82 @@ export function indentFollowingLines(text: string, indent: string, kinds: Uint8A
   }
 
   return result + text.slice(copied);
+}
+
+/**
+ * The body of a block, the text between `start` (after its `{`) and `end` (its `}`), without its
+ * surrounding blank lines and with one indentation unit removed from every line that starts in
+ * code. The unit is the indentation of the block's first member (see `memberIndent`). Lines that
+ * continue a string literal (verbatim, raw, multi-line interpolated) and every line break stay as
+ * they are.
+ */
+export function dedentBlock(source: string, kinds: Uint8Array, start: number, end: number): string {
+  const text = source.slice(start, end);
+  const firstContent = text.search(/\S/);
+  if (firstContent < 0) {
+    return '';
+  }
+
+  // Text on the line of the `{` (a trailing comment, or code) has no indentation of its own: the body
+  // starts at that text, and the unit comes from the lines below it.
+  const onBraceLine = !text.slice(0, firstContent).includes('\n');
+  const bodyStart = onBraceLine ? firstContent : lineStartAt(text, firstContent);
+  const unit = memberIndent(text, kinds, start, onBraceLine ? firstContent : bodyStart) ?? (onBraceLine ? '' : lineIndentAt(text, firstContent));
+  const body = text.slice(bodyStart).trimEnd();
+  const offset = start + bodyStart;
+  let result = '';
+  let lineStart = 0;
+  while (lineStart < body.length) {
+    const next = body.indexOf('\n', lineStart);
+    const lineEnd = next < 0 ? body.length : next + 1;
+    const line = body.slice(lineStart, lineEnd);
+    const startsInString = lineStart > 0 && kinds[offset + lineStart - 1] === STRING;
+    const content = line.replace(/\r?\n$/, '');
+    result += startsInString ? line : isBlank(content) ? line.slice(content.length) : line.startsWith(unit) ? line.slice(unit.length) : line;
+    lineStart = lineEnd;
+  }
+
+  return result;
+}
+
+/**
+ * Indentation of the first line in `text` from `from` on that starts a member of the block: a line
+ * of code at brace depth 0, or the line whose leading `}` returns to it. Directives (column 0 whatever
+ * the code's indentation), lines continuing a comment or string, and lines nested in a block opened
+ * on the `{` line set no unit. `from` inside a line (text on the `{` line) only counts its braces.
+ * `undefined` when no line qualifies.
+ */
+function memberIndent(text: string, kinds: Uint8Array, offset: number, from: number): string | undefined {
+  const isCode = (index: number) => kinds[offset + index] === CODE;
+  let depth = 0;
+  let lineStart = from;
+  while (lineStart < text.length) {
+    const next = text.indexOf('\n', lineStart);
+    const lineEnd = next < 0 ? text.length : next;
+    const indent = /^[ \t]*/.exec(text.slice(lineStart, lineEnd))![0];
+    const first = lineStart + indent.length;
+    const startsLine = lineStart > 0 && text[lineStart - 1] === '\n';
+    if (startsLine && first < lineEnd && isCode(first - 1) && text[first] !== '#' && text[first] !== '\r') {
+      let closers = 0;
+      while (text[first + closers] === '}' && isCode(first + closers)) {
+        closers++;
+      }
+
+      if (depth - closers <= 0) {
+        return indent;
+      }
+    }
+
+    for (let index = lineStart; index < lineEnd; index++) {
+      if (isCode(index)) {
+        depth += text[index] === '{' ? 1 : text[index] === '}' ? -1 : 0;
+      }
+    }
+
+    lineStart = lineEnd + 1;
+  }
+
+  return undefined;
 }
 
 /** An option's value, lower-cased, ignoring a `:severity` suffix (formatting options carry none). */

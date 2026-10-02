@@ -10,14 +10,16 @@ import {
   styleRuleSetSeverity,
 } from './analyzerRules';
 import { MSBuildProject, findProjectFile, readMSBuildProject } from './msbuildProperties';
+import { ProjectSourceListing, listProjectSources } from './projectSources';
 import { memoizeBySource } from './sourceCache';
 
 /**
  * The project-level sources of analyzer severities, as the .NET SDK and the C# compiler apply them
  * (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/configuration-files):
  *
- * - global AnalyzerConfig files: `.globalconfig` files in the folders above the source file and
- *   above the project (unless `DiscoverGlobalAnalyzerConfigFiles` is `false`) and the
+ * - global AnalyzerConfig files: `.globalconfig` files in the folders above any compile item of the
+ *   project (and above the source file and the project), one set for the whole project as in the
+ *   SDK, unless `DiscoverGlobalAnalyzerConfigFiles` is `false`, and the
  *   `<GlobalAnalyzerConfigFiles>` items; for a key they disagree on, the higher `global_level` wins
  *   (`.globalconfig` files default to 100, others to 0) and equal levels drop the key. An
  *   `.editorconfig` entry wins over them.
@@ -45,6 +47,8 @@ export interface ProjectAnalysis {
    * run for the project; `undefined` otherwise.
    */
   defaultSeverity(diagnosticId: string): 'suggestion' | 'none' | undefined;
+  /** Identifies the inputs of the methods above: two analyses with the same signature answer alike. */
+  readonly signature: string;
 }
 
 export interface ProjectAnalyzerConfig {
@@ -100,19 +104,36 @@ const parseGlobalConfig = memoizeBySource((text: string): GlobalConfig => {
 function globalConfigEntries(project: MSBuildProject, filePath: string): Map<string, string> {
   const files = new Set<string>();
   if (project.property('DiscoverGlobalAnalyzerConfigFiles')?.toLowerCase() !== 'false') {
-    for (const start of [path.dirname(path.resolve(filePath)), path.dirname(project.file)]) {
-      for (let directory = start; ; ) {
-        const candidate = path.join(directory, '.globalconfig');
-        if (fs.existsSync(candidate)) {
-          files.add(candidate);
-        }
+    // The SDK looks above every compile item (`@(Compile->GetPathsOfAllDirectoriesAbove())`). The folders
+    // of a source listing are known per listing; only the folders above the file, the project and each
+    // listing's root are looked at for every file.
+    const starts = [path.dirname(path.resolve(filePath)), path.dirname(project.file)];
+    for (const compile of compileFolders(project)) {
+      if (typeof compile === 'string') {
+        starts.push(compile);
+      } else {
+        globalConfigsInListing(compile).forEach((file) => files.add(file));
+        starts.push(compile.root);
+      }
+    }
 
+    const above = new Set<string>();
+    for (const start of starts) {
+      for (let directory = start; !above.has(directory); ) {
+        above.add(directory);
         const parent = path.dirname(directory);
         if (parent === directory) {
           break;
         }
 
         directory = parent;
+      }
+    }
+
+    for (const directory of above) {
+      const candidate = path.join(directory, '.globalconfig');
+      if (fs.existsSync(candidate)) {
+        files.add(candidate);
       }
     }
   }
@@ -158,6 +179,76 @@ function globalConfigEntries(project: MSBuildProject, filePath: string): Map<str
   }
 
   return entries;
+}
+
+/** The `.cs` files of a source listing that are compile items: all of them, or only those directly in `root`. */
+interface CompileListing {
+  readonly listing: ProjectSourceListing;
+  readonly root: string;
+  readonly recursive: boolean;
+}
+
+/**
+ * Where the project's compile items are: a source listing for the default `.cs` items under the folder
+ * of an SDK project and for each wildcard `<Compile Include>`, the folder of every other `<Compile Include>`.
+ */
+function compileFolders(project: MSBuildProject): (CompileListing | string)[] {
+  const folders: (CompileListing | string)[] = [];
+  const defaultItems = project.property('EnableDefaultItems')?.toLowerCase() !== 'false';
+  if (project.sdkStyle && defaultItems && project.property('EnableDefaultCompileItems')?.toLowerCase() !== 'false') {
+    const root = path.dirname(project.file);
+    folders.push({ listing: listProjectSources(root), root, recursive: true });
+  }
+
+  for (const include of project.items('Compile')) {
+    const segments = include.split(path.sep);
+    const wildcard = segments.findIndex((segment) => /[*?]/.test(segment));
+    if (wildcard < 0) {
+      folders.push(path.dirname(include));
+    } else {
+      // `Shared\*.cs` reads one folder, `Shared\**\*.cs` (a wildcard in a folder segment) the whole tree.
+      const root = path.resolve(segments.slice(0, wildcard).join(path.sep));
+      folders.push({ listing: listProjectSources(root), root, recursive: wildcard < segments.length - 1 });
+    }
+  }
+
+  return folders;
+}
+
+/**
+ * The `.globalconfig` files in the folders of a listing that hold compile items or are above one. Adding
+ * one changes its folder, which makes `listProjectSources` list again, so a listing's answer never changes.
+ */
+const globalConfigsByListing = new WeakMap<ProjectSourceListing, Map<string, readonly string[]>>();
+
+function globalConfigsInListing({ listing, root, recursive }: CompileListing): readonly string[] {
+  const key = `${recursive ? 'r' : 'f'}:${root}`;
+  let byRoot = globalConfigsByListing.get(listing);
+  const known = byRoot?.get(key);
+  if (known) {
+    return known;
+  }
+
+  const resolvedRoot = path.resolve(root);
+  const folders = new Set<string>();
+  for (const file of listing.files) {
+    const folder = path.dirname(file);
+    if (!recursive && folder !== resolvedRoot) {
+      continue;
+    }
+
+    // Up to the listing's root: the folders above it are looked at for every file.
+    for (let directory = folder; directory !== resolvedRoot && !folders.has(directory); directory = path.dirname(directory)) {
+      folders.add(directory);
+    }
+  }
+
+  const found = [...folders].map((folder) => path.join(folder, '.globalconfig')).filter((candidate) => fs.existsSync(candidate));
+  byRoot ??= new Map();
+  byRoot.set(key, found);
+  globalConfigsByListing.set(listing, byRoot);
+
+  return found;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -207,9 +298,21 @@ function projectAnalysis(project: MSBuildProject): ProjectAnalysis {
   const enabling = (mode: AnalysisMode | undefined): boolean => mode === 'minimum' || mode === 'recommended' || mode === 'all';
   const categoryModes = Object.values(QUALITY_RULES_METADATA).map((rule) => qualityRuleSet(rule.category));
   const enablesRules = (analyzersEnabled && categoryModes.some((set) => set.level !== undefined && enabling(set.mode))) || enabling(styleRuleSet);
+  const sorted = (set: Set<string>) => [...set].sort().join(';');
+  const signature = [
+    `nowarn=${sorted(noWarn)}`,
+    `warnaserror=${sorted(warningsAsErrors)}`,
+    `warnnotaserror=${sorted(warningsNotAsErrors)}`,
+    `treatwarningsaserrors=${treatWarningsAsErrors}`,
+    `codeanalysistreatwarningsaserrors=${codeAnalysisWarningsAsErrors}`,
+    `analyzers=${analyzersEnabled}`,
+    ...[...categoryRuleSets].sort(([a], [b]) => a.localeCompare(b)).map(([category, set]) => `ruleset.${category}=${set.level}/${set.mode}`),
+    `stylemode=${styleRuleSet}`,
+  ].join('\n');
 
   return {
     enablesRules,
+    signature,
     isSuppressed: (id) => noWarn.has(id.toUpperCase()),
     isWarningAsError: (id) => {
       const upper = id.toUpperCase();

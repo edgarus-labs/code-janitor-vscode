@@ -1,0 +1,46 @@
+@page "/scanning"
+@using System.Text
+
+<h3>Scanning</h3>
+
+@{
+    var verbatim = @"quote "" and { brace";
+    var raw = """
+        raw "" { string }
+        """;
+    var interpolated = $"{(1 > 0 ? "a" : "b")} {{literal}}";
+    var verbatimInterpolated = $@"len {verbatim.Length} ""q"" {{x}}";
+    var quoteChar = '"';
+    var apostrophe = '\'';
+    // comment with a } brace and a " quote
+    /* block comment with { */
+    var number = 3;
+    RenderFragment template = @<span>templated</span>;
+}
+@if (number > 2) {
+<p>@verbatim @(number > 1 ? "x" : "y") @quoteChar @raw.Length</p>
+} else if (number > 1) {
+<p>two</p>
+} else {
+<p>none</p>
+}
+@foreach (var item in new[] { 1, 2 }) {
+    @:text line @item
+    <br />
+    <input type="text" value="@item" disabled>
+    <!-- html comment with } and @@ -->
+}
+@try { var parsed = int.Parse("1"); number += parsed; } catch (FormatException ex) when (ex.Message.Length > 0) { <p>@ex.Message</p> } catch { number = 0; } finally { number++; }
+@do { number++; } while (number < 5);
+@lock (this) { number++; }
+@switch (number) { case 1: <p>one</p> break; default: <p>other</p> break; }
+<script>if (a < b) { var s = "}"; }</script>
+<style>.a > .b { color: red; }</style>
+@template
+<p>@interpolated @verbatimInterpolated @apostrophe</p>
+
+@code {
+    private int counter;
+
+    private void Increment() { counter++; }
+}

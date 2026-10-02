@@ -212,4 +212,52 @@ describe('classifyCSharp', () => {
     expect(kinds[20]).toBe(CODE); // 'string s = '
     expect(kinds[29]).toBe(STRING); // '"lit"'
   });
+
+  describe('interpolation holes', () => {
+    const stringEnd = (source: string, start: number): number => {
+      const kinds = classifyCSharp(source);
+      let i = start;
+      while (i < kinds.length && kinds[i] === STRING) {
+        i++;
+      }
+
+      return i;
+    };
+
+    it.each([
+      ['$@ hole with nested regular literals', '$@"{(c ? "a" : "b")}\n  keep\n"', ';'],
+      ['@$ hole with nested regular literal', '@$"{string.Join(",", x)}\n\n\nend"', ';'],
+      ['$@ hole with nested verbatim literal', '$@"{F(@"a""b")}\n x"', ';'],
+      ['$@ hole with nested char literal', "$@\"{F('\"')}\n x\"", ';'],
+      ['$@ hole with nested raw literal', '$@"{F("""a"b""")}\n x"', ';'],
+      ['$@ hole with nested interpolated literal', '$@"{F($"{"}"}")}\n x"', ';'],
+      ['$@ hole with lambda braces', '$@"{F(() => { return "}"; })}\n x"', ';'],
+      ['$@ hole with format clause', '$@"{d:yyyy}\n x"', ';'],
+      ['$@ escaped braces', '$@"{{"" }}\n x"', ';'],
+      ['$ hole with nested literal containing a brace', '$"{F("}")} x"', ';'],
+      ['$ hole with nested char literal', "$\"{F('\"')} x\"", ';'],
+      ['$ hole with alias qualifier', '$"{global::System.Math.PI} x"', ';'],
+      ['$ multi-line hole (C# 11)', '$"{F(\n  1)} x"', ';'],
+    ])('keeps the whole %s inside the literal', (_name, literal, after) => {
+      const source = `s = ${literal}${after}`;
+
+      expect(stringEnd(source, 4)).toBe(4 + literal.length);
+      expect(classifyCSharp(source)[source.length - 1]).toBe(CODE);
+    });
+
+    it('ends a $@ literal at its closing quote after a hole', () => {
+      const source = 's = $@"{x}" + "\n";\nint y;';
+      const kinds = classifyCSharp(source);
+
+      expect(kinds[source.indexOf('+')]).toBe(CODE);
+      expect(kinds[source.indexOf('int')]).toBe(CODE);
+    });
+
+    it('ends a $ literal whose format clause hits a bare quote', () => {
+      const source = 's = $"{x:N"; int y;';
+      const kinds = classifyCSharp(source);
+
+      expect(kinds[source.indexOf('int')]).toBe(CODE);
+    });
+  });
 });

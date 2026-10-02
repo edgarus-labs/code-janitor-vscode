@@ -75,8 +75,9 @@ function modifierOrder(source: string, { props }: RuleContext): string {
 
 /**
  * Adds `readonly` to a (non-partial) struct whose instance fields are all `readonly`, which has
- * no settable auto property, no field-like instance event and never assigns `this` outside a
- * constructor, so nothing in it can change the instance.
+ * no settable auto property, no field-like instance event, never assigns `this` outside a
+ * constructor and never writes a primary constructor parameter (instance state a `readonly`
+ * struct may not change), so nothing in it can change the instance.
  */
 function readonlyStructs(source: string): string {
   return edit(source, (root) => {
@@ -103,7 +104,9 @@ function readonlyStructs(source: string): string {
       const assignsThis = findAll(struct, 'assignment_expression').some(
         (assignment) => assignment.childForFieldName('left')?.type === 'this_expression' && !isInside(assignment, 'constructor_declaration')
       );
-      if (mutable || assignsThis || /&\s*this\b|\bref\s+this\b/.test(struct.text)) {
+      const parameterTypes = primaryConstructorParameterTypes(struct);
+      const writesParameter = !!body && findAll(body, 'identifier').some((identifier) => parameterTypes.has(identifier.text) && changesParameter(identifier, parameterTypes.get(identifier.text)!));
+      if (mutable || assignsThis || writesParameter || /&\s*this\b|\bref\s+this\b/.test(struct.text)) {
         continue;
       }
 
@@ -125,12 +128,69 @@ function isInside(node: Node, type: string): boolean {
   return false;
 }
 
+/** Name to whitespace-free type text of every primary constructor parameter of `type`. */
+function primaryConstructorParameterTypes(type: Node): Map<string, string> {
+  const types = new Map<string, string>();
+  for (const parameter of type.childForFieldName('parameters')?.namedChildren ?? []) {
+    const name = parameter.childForFieldName('name')?.text;
+    if (name) {
+      types.set(name, parameter.childForFieldName('type')?.text.replace(/\s+/g, '') ?? '');
+    }
+  }
+
+  return types;
+}
+
+/**
+ * True when a `readonly` struct could not change `identifier` (a captured primary constructor
+ * parameter of the given type) the way the code does: it is written, or, unless its type is a
+ * reference type, a member reached through it is written or has a method called on it (which
+ * would run on a defensive copy).
+ */
+function changesParameter(identifier: Node, type: string): boolean {
+  if (isWritten(identifier)) {
+    return true;
+  }
+
+  if (REFERENCE_FIELD_TYPE.test(type)) {
+    return false;
+  }
+
+  let chain = identifier;
+  while (chain.parent && RECEIVER_CHAINS[chain.parent.type] && (chain.parent.type === 'parenthesized_expression' || chain.parent.childForFieldName('expression') === chain)) {
+    chain = chain.parent;
+  }
+
+  return chain !== identifier && (isWritten(chain) || (chain.type === 'member_access_expression' && chain.parent?.type === 'invocation_expression' && chain.parent.childForFieldName('function') === chain));
+}
+
+/** True when `identifier` is written: assigned (also in a deconstructing tuple), incremented, or taken by `ref`/`out`. */
+function isWritten(identifier: Node): boolean {
+  let target = identifier;
+  while (target.parent?.type === 'tuple_expression' || target.parent?.type === 'parenthesized_expression' || (target.parent?.type === 'argument' && target.parent.parent?.type === 'tuple_expression')) {
+    target = target.parent;
+  }
+
+  const parent = target.parent;
+
+  return (
+    (parent?.type === 'assignment_expression' && parent.childForFieldName('left') === target) ||
+    parent?.type === 'postfix_unary_expression' ||
+    (parent?.type === 'prefix_unary_expression' && /^(?:\+\+|--)/.test(parent.text)) ||
+    parent?.type === 'ref_expression' ||
+    (identifier.parent?.type === 'argument' && /^(?:ref|out)\b/.test(identifier.parent.text))
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // IDE0251 csharp_style_prefer_readonly_struct_member
 // ---------------------------------------------------------------------------------------------
 
 /** Field types whose methods cannot change the field itself (reference types). */
 const REFERENCE_FIELD_TYPE = /^(?:string|object|String|Object|(?:List|Dictionary|HashSet|Queue|Stack|SortedDictionary|SortedList|SortedSet|IList|ICollection|IEnumerable|IDictionary|IReadOnlyList|IReadOnlyCollection|IReadOnlyDictionary)<.+>|.+\[\])\??$/;
+
+/** Expressions whose value is a part of the expression they start with: `x.A`, `x[0]`, `(x)`. */
+const RECEIVER_CHAINS: Record<string, true> = { member_access_expression: true, element_access_expression: true, parenthesized_expression: true };
 
 /**
  * Adds `readonly` to the methods and get-only properties of a non-readonly, non-partial struct
@@ -148,7 +208,8 @@ function readonlyStructMembers(source: string): string {
         continue;
       }
 
-      const fieldTypes = new Map<string, string>();
+      // Captured primary constructor parameters are instance state, read and called like fields.
+      const fieldTypes = primaryConstructorParameterTypes(struct);
       const safeMembers = new Set<string>();
       for (const member of members) {
         const declaration = member.namedChildren.find((child) => child.type === 'variable_declaration');
@@ -164,7 +225,7 @@ function readonlyStructMembers(source: string): string {
         }
       }
 
-      const memberNames = new Set(members.map((member) => member.childForFieldName('name')?.text).filter((name): name is string => name !== undefined));
+      const memberNames = new Set([...fieldTypes.keys(), ...members.map((member) => member.childForFieldName('name')?.text).filter((name): name is string => name !== undefined)]);
       for (const member of members) {
         const name = member.childForFieldName('name');
         const body = member.childForFieldName('body') ?? member.childForFieldName('value');
@@ -174,7 +235,8 @@ function readonlyStructMembers(source: string): string {
           !name ||
           !(member.type === 'method_declaration' || getterOnly) ||
           safeMembers.has(name.text) ||
-          ['static', 'readonly', 'abstract', 'extern', 'partial', 'unsafe'].some((modifier) => hasModifier(member, modifier)) ||
+          // `ref` returns a writable reference into the instance: `readonly` would turn it into `ref readonly`.
+          ['static', 'readonly', 'abstract', 'extern', 'partial', 'unsafe', 'ref'].some((modifier) => hasModifier(member, modifier)) ||
           !(body ?? accessors[0])
         ) {
           continue;
@@ -205,8 +267,11 @@ function isNonMutating(member: Node, memberNames: Set<string>, safeMembers: Set<
     return node.type === 'member_access_expression' && node.childForFieldName('expression')?.type === 'this_expression' && name ? name.text : undefined;
   };
 
-  for (const node of member.descendantsOfType(['assignment_expression', 'postfix_unary_expression', 'prefix_unary_expression', 'argument', 'this_expression', 'invocation_expression', 'identifier'])) {
+  for (const node of member.descendantsOfType(['assignment_expression', 'postfix_unary_expression', 'prefix_unary_expression', 'argument', 'this_expression', 'invocation_expression', 'identifier', 'ref_expression'])) {
     switch (node.type) {
+      // `ref _x` (a ref local, a ref return) can write the instance through the reference.
+      case 'ref_expression':
+        return false;
       case 'assignment_expression': {
         const left = node.childForFieldName('left');
         if (left?.type !== 'identifier' || !locals.has(left.text)) {
@@ -238,9 +303,15 @@ function isNonMutating(member: Node, memberNames: Set<string>, safeMembers: Set<
         break;
       case 'invocation_expression': {
         const callee = node.childForFieldName('function');
-        const receiver = callee?.type === 'member_access_expression' ? callee.childForFieldName('expression') : null;
         const called = callee ? refersToMember(callee) : undefined;
-        const field = receiver ? refersToMember(receiver) : undefined;
+        // `_o.A.M()` copies `_o` in a readonly member too: check the field the receiver chain starts at.
+        let receiver = callee?.type === 'member_access_expression' ? callee.childForFieldName('expression') : null;
+        let field = receiver ? refersToMember(receiver) : undefined;
+        while (receiver && !field && RECEIVER_CHAINS[receiver.type]) {
+          receiver = receiver.type === 'parenthesized_expression' ? receiver.namedChildren[0] : receiver.childForFieldName('expression');
+          field = receiver ? refersToMember(receiver) : undefined;
+        }
+
         if ((called && !safeMembers.has(called)) || (field && !REFERENCE_FIELD_TYPE.test(fieldTypes.get(field) ?? ''))) {
           return false;
         }

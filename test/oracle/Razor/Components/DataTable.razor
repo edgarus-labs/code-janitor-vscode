@@ -1,0 +1,25 @@
+@typeparam TItem
+
+<table class="table" @attributes="AdditionalAttributes">
+    <thead>
+        <tr>@Header</tr>
+    </thead>
+    <tbody>
+        @if(Items is null){
+        <tr><td>Loading...</td></tr>
+        } else if(!Items.Any()){
+            <tr><td>No rows</td></tr>
+        } else {
+            @foreach(var row in Items){
+                <tr @key="row">@RowTemplate?.Invoke(row)</tr>
+            }
+        }
+    </tbody>
+</table>
+
+@code {
+    [Parameter] public IEnumerable<TItem>? Items{get;set;}
+    [Parameter] public RenderFragment? Header{get;set;}
+    [Parameter] public RenderFragment<TItem>? RowTemplate{get;set;}
+    [Parameter(CaptureUnmatchedValues=true)] public Dictionary<string,object>? AdditionalAttributes{get;set;}
+}

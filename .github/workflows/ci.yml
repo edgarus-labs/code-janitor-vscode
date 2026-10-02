@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [develop, main]
 
+# Read-only token: jobs build and run code from another repository (the testbed).
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and Test
@@ -19,17 +23,58 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run compile
-      - name: Test
+      - name: Test (without the compiler tests, which run in the compiler-tests jobs)
+        env:
+          CODE_JANITOR_TEST_CATEGORY: unit
         run: npm test
       - name: Bundle
         run: node esbuild.js --production
       - name: Verify bundle
         run: npm run verify:bundle
 
+  compiler-test-categories:
+    name: List compiler test categories
+    runs-on: ubuntu-latest
+    outputs:
+      categories: ${{ steps.list.outputs.categories }}
+    steps:
+      - uses: actions/checkout@v4
+      # The testbed category runs in its own job, which also clones the testbed.
+      - id: list
+        run: echo "categories=$(jq -c 'keys - ["testbed"]' test/compilerTests.json)" >> "$GITHUB_OUTPUT"
+
+  compiler-tests:
+    name: Compiler tests (${{ matrix.category }})
+    needs: compiler-test-categories
+    # Public repository: GitHub-hosted runners only. One runner per category, so the builds of one never slow another down.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build cleaned C# with the real compiler
+        env:
+          CODE_JANITOR_TEST_CATEGORY: ${{ matrix.category }}
+          CODE_JANITOR_REQUIRE_DOTNET: '1'
+        run: npm test
+
   compile-oracle:
     name: Compile oracle (cleaned C# still builds)
-    # Public repository: GitHub-hosted runners only.
+    # Public repository: GitHub-hosted runners only. The run takes about a minute; the limit is a safety net
+    # against a hung dotnet build or a long blame loop after a failure.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,3 +87,35 @@ jobs:
         run: npm ci
       - name: Build test/oracle before and after cleanup
         run: npm run verify:compile
+
+  testbed:
+    name: Testbed (every cleanup option on bad C#, built and run)
+    # Public repository: GitHub-hosted runners only. The whole job takes a few minutes; the limit is a safety net.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # No token is left in .git/config: the testbed's MSBuild targets and program run in this job.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Pinned, bumped deliberately: a push to the testbed must not change what this repository's CI checks.
+      - uses: actions/checkout@v4
+        with:
+          repository: edgarus-labs/code-janitor-testbed
+          ref: fad6873ed30f8b1e3357e666cc2314cf4d8f6692
+          path: .testbed
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run every scenario, then build and run the cleaned solution
+        env:
+          CODE_JANITOR_TESTBED: ${{ github.workspace }}/.testbed
+          CODE_JANITOR_REQUIRE_TESTBED: '1'
+          CODE_JANITOR_REQUIRE_DOTNET: '1'
+        run: npm run test:testbed

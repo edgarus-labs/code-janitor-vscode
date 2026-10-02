@@ -1,0 +1,17 @@
+@using System.Text
+@{
+    var text = @"verbatim "" with { brace";
+    var count = 2;
+}
+@section Scripts {
+<script>var x = "}";</script>
+}
+@if (count > 1) {
+<p>@text @(count > 1 ? "many" : "one")</p>
+} else {
+<p>none</p>
+}
+@for (var i = 0; i < count; i++) {
+<span>@i</span>
+}
+@while (count > 0) { count--; }

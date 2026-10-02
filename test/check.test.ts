@@ -1,14 +1,14 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkPaths } from '../src/cli/check';
 
 const EDITORCONFIG = ['root = true', '', '[*.cs]', 'csharp_prefer_braces = true:warning', 'dotnet_naming_rule.public_fields.symbols = public_fields', 'dotnet_naming_rule.public_fields.style = pascal', 'dotnet_naming_rule.public_fields.severity = error', 'dotnet_naming_symbols.public_fields.applicable_kinds = field', 'dotnet_naming_symbols.public_fields.applicable_accessibilities = public', 'dotnet_naming_style.pascal.capitalization = pascal_case', ''].join('\n');
 
 const CLEAN = 'namespace Demo;\n\ninternal class Clean\n{\n    public int Total;\n}\n';
 
-describe('checkPaths (code-janitor check)', () => {
+describe('checkPaths (check mode, npm run check)', () => {
   let root: string;
 
   beforeEach(() => {
@@ -45,5 +45,107 @@ describe('checkPaths (code-janitor check)', () => {
       'Code Janitor check: 2 file(s) checked, 1 would change, 1 violation(s) cleanup cannot fix.',
     ]);
     expect(report.exitCode).toBe(1);
+  });
+
+  it('applies the nearest .codejanitor of each file, walking up from its folder', async () => {
+    const source = 'namespace Demo;\n\ninternal class Holder\n{\n}\n\n#region Helpers\n#endregion\n';
+    fs.mkdirSync(path.join(root, 'kept', 'deeper'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'removed'));
+    fs.writeFileSync(path.join(root, 'kept', '.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
+    fs.writeFileSync(path.join(root, 'kept', 'deeper', 'Holder.cs'), source);
+    fs.writeFileSync(path.join(root, 'removed', 'Holder.cs'), source);
+
+    const kept = await checkPaths([path.join(root, 'kept')], root);
+    const removed = await checkPaths([path.join(root, 'removed')], root);
+
+    expect(kept.lines.join('\n')).not.toContain('Remove region directives');
+    expect(removed.lines.join('\n')).toContain('removed/Holder.cs:7: Remove region directives');
+  });
+
+  it('reports a change that only inserts blank lines as an insertion, named once', async () => {
+    fs.writeFileSync(path.join(root, 'src', 'Padded.cs'), 'namespace Demo\n{\n#if DEBUG\n    internal class Padded\n    {\n    }\n#endif\n}\n');
+
+    const report = await checkPaths([path.join(root, 'src', 'Padded.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Padded.cs:3: Insert blank line padding: Code Janitor would insert 1 blank line(s)',
+      'src/Padded.cs:6: Insert blank line padding: Code Janitor would insert 1 blank line(s)',
+      'Code Janitor check: 1 file(s) checked, 1 would change, 0 violation(s) cleanup cannot fix.',
+    ]);
+  });
+
+  it('lists the notes of Code Janitor settings without failing on them', async () => {
+    fs.writeFileSync(path.join(root, 'src', '.codejanitor'), JSON.stringify({ cleanup: { convertToFileScopedNamespace: true, moveUsingsOutsideNamespace: true } }));
+    fs.writeFileSync(path.join(root, 'src', 'Scoped.cs'), 'namespace Demo\n{\n    using System;\n\n    internal class Scoped\n    {\n    }\n}\n');
+
+    const report = await checkPaths([path.join(root, 'src', 'Scoped.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Scoped.cs: note: Using directives were not moved outside the namespace because the file is not part of a C# project. They were left in place.',
+      'src/Scoped.cs: note: Line 1: namespace not converted to a file-scoped one: its project could not be determined, so its C# language version is unknown.',
+      'Code Janitor check: 1 file(s) checked, all clean.',
+    ]);
+    expect(report.exitCode).toBe(0);
+  });
+
+  it('lists an enabled Code Style rule cleanup does not implement as a note', async () => {
+    fs.writeFileSync(path.join(root, 'src', '.codejanitor'), JSON.stringify({ cleanup: { codeStyle: { dotnet_style_predefined_type_for_locals_parameters_members: 'false' } } }));
+
+    const report = await checkPaths([path.join(root, 'src', 'Clean.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Clean.cs: note: Code Style rule dotnet_style_predefined_type_for_locals_parameters_members = false (IDE0049) is not implemented by Code Janitor for VS Code, so it was not applied.',
+      'Code Janitor check: 1 file(s) checked, all clean.',
+    ]);
+    expect(report.exitCode).toBe(0);
+  });
+
+  it('fails on an enforced .editorconfig rule cleanup cannot apply, naming the option once', async () => {
+    fs.appendFileSync(path.join(root, '.editorconfig'), 'csharp_style_namespace_declarations = file_scoped:warning\n');
+    fs.writeFileSync(path.join(root, 'src', 'Legacy.csproj'), '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <LangVersion>7.3</LangVersion>\n  </PropertyGroup>\n</Project>\n');
+    fs.writeFileSync(path.join(root, 'src', 'Legacy.cs'), 'namespace Demo\n{\n    internal class Legacy\n    {\n    }\n}\n');
+
+    const report = await checkPaths([path.join(root, 'src', 'Legacy.cs')], root);
+
+    expect(report.lines).toEqual([
+      'src/Legacy.cs:1: csharp_style_namespace_declarations: not applied, its project uses C# 7.3 and file-scoped namespaces need C# 10.',
+      'Code Janitor check: 1 file(s) checked, 0 would change, 1 violation(s) cleanup cannot fix.',
+    ]);
+    expect(report.exitCode).toBe(1);
+  });
+
+  it('skips a file passed explicitly when it is not a .cs file', async () => {
+    fs.writeFileSync(path.join(root, 'src', 'readme.md'), 'hello  \n');
+
+    const report = await checkPaths([path.join(root, 'src', 'readme.md'), path.join(root, 'src', 'Clean.cs')], root);
+
+    expect(report.lines).toEqual(['Code Janitor check: 1 file(s) checked, all clean.']);
+    expect(report.exitCode).toBe(0);
+  });
+
+  it('keeps at most one source file open at a time, so large folders do not exhaust file descriptors', async () => {
+    for (let index = 0; index < 20; index++) {
+      fs.writeFileSync(path.join(root, 'src', `Many${index}.cs`), `namespace Demo;\n\ninternal class Many${index}\n{\n}\n`);
+    }
+    const readFile = fs.promises.readFile;
+    let open = 0;
+    let mostOpen = 0;
+    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (...args: Parameters<typeof readFile>) => {
+      mostOpen = Math.max(mostOpen, ++open);
+      try {
+        return await readFile(...args);
+      } finally {
+        open--;
+      }
+    });
+
+    try {
+      const report = await checkPaths([path.join(root, 'src')], root);
+
+      expect(report.lines.at(-1)).toBe('Code Janitor check: 21 file(s) checked, all clean.');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mostOpen).toBe(1);
   });
 });

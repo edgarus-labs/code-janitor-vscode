@@ -63,7 +63,13 @@ export function applyEdits(source: string, edits: readonly TextEdit[]): string {
   }
 
   const ordered = [...edits].sort((a, b) => b.start - a.start);
-  let result = source;
+  // The result is `source.slice(0, cut)` followed by `tail` reversed: pieces are collected instead of
+  // rebuilding the whole string per edit, which made large files quadratic. A range outside
+  // `[0, cut]` (reversed, negative, fractional or past the text) switches to slicing the
+  // materialized result, keeping `String.prototype.slice` semantics for it.
+  const tail: string[] = [];
+  let cut = source.length;
+  let result: string | undefined;
   let previousStart = Number.POSITIVE_INFINITY;
 
   for (const edit of ordered) {
@@ -71,9 +77,17 @@ export function applyEdits(source: string, edits: readonly TextEdit[]): string {
       continue;
     }
 
-    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+    const inPlace = Number.isInteger(edit.start) && Number.isInteger(edit.end) && edit.start >= 0 && edit.start <= edit.end && edit.end <= cut;
+    if (result === undefined && inPlace) {
+      tail.push(source.slice(edit.end, cut), edit.text);
+      cut = edit.start;
+    } else {
+      result ??= source.slice(0, cut) + tail.reverse().join('');
+      result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+    }
+
     previousStart = edit.start;
   }
 
-  return result;
+  return result ?? source.slice(0, cut) + tail.reverse().join('');
 }

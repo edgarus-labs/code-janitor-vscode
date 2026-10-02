@@ -1,4 +1,11 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { CODE_STYLE_GROUPS, CODE_STYLE_RULES, formatCodeStyleScopeSetting, formatCodeStyleSetting, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
+import { editorConfigOverrideNotes } from '../cleanup/overrideNotes';
+import { readRepositoryPolicy } from '../cleanup/repositoryOverrides';
+import { CleanupSettings, createDefaultSettings } from '../cleanup/types';
+import { vscodeSettingOf } from './repositorySettings';
+import { readCleanupSettings } from './settings';
 
 /**
  * A simple settings panel, in the spirit of the source extension's Options window.
@@ -9,7 +16,21 @@ import * as vscode from 'vscode';
  * one page, grouped, with a scope switch.
  */
 
-export type SettingKind = 'boolean' | 'string' | 'number' | 'enum' | 'stringArray';
+export type SettingKind = 'boolean' | 'string' | 'number' | 'enum' | 'stringArray' | 'codeStyleRules';
+
+/** The setting that stores the enabled Code Style rules (see `cleanup/codeStyleRules.ts`). */
+export const CODE_STYLE_RULES_SETTING = 'codeJanitor.cleanup.codeStyleRules';
+
+/** One Code Style rule as the panel shows it: a switch and a value, in the group of the Visual Studio Options page. */
+export interface CodeStyleRuleDescriptor {
+  key: string;
+  group: string;
+  label: string;
+  diagnosticIds: string[];
+  /** The accepted values; empty when the value is free text. */
+  values: string[];
+  defaultValue: string;
+}
 
 export interface SettingDescriptor {
   key: string;
@@ -18,6 +39,8 @@ export interface SettingDescriptor {
   description: string;
   defaultValue: unknown;
   options?: { value: string; description?: string }[];
+  /** For `codeStyleRules`: the catalog of rules, grouped by `group` in the order listed. */
+  rules?: CodeStyleRuleDescriptor[];
 }
 
 export interface SettingSection {
@@ -75,12 +98,27 @@ function compareSettings(a: SettingDescriptor, b: SettingDescriptor): number {
 function describeSetting(key: string, raw: RawSetting): SettingDescriptor {
   return {
     key,
-    kind: settingKind(raw),
+    kind: key === CODE_STYLE_RULES_SETTING ? 'codeStyleRules' : settingKind(raw),
+    ...(key === CODE_STYLE_RULES_SETTING && { rules: describeCodeStyleRules() }),
     label: humanize(key),
     description: plainText(raw.markdownDescription ?? raw.description ?? ''),
     defaultValue: raw.default,
     options: raw.enum?.map((value, index) => ({ value, description: raw.enumDescriptions?.[index] })),
   };
+}
+
+/** The catalog of rules, grouped as in the Visual Studio Options page (groups in catalog order). */
+function describeCodeStyleRules(): CodeStyleRuleDescriptor[] {
+  return CODE_STYLE_GROUPS.flatMap((group) =>
+    CODE_STYLE_RULES.filter((rule) => rule.group === group).map((rule) => ({
+      key: rule.key,
+      group,
+      label: rule.description,
+      diagnosticIds: [...rule.diagnosticIds],
+      values: [...rule.values],
+      defaultValue: rule.defaultValue,
+    }))
+  );
 }
 
 /** Unwraps the markdown the Settings editor understands: `#some.setting#` links, code spans, bold. */
@@ -117,6 +155,85 @@ function humanize(key: string): string {
   const words = last.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
 
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function nonEmpty<T>(value: Record<string, T>): Record<string, T> | undefined {
+  return Object.keys(value).length > 0 ? value : undefined;
+}
+
+/** What the workspace's `.editorconfig` and `.codejanitor` override, as the panel shows it (see `cleanup/overrideNotes.ts`). */
+export interface OverrideNotes {
+  /** Note by setting id (`codeJanitor.cleanup.convertToVarWhenApparent`). */
+  notes: Record<string, string>;
+  /** Note by Code Style rule option name (`csharp_prefer_braces`). */
+  ruleNotes: Record<string, string>;
+}
+
+/**
+ * The notes for the first workspace folder: a setting (or rule) its `.codejanitor` lists, or its
+ * `.editorconfig` decides (which wins over both), shows `Overridden by <file>: <key> in <path>` and
+ * is disabled: changing it has no effect on cleanup there. Nothing without a workspace.
+ */
+export function readOverrideNotes(): OverrideNotes {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const notes: OverrideNotes = { notes: {}, ruleNotes: {} };
+  if (!root) {
+    return notes;
+  }
+
+  const policy = readRepositoryPolicy(root);
+  if (policy.configPath) {
+    const pinned = (key: string): string => `Overridden by ${path.basename(policy.configPath!)}: ${key} in ${policy.configPath}`;
+    const pinnedKeys = new Map<string, string>();
+    for (const key of Object.keys(policy.overrides) as (keyof CleanupSettings)[]) {
+      const setting = vscodeSettingOf(key);
+      if (setting !== undefined) {
+        pinnedKeys.set(key, pinned(setting));
+      }
+    }
+    Object.assign(notes.notes, settingNotes(pinnedKeys));
+
+    for (const rule of Object.keys(policy.codeStyle)) {
+      notes.ruleNotes[rule] = pinned(rule);
+    }
+  }
+
+  const ruleKeys = new Set(CODE_STYLE_RULES.map((rule) => rule.key));
+  const decidedKeys = new Map<string, string>();
+  for (const [name, note] of editorConfigOverrideNotes(root, readCleanupSettings(root))) {
+    if (ruleKeys.has(name)) {
+      notes.ruleNotes[name] = note;
+    } else {
+      decidedKeys.set(name, note);
+    }
+  }
+  Object.assign(notes.notes, settingNotes(decidedKeys));
+
+  return notes;
+}
+
+/**
+ * The note of each VS Code setting from the notes of its cleanup flags: a group setting (the padding
+ * or explicit access modifier flags) gets one only when every flag of the group has one, since the
+ * flags without a note still follow the setting.
+ */
+function settingNotes(keyNotes: ReadonlyMap<string, string>): Record<string, string> {
+  const keysBySetting = new Map<string, string[]>();
+  for (const key of Object.keys(createDefaultSettings()) as (keyof CleanupSettings)[]) {
+    const setting = vscodeSettingOf(key);
+    if (setting !== undefined) {
+      keysBySetting.set(setting, [...(keysBySetting.get(setting) ?? []), key]);
+    }
+  }
+
+  const result: Record<string, string> = {};
+  for (const [setting, keys] of keysBySetting) {
+    if (keys.every((key) => keyNotes.has(key))) {
+      result[`codeJanitor.cleanup.${setting}`] = keyNotes.get(keys[0])!;
+    }
+  }
+
+  return result;
 }
 
 export function registerSettingsUiCommand(context: vscode.ExtensionContext): void {
@@ -184,6 +301,7 @@ class SettingsPanel {
           type: 'init',
           sections: this.sections,
           values: this.readValues(),
+          ...readOverrideNotes(),
           scope: this.scope,
           workspaceAvailable: (vscode.workspace.workspaceFolders?.length ?? 0) > 0,
         });
@@ -229,7 +347,15 @@ class SettingsPanel {
 
   private async update(key: string, value: unknown): Promise<void> {
     try {
-      await vscode.workspace.getConfiguration().update(key, value, this.target);
+      const config = vscode.workspace.getConfiguration();
+      // Only valid rules are stored (an empty selection is the default, which is not written). VS Code
+      // merges the rules across scopes, so in Workspace scope a rule the User settings enable is turned
+      // off with `null`; nothing lies below the User scope.
+      const stored =
+        key === CODE_STYLE_RULES_SETTING && value !== undefined
+          ? nonEmpty(formatCodeStyleScopeSetting(parseCodeStyleSetting(value), this.scope === 'workspace' ? Object.keys(parseCodeStyleSetting(config.inspect(key)?.globalValue)) : []))
+          : value;
+      await config.update(key, stored, this.target);
     } catch (err) {
       void vscode.window.showErrorMessage(`Code Janitor: ${(err as Error).message}`);
     }
@@ -256,7 +382,15 @@ class SettingsPanel {
         const override =
           this.scope === 'workspace' ? inspected?.workspaceValue : inspected?.globalValue;
 
-        values[setting.key] = override ?? setting.defaultValue;
+        if (setting.kind === 'codeStyleRules') {
+          // VS Code merges the rules across scopes: Workspace scope shows the rules in effect there (the
+          // User settings' unless turned off with `null`), which an update then writes back. The rule
+          // editor offers each value in its normalized form (`True` is `true`); invalid rules are not shown.
+          const rules = this.scope === 'workspace' ? { ...(inspected?.globalValue as object), ...(override as object) } : override;
+          values[setting.key] = rules === undefined ? setting.defaultValue : formatCodeStyleSetting(parseCodeStyleSetting(rules));
+        } else {
+          values[setting.key] = override ?? setting.defaultValue;
+        }
       }
     }
 
@@ -264,7 +398,7 @@ class SettingsPanel {
   }
 
   private postValues(): void {
-    void this.panel.webview.postMessage({ type: 'values', values: this.readValues(), scope: this.scope });
+    void this.panel.webview.postMessage({ type: 'values', values: this.readValues(), ...readOverrideNotes(), scope: this.scope });
   }
 
   private dispose(): void {
@@ -347,6 +481,19 @@ function buildHtml(webview: vscode.Webview): string {
   button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground, transparent); }
   button:hover { background: var(--vscode-button-hoverBackground); }
   select.scope { color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); }
+  .note {
+    margin-top: 6px; padding: 4px 8px; font-size: 0.9em; border-radius: 4px;
+    color: var(--vscode-editorInfo-foreground, var(--vscode-foreground));
+    background: var(--vscode-editorInfo-background, transparent);
+    border-left: 3px solid var(--vscode-editorInfo-foreground, var(--vscode-focusBorder));
+  }
+  .note[hidden] { display: none; }
+  .rule-group { font-weight: 600; margin: 14px 0 6px; opacity: 0.9; }
+  .rule-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 3px 0; }
+  .rule-row label.check { flex: 1 1 260px; }
+  .rule-row .value { flex: 0 1 280px; max-width: 280px; }
+  .rule-ids { opacity: 0.6; font-size: 0.85em; }
+  .rule-row .note { flex-basis: 100%; margin-top: 0; }
   .hint { opacity: 0.7; font-size: 0.85em; flex-basis: 100%; display: flex; gap: 6px; align-items: flex-start; }
   .empty { opacity: 0.7; padding: 24px 0; }
 </style>
@@ -419,13 +566,16 @@ function buildHtml(webview: vscode.Webview): string {
   function buildSetting(setting) {
     const wrapper = document.createElement('div');
     wrapper.className = 'card';
-    wrapper.dataset.searchText = (setting.label + ' ' + setting.description + ' ' + setting.key).toLowerCase();
+    wrapper.dataset.searchText = (setting.label + ' ' + setting.description + ' ' + setting.key + ' ' +
+      (setting.rules || []).map(function (rule) { return rule.label + ' ' + rule.key + ' ' + rule.group; }).join(' ')).toLowerCase();
 
     const badge = document.createElement('span');
     badge.className = 'modified';
 
     let read;
     let write;
+    const inputs = [];
+    let ruleRows = {};
 
     if (setting.kind === 'boolean') {
       const label = document.createElement('label');
@@ -443,6 +593,7 @@ function buildHtml(webview: vscode.Webview): string {
         send(setting.key, box.checked);
         markModified(setting.key);
       });
+      inputs.push(box);
       read = function () { return box.checked; };
       write = function (value) { box.checked = value === true; };
     } else {
@@ -478,6 +629,7 @@ function buildHtml(webview: vscode.Webview): string {
         select.appendChild(item);
       });
       wrapper.appendChild(select);
+      inputs.push(select);
       select.addEventListener('change', function () {
         send(setting.key, select.value);
         markModified(setting.key);
@@ -488,6 +640,7 @@ function buildHtml(webview: vscode.Webview): string {
       const input = document.createElement('input');
       input.type = 'number';
       wrapper.appendChild(input);
+      inputs.push(input);
       input.addEventListener('change', function () {
         const parsed = Number(input.value);
         send(setting.key, isNaN(parsed) ? setting.defaultValue : parsed);
@@ -499,6 +652,7 @@ function buildHtml(webview: vscode.Webview): string {
       const area = document.createElement('textarea');
       area.placeholder = 'One regular expression per line';
       wrapper.appendChild(area);
+      inputs.push(area);
       area.addEventListener('change', function () {
         const lines = area.value.split(/\\r?\\n/).map(function (line) { return line.trim(); }).filter(Boolean);
         send(setting.key, lines);
@@ -512,15 +666,122 @@ function buildHtml(webview: vscode.Webview): string {
       const input = document.createElement('input');
       input.type = 'text';
       wrapper.appendChild(input);
+      inputs.push(input);
       input.addEventListener('change', function () {
         send(setting.key, input.value);
         markModified(setting.key);
       });
       read = function () { return input.value; };
       write = function (value) { input.value = value == null ? '' : String(value); };
+    } else if (setting.kind === 'codeStyleRules') {
+      const rules = setting.rules || [];
+      const readAll = function () {
+        const value = {};
+        rules.forEach(function (rule) {
+          const row = ruleRows[rule.key];
+          if (row.box.checked) {
+            value[rule.key] = row.value.value.trim();
+          }
+        });
+        return value;
+      };
+      const changed = function () {
+        send(setting.key, readAll());
+        markModified(setting.key);
+      };
+      let currentGroup = null;
+
+      rules.forEach(function (rule) {
+        if (rule.group !== currentGroup) {
+          currentGroup = rule.group;
+          const heading = document.createElement('div');
+          heading.className = 'rule-group';
+          heading.textContent = rule.group;
+          wrapper.appendChild(heading);
+        }
+
+        const row = document.createElement('div');
+        row.className = 'rule-row';
+
+        const label = document.createElement('label');
+        label.className = 'check';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        const text = document.createElement('span');
+        text.textContent = rule.label;
+        const ids = document.createElement('span');
+        ids.className = 'rule-ids';
+        ids.textContent = ' ' + rule.diagnosticIds.join(', ');
+        text.appendChild(ids);
+        label.appendChild(box);
+        label.appendChild(text);
+        row.appendChild(label);
+
+        let valueInput;
+        if (rule.values.length > 0) {
+          valueInput = document.createElement('select');
+          rule.values.forEach(function (value) {
+            const item = document.createElement('option');
+            item.value = value;
+            item.textContent = value;
+            valueInput.appendChild(item);
+          });
+        } else {
+          valueInput = document.createElement('input');
+          valueInput.type = 'text';
+          valueInput.placeholder = 'Comma-separated modifiers';
+        }
+        valueInput.className = 'value';
+        valueInput.title = rule.key;
+        row.appendChild(valueInput);
+
+        const ruleNote = document.createElement('div');
+        ruleNote.className = 'note';
+        ruleNote.hidden = true;
+        row.appendChild(ruleNote);
+
+        box.addEventListener('change', changed);
+        valueInput.addEventListener('change', changed);
+        ruleRows[rule.key] = { box: box, value: valueInput, note: ruleNote, rule: rule };
+        wrapper.appendChild(row);
+      });
+
+      read = readAll;
+      write = function (value) {
+        rules.forEach(function (rule) {
+          const row = ruleRows[rule.key];
+          const current = value && typeof value[rule.key] === 'string' ? value[rule.key] : undefined;
+          row.box.checked = current !== undefined;
+          row.value.value = current !== undefined ? current : rule.defaultValue;
+        });
+      };
     }
 
-    controls[setting.key] = { read: read, write: write, badge: badge };
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.hidden = true;
+    wrapper.appendChild(note);
+
+    controls[setting.key] = {
+      read: read,
+      write: write,
+      badge: badge,
+      setNote: function (text) {
+        note.hidden = !text;
+        note.textContent = text || '';
+        inputs.forEach(function (input) { input.disabled = !!text; });
+      },
+      setRuleNotes: function (ruleNotes) {
+        Object.keys(ruleRows).forEach(function (ruleKey) {
+          const row = ruleRows[ruleKey];
+          const text = ruleNotes[ruleKey];
+          row.note.hidden = !text;
+          row.note.textContent = text || '';
+          row.box.disabled = !!text;
+          row.value.disabled = !!text;
+        });
+      },
+    };
 
     return wrapper;
   }
@@ -611,9 +872,13 @@ function buildHtml(webview: vscode.Webview): string {
 
   searchBox.addEventListener('input', applyFilter);
 
-  function applyValues(values) {
+  function applyValues(values, notes, ruleNotes) {
     Object.keys(controls).forEach(function (key) {
       controls[key].write(values[key]);
+      controls[key].setNote(notes && notes[key]);
+      if (controls[key].setRuleNotes) {
+        controls[key].setRuleNotes(ruleNotes || {});
+      }
       markModified(key);
     });
   }
@@ -626,11 +891,11 @@ function buildHtml(webview: vscode.Webview): string {
       if (!message.workspaceAvailable) {
         scopeSelect.options[1].disabled = true;
       }
-      applyValues(message.values);
+      applyValues(message.values, message.notes, message.ruleNotes);
       applyFilter();
     } else if (message.type === 'values') {
       scopeSelect.value = message.scope;
-      applyValues(message.values);
+      applyValues(message.values, message.notes, message.ruleNotes);
     }
   });
 

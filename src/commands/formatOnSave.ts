@@ -9,7 +9,7 @@ import {
   isPathCleanable,
   reportOneTypePerFileOnSave,
 } from './cleanupCore';
-import { readCleanupSettings } from './settings';
+import { readCleanupSettingsForUri } from './settings';
 
 /**
  * Optional cleanup on save. It never blocks or fails a save: a problem leaves the document
@@ -41,7 +41,7 @@ async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscod
 
   try {
     const content = document.getText();
-    const settings = readCleanupSettings(vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath);
+    const settings = readCleanupSettingsForUri(document.uri);
     const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
     let output: string;
     if (settings.onlyChangedLines) {

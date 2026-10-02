@@ -166,12 +166,19 @@ describe('stringInterpolationConverter keeps the behavior of string.Format', () 
     expect(apply('string.Format("{0,5:N1}", f ? 1.5 : 2.5)')).toContain('$"{(f ? 1.5 : 2.5),5:N1}"');
   });
 
+  it('parenthesizes a conditional whose branches are verbatim or interpolated strings', () => {
+    expect(apply('string.Format("{0}", f ? @"a\\" : "b")')).toContain('$"{(f ? @"a\\" : "b")}"');
+    expect(apply('string.Format("{0}", f ? $@"{n}\\" : "b")')).toContain('$"{(f ? $@"{n}\\" : "b")}"');
+  });
+
   it.each([
     ['an argument that is used twice', 'string.Format("{0}-{0}", A())'],
     ['arguments used out of order', 'string.Format("{1}{0}", A(), B())'],
     ['an argument that is never used', 'string.Format("{0}", 1, B())'],
     ['an object creation used twice', 'string.Format("{0}{0}", new object())'],
     ['an assignment used twice', 'string.Format("{0}{0}", n = 2)'],
+    ['an interpolated string with a call used twice', 'string.Format("{0}{0}", $"{A()}")'],
+    ['an @$ interpolated string with a backslash and a call used twice', 'string.Format("{0}{0}", @$"C:\\{A()}")'],
   ])('leaves %s alone: the call would run a different number of times or in another order', (_name, body) => {
     unchanged(body);
   });
@@ -189,5 +196,28 @@ describe('stringInterpolationConverter keeps the behavior of string.Format', () 
 
   it('leaves a single array argument alone: it is the params array, not one value', () => {
     unchanged('string.Format("{0}{1}", new object[] { 1, 2 })');
+  });
+
+  it.each([
+    ['a backslash of a verbatim format', 'string.Format(@"C:\\{0}", 1)', '$"C:\\\\{1}"'],
+    ['an escaped backslash of a regular format', 'string.Format("C:\\\\{0}", 1)', '$"C:\\\\{1}"'],
+    ['a null character', 'string.Format("a\\0{0}", 1)', '$"a\\0{1}"'],
+    ['a control character written as a Unicode escape', 'string.Format("a\\u0007{0}", 1)', '$"a\\u0007{1}"'],
+    ['a line separator written as a Unicode escape', 'string.Format("a\\u2028{0}", 1)', '$"a\\u2028{1}"'],
+  ])('escapes %s again in the interpolated string', (_name, body, expected) => {
+    expect(apply(body)).toContain(expected);
+  });
+
+  it.each([
+    ['an escaped backslash of a regular format', 'string.Format("{0:hh\\\\:mm}", n)', '$"{n:hh\\\\:mm}"'],
+    ['a backslash of a verbatim format', 'string.Format(@"{0:hh\\:mm}", n)', '$"{n:hh\\\\:mm}"'],
+    ['a quote of a verbatim format', 'string.Format(@"{0:""#""0}", n)', '$"{n:\\"#\\"0}"'],
+  ])('escapes %s again in the format specifier', (_name, body, expected) => {
+    expect(apply(body)).toBe(`class C { string M(bool f, int n) => ${expected}; int A() => 1; int B() => 2; }`);
+  });
+
+  it('does not take a number between escaped braces for a placeholder', () => {
+    expect(apply('string.Format("{{0}} {0}", n)')).toContain('$"{{0}} {n}"');
+    expect(apply('string.Format("{{{0}}}", n)')).toContain('$"{{{n}}}"');
   });
 });
