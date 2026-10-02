@@ -11,6 +11,8 @@ First release of the Visual Studio Code port.
 - **Testbed.** `npm run test:testbed` runs every cleanup option against deliberately bad C# from the public
   [code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) repository (one class per option) and builds and runs the
   cleaned solution with the real compiler. It found the fixes listed under **Fixed (found on real code)**.
+- **CI.** The tests that build C# with the .NET SDK run in one job per category (`test/compilerTests.json`), each on its own runner
+  with a pinned SDK; Build and Test runs the rest. The Code Style compiler tests build each rule group as its own project.
 
 - **Changed:** `.codejanitor` is discovered per file, walking up from the cleaned file's folder (nearest file wins as a whole), in cleanup on save, every cleanup command, the editor diagnostics, the preview and `code-janitor check`; before, only the first workspace folder's root was read.
 - **Changed:** precedence is `.editorconfig` (where it enforces) > `.codejanitor` > VS Code settings, as in the Visual Studio extension; a key in `.codejanitor` now wins over an explicit VS Code setting.

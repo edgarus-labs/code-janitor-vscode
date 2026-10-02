@@ -7,8 +7,7 @@ import { analyzeCleanup, applyRuleOnly } from '../src/cleanup/analysis';
 import { applyRepositoryPolicy, readRepositoryPolicy } from '../src/cleanup/repositoryOverrides';
 import { EditorConfigIssue, runCleanup } from '../src/cleanup/runCleanup';
 import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
-import { newCompilerErrors } from '../scripts/compileOracle';
-import { buildProject, dotnetAvailable, formatErrors, writeProject } from './helpers/dotnetBuild';
+import { buildProject, dotnetAvailable, writeProject } from './helpers/dotnetBuild';
 
 /**
  * The Code Style rules opt-in layer end to end: every rule of the catalog applied to realistic C# files
@@ -280,17 +279,18 @@ describe('precedence of the Code Style rules', () => {
 describe.skipIf(!dotnetAvailable)('Code Style rules with the real compiler', () => {
   const csproj = fs.readFileSync(path.join(FIXTURES, 'CodeStyle.csproj'), 'utf8');
 
-  function project(): { folder: string; files: Record<string, string>; errors: ReturnType<typeof buildProject>['errors'] } {
-    const files = Object.fromEntries(fs.readdirSync(FIXTURES).filter((name) => name.endsWith('.cs')).map((name) => [name, fixture(name)]));
-    const folder = writeProject(files, csproj, 'CodeStyle.csproj');
-    const before = buildProject(folder, 'CodeStyle.csproj');
-    expect(before.errors, `the fixtures compile before cleanup:\n${formatErrors(before)}`).toEqual([]);
+  /**
+   * A project of only the files the test cleans: the group files are independent of each other, so a group
+   * builds alone and an error points at the file the cleanup changed.
+   */
+  function project(names: readonly string[]): { folder: string; files: Record<string, string> } {
+    const files = Object.fromEntries(names.map((name) => [name, fixture(name)]));
 
-    return { folder, files, errors: before.errors };
+    return { folder: writeProject(files, csproj, 'CodeStyle.csproj'), files };
   }
 
   function cleanAndBuild(rulesByFile: Readonly<Record<string, Readonly<Record<string, string>>>>, policy?: string): string {
-    const { folder, files, errors } = project();
+    const { folder, files } = project(Object.keys(rulesByFile));
     try {
       if (policy !== undefined) {
         fs.writeFileSync(path.join(folder, '.codejanitor'), policy);
@@ -303,10 +303,10 @@ describe.skipIf(!dotnetAvailable)('Code Style rules with the real compiler', () 
         fs.writeFileSync(path.join(folder, file), output);
       }
 
+      // The fixtures compile untouched (the compile-oracle job builds them before cleanup), so every error is the cleanup's.
       const after = buildProject(folder, 'CodeStyle.csproj');
-      const added = newCompilerErrors(errors, after.errors);
 
-      expect(added.map((error) => `${error.file}(${error.line}): ${error.code} ${error.message}`), 'compiler errors the cleanup added').toEqual([]);
+      expect(after.errors.map((error) => `${error.file}(${error.line}): ${error.code} ${error.message}`), 'compiler errors the cleanup added').toEqual([]);
 
       return folder;
     } finally {
@@ -318,11 +318,11 @@ describe.skipIf(!dotnetAvailable)('Code Style rules with the real compiler', () 
     const rules = CODE_STYLE_RULES.filter((rule) => rule.group === group);
 
     cleanAndBuild({ [GROUP_FILES[group]]: defaults(rules) });
-  });
+  }, 180_000);
 
   it('all groups enabled together add no compiler error', () => {
     cleanAndBuild(Object.fromEntries(Object.entries(GROUP_FILES).map(([group, file]) => [file, defaults(CODE_STYLE_RULES.filter((rule) => rule.group === group))])));
-  });
+  }, 180_000);
 
   it('rules enabled through .codejanitor codeStyle, with values other than the proposed ones, add no compiler error', () => {
     const codeStyle: Record<string, string> = {
@@ -349,5 +349,5 @@ describe.skipIf(!dotnetAvailable)('Code Style rules with the real compiler', () 
     }
 
     cleanAndBuild(byFile, JSON.stringify({ cleanup: { codeStyle } }));
-  });
+  }, 180_000);
 });

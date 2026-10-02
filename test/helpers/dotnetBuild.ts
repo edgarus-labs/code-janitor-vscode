@@ -12,6 +12,11 @@ import { CompilerError, compilerErrors } from '../../scripts/compileOracle';
  */
 export const dotnetAvailable = spawnSync('dotnet', ['--version'], { encoding: 'utf8' }).status === 0;
 
+// CI sets this in the jobs that run the compiler tests: there a missing SDK must fail them instead of skipping them.
+if (!dotnetAvailable && process.env.CODE_JANITOR_REQUIRE_DOTNET === '1') {
+  throw new Error('CODE_JANITOR_REQUIRE_DOTNET=1, but `dotnet --version` failed: install the .NET SDK.');
+}
+
 export const DEFAULT_CSPROJ = `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

@@ -193,7 +193,11 @@ npm run test:e2e
 ```
 
 - `compile` checks TypeScript without emitting files.
-- `test` runs the Vitest suite.
+- `test` runs the Vitest suite. `CODE_JANITOR_TEST_CATEGORY` narrows it: `unit` skips the tests that build C#
+  with the .NET SDK, a category of `test/compilerTests.json` (`codestyle`, `usings`, ...) runs only its files.
+  CI runs `unit` in Build and Test and each category in its own `compiler-tests` job, with
+  `CODE_JANITOR_REQUIRE_DOTNET=1` so a missing SDK fails instead of skipping. A new test file that uses
+  `dotnetAvailable` must be added to a category; `test/compilerTestCategories.test.ts` fails otherwise.
 - `build` bundles the extension to `dist/extension.js`.
 - `verify:bundle` exercises the bundled cleanup pipeline.
 - `test:e2e` builds the extension, compiles tests and runs a real VS Code host. It downloads

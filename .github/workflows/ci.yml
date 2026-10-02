@@ -19,12 +19,51 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run compile
-      - name: Test
+      - name: Test (without the compiler tests, which run in the compiler-tests jobs)
+        env:
+          CODE_JANITOR_TEST_CATEGORY: unit
         run: npm test
       - name: Bundle
         run: node esbuild.js --production
       - name: Verify bundle
         run: npm run verify:bundle
+
+  compiler-test-categories:
+    name: List compiler test categories
+    runs-on: ubuntu-latest
+    outputs:
+      categories: ${{ steps.list.outputs.categories }}
+    steps:
+      - uses: actions/checkout@v4
+      # The testbed category runs in its own job, which also clones the testbed.
+      - id: list
+        run: echo "categories=$(jq -c 'keys - ["testbed"]' test/compilerTests.json)" >> "$GITHUB_OUTPUT"
+
+  compiler-tests:
+    name: Compiler tests (${{ matrix.category }})
+    needs: compiler-test-categories
+    # Public repository: GitHub-hosted runners only. One runner per category, so the builds of one never slow another down.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build cleaned C# with the real compiler
+        env:
+          CODE_JANITOR_TEST_CATEGORY: ${{ matrix.category }}
+          CODE_JANITOR_REQUIRE_DOTNET: '1'
+        run: npm test
 
   compile-oracle:
     name: Compile oracle (cleaned C# still builds)
@@ -67,4 +106,5 @@ jobs:
         env:
           CODE_JANITOR_TESTBED: ${{ github.workspace }}/.testbed
           CODE_JANITOR_REQUIRE_TESTBED: '1'
+          CODE_JANITOR_REQUIRE_DOTNET: '1'
         run: npm run test:testbed
