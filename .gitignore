@@ -8,3 +8,32 @@ node_modules/
 server/**/bin/
 server/**/obj/
 test/e2e/fixtures/**/obj/
+.trash/
+
+# Local editor settings; the launch and task configurations for developing the extension are shared.
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# AI coding assistants
+.omp/
+.agents/
+.claude/
+CLAUDE.local.md
+.cursor/
+.codex/
+.gemini/
+.aider*
+.continue/
+.windsurf/
+.opencode/
+.roo/
+.cline/
+.clinerules/
+.kiro/
+.junie/
+.amazonq/
+.qwen/
+.crush/
+.goose/

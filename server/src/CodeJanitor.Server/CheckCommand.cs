@@ -43,7 +43,7 @@ internal static partial class CheckCommand
         try
         {
             var lines = new List<string>();
-            var exitCode = await CheckAsync(paths.Count > 0 ? paths : ["."], Path.GetFullPath(root, currentDirectory), currentDirectory, host, engine, defaultSettings, lines).ConfigureAwait(false);
+            var exitCode = await CheckAsync(paths.Count > 0 ? paths : ["."], RealPath.Resolve(Path.GetFullPath(root, currentDirectory)), currentDirectory, host, engine, defaultSettings, lines).ConfigureAwait(false);
             foreach (var line in lines)
             {
                 await output.WriteAsync(line + "\n").ConfigureAwait(false);
@@ -69,7 +69,7 @@ internal static partial class CheckCommand
         List<string> lines)
     {
         var files = paths
-            .SelectMany(target => CSharpFiles(Path.GetFullPath(target, currentDirectory)))
+            .SelectMany(target => CSharpFiles(RealPath.Resolve(Path.GetFullPath(target, currentDirectory))))
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToList();

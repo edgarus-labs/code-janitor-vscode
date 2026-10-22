@@ -124,6 +124,45 @@ public sealed class CheckCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Shows_paths_relative_to_the_root_when_the_root_is_reached_through_a_symbolic_link()
+    {
+        var link = Path.Combine(Path.GetTempPath(), "cj-link-" + Guid.NewGuid().ToString("N")[..12]);
+        Assert.True(TryCreateDirectoryLink(link, _tree.Root), "The test needs a symbolic link or, on Windows, a junction.");
+
+        try
+        {
+            _engine.Cleanup = (document, _, _) => Task.FromResult(new CleanupOutcome(document.Project.Solution, [], [], ["a note"]));
+
+            var exitCode = await RunAsync("--root", link, _tree.PathOf("src/Clean.cs"));
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("src/Clean.cs: note: a note\nCode Janitor check: 1 file(s) checked, all clean.\n", _output.ToString());
+        }
+        finally
+        {
+            Directory.Delete(link);
+        }
+    }
+
+    /// <summary>A symbolic link, or on Windows (where that needs a privilege) a junction; false when neither can be made.</summary>
+    private static bool TryCreateDirectoryLink(string link, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+
+            return true;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException && OperatingSystem.IsWindows())
+        {
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", ["/c", "mklink", "/J", link, target]) { UseShellExecute = false, CreateNoWindow = true });
+            process!.WaitForExit();
+
+            return process.ExitCode == 0;
+        }
+    }
+
+    [Fact]
     public async Task Fails_with_2_and_lists_each_failure_of_the_engine_as_an_error_not_a_note()
     {
         var file = _tree.PathOf("src/Clean.cs");
