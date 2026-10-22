@@ -125,7 +125,7 @@ First release of the Visual Studio Code port.
   made.
 - **Marketplace icon** (`assets/icon.png`, 128x128) and a rewritten, user-facing `README.md`: what
   the extension does, the problem it solves, and how to use it, instead of internal architecture
-  notes (those moved to `PLAN.md`, the porting/dev history document).
+  notes.
 - **C# cleanup engine**, reimplemented natively in TypeScript. All 27 converters of the original
   Roslyn engine: BOM removal, trailing whitespace, tabs to spaces, blank-line normalization and
   padding, region handling, `#endregion` naming, file headers, comment formatting, explicit access
@@ -279,7 +279,7 @@ First release of the Visual Studio Code port.
   preview and asks before applying anything, exactly as it does standalone. No workspace-wide
   variant: unlike documentation (which only adds comments), an AI refactor changes logic-adjacent
   code, so applying it unattended across many files was judged too risky to ship without a
-  finer-grained review step per change; see `PLAN.md` for the reasoning.
+  finer-grained review step per change.
 
 - **Preview Cleanup** can now leave out single changes. **Choose Rules...** lists each step and
   each `.editorconfig` rule that changes the file, with its number of changes
@@ -540,10 +540,10 @@ First release of the Visual Studio Code port.
   the .NET SDK.
 - `npm run verify:compile`: a compile oracle that builds C# projects before and after cleanup with
   every rule enforced and finds the rule behind each new compiler error, over a corpus of tricky
-  C# in `test/oracle` (see `PLAN.md`). Development only; needs the .NET SDK.
+  C# in `test/oracle`. Development only; needs the .NET SDK.
 - `npm run generate:editorconfig`: writes an `.editorconfig` with every documented C# code-style,
   formatting and naming option at its documented default, enforcing as warnings what cleanup
-  applies (see `PLAN.md`).
+  applies.
 - Extended `test/e2e/` to a full pass over the three places a user actually interacts with the
   extension: every declared setting is read from the real Settings system and checked against its
   declared JSON type/enum, plus a real update/clear round-trip; every declared command is executed

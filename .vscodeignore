@@ -12,7 +12,6 @@ tsconfig.e2e.json
 esbuild.js
 tsconfig.json
 vitest.config.ts
-PLAN.md
 dist/verify-bundle.cjs
 **/*.map
 **/.eslintrc.json

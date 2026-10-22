@@ -37,3 +37,7 @@ CLAUDE.local.md
 .qwen/
 .crush/
 .goose/
+
+# Notes and logs kept out of the repository
+PLAN.md
+ci-*.log

@@ -449,9 +449,7 @@ appropriate for the source code you are working with, and review generated outpu
 Every cleanup option is tested on deliberately bad C# in the [testbed repository](https://github.com/edgarus-labs/code-janitor-testbed)
 (`npm run test:testbed`): each option must fix its own bad code, and the cleaned solution must still build and behave the same.
 
-
-See [the development guide](PLAN.md) for architecture and verification commands and
-[CHANGELOG.md](CHANGELOG.md) for release history. Report reproducible problems in
+[CHANGELOG.md](CHANGELOG.md) is the release history. Report reproducible problems in
 [GitHub Issues](https://github.com/edgarus-labs/code-janitor-vscode/issues), including the extension
 version, VS Code version, relevant settings and a minimal example without credentials or private code.
 
