@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [develop, main]
 
+# A new push to a branch cancels the run still going for the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Read-only token: jobs build and run code from another repository (the testbed).
 permissions:
   contents: read
@@ -41,7 +46,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
@@ -81,7 +86,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
@@ -113,7 +118,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
@@ -158,7 +163,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
         os: [ubuntu-26.04, windows-2025, macos-15]
@@ -188,7 +193,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
@@ -213,7 +218,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
@@ -244,3 +249,40 @@ jobs:
           CODE_JANITOR_REQUIRE_TESTBED: '1'
           CODE_JANITOR_REQUIRE_DOTNET: '1'
         run: npm run test:testbed
+
+  # A failed job ends the whole run at once: the other jobs and the rest of the matrices are cancelled, so the next push starts
+  # from a free pipeline. `fail-fast` alone only cancels the siblings of a matrix, not the other jobs. This job runs none of the
+  # code under test, so it is the only one that gets a token that may cancel runs.
+  cancel-on-failure:
+    name: Cancel the run when a job fails
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    permissions:
+      actions: write
+    steps:
+      - name: Watch the other jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+          OWN_NAME: Cancel the run when a job fails
+        run: |
+          finished=0
+          while true; do
+            jobs=$(gh run view "$RUN_ID" --repo "$REPOSITORY" --json jobs --jq "[.jobs[] | select(.name != \"$OWN_NAME\")]")
+            if printf '%s' "$jobs" | jq -e 'any(.[]; .conclusion == "failure" or .conclusion == "timed_out")' >/dev/null; then
+              echo "A job failed: cancelling the run."
+              gh run cancel "$RUN_ID" --repo "$REPOSITORY"
+              exit 0
+            fi
+            # Jobs of a matrix that depends on another job appear when that one ends: finished means twice in a row.
+            if printf '%s' "$jobs" | jq -e 'all(.[]; .status == "completed")' >/dev/null; then
+              finished=$((finished + 1))
+              if [ "$finished" -ge 2 ]; then
+                exit 0
+              fi
+            else
+              finished=0
+            fi
+            sleep 15
+          done
