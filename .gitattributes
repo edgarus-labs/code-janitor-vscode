@@ -1,6 +1,2 @@
-# Text files are checked out with LF on every platform: the fixtures and expected texts of the tests are LF, and a Windows
-# checkout with core.autocrlf would otherwise turn them into CRLF.
 * text=auto eol=lf
-
-# This fixture is CRLF on purpose.
 test/fixtures/preview/Services/Legacy.cs -text

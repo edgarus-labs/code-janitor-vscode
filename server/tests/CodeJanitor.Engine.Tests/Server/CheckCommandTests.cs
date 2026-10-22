@@ -144,7 +144,6 @@ public sealed class CheckCommandTests : IDisposable
         }
     }
 
-    /// <summary>A symbolic link, or on Windows (where that needs a privilege) a junction; false when neither can be made.</summary>
     private static bool TryCreateDirectoryLink(string link, string target)
     {
         try

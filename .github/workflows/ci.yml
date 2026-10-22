@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [develop, main]
 
-# A new push to a branch cancels the run still going for the same branch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -41,15 +40,34 @@ jobs:
       - name: Prettier and dotnet format
         run: npm run format:check
 
+  server-build:
+    name: Build the C# engine server once
+    needs: lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish the server
+        run: npm run build:server
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server
+          path: dist/server
+          retention-days: 1
+          if-no-files-found: error
+
   build:
     name: Build and Test (${{ matrix.os }})
-    needs: lint
+    needs: [lint, server-build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-26.04, windows-2025, macos-15]
+        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -71,8 +89,12 @@ jobs:
         env:
           CODE_JANITOR_TEST_CATEGORY: unit
         run: npm test
-      - name: Bundle (the C# engine server and the extension)
-        run: npm run build
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
+      - name: Bundle the extension
+        run: node esbuild.js --production
       - name: Verify bundle
         run: npm run verify:bundle
       - name: Verify packaged VSIX contents
@@ -81,6 +103,7 @@ jobs:
           grep -q '^dist/server/CodeJanitor.Server.dll$' vsix-files.txt
           grep -q '^dist/extension.js$' vsix-files.txt
           ! grep -E '^(src|server|test|scripts|shared)/' vsix-files.txt
+          ! grep -E '^\.' vsix-files.txt
 
   e2e:
     name: Extension tests in VS Code (e2e, ${{ matrix.os }})
@@ -90,7 +113,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-26.04, windows-2025, macos-15]
+        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -104,16 +127,18 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
-      # Linux runners have no display: the VS Code host runs under a virtual one.
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
+      - name: Bundle the extension
+        run: node esbuild.js --production
+      - name: Compile the e2e tests
+        run: npx tsc -p tsconfig.e2e.json
       - name: Install xvfb
-        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Run the e2e tests under xvfb
-        if: runner.os == 'Linux'
-        run: xvfb-run -a npm run test:e2e
-      - name: Run the e2e tests
-        if: runner.os != 'Linux'
-        run: npm run test:e2e
+        run: xvfb-run -a npx vscode-test
 
   server:
     name: C# engine server (build and test, ${{ matrix.os }})
@@ -123,7 +148,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-26.04, windows-2025, macos-15]
+        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -165,11 +190,13 @@ jobs:
     # Public repository: GitHub-hosted runners only. One runner per category and system, so the builds of one never slow another down.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     strategy:
       fail-fast: true
       matrix:
         category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
-        os: [ubuntu-26.04, windows-2025, macos-15]
+        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -183,6 +210,10 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
       - name: Build cleaned C# with the real compiler
         env:
           CODE_JANITOR_TEST_CATEGORY: ${{ matrix.category }}
@@ -196,6 +227,8 @@ jobs:
     # against a hung dotnet build or a long blame loop after a failure.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     strategy:
       fail-fast: true
       matrix:
@@ -213,6 +246,10 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
       - name: Build test/oracle before and after cleanup
         run: npm run verify:compile
 
@@ -222,6 +259,8 @@ jobs:
     # Public repository: GitHub-hosted runners only. The whole job takes a few minutes; the limit is a safety net.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     strategy:
       fail-fast: true
       matrix:
@@ -249,6 +288,10 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
       - name: Run every scenario through the C# engine server, then build and run the cleaned solution
         env:
           CODE_JANITOR_TESTBED: ${{ github.workspace }}/.testbed

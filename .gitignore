@@ -10,13 +10,11 @@ server/**/obj/
 test/e2e/fixtures/**/obj/
 .trash/
 
-# Local editor settings; the launch and task configurations for developing the extension are shared.
 .vscode/*
 !.vscode/launch.json
 !.vscode/tasks.json
 !.vscode/extensions.json
 
-# AI coding assistants
 .omp/
 .agents/
 .claude/
@@ -38,6 +36,5 @@ CLAUDE.local.md
 .crush/
 .goose/
 
-# Notes and logs kept out of the repository
 PLAN.md
 ci-*.log

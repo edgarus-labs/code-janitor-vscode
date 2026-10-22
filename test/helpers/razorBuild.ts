@@ -45,8 +45,6 @@ export function projectFiles(folder: string, relative = ''): string[] {
 
 /** Copies a project folder (without build output) to a new temporary folder. */
 export function copyProject(source: string): string {
-  // Real path: on macOS the temporary folder is a symbolic link, and MSBuild then names the project and its files through two
-  // different paths, which breaks the namespaces Razor derives from them.
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cj-razor-')));
   for (const file of projectFiles(source)) {
     fs.mkdirSync(path.dirname(path.join(folder, file)), { recursive: true });
