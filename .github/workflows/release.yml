@@ -13,19 +13,29 @@ defaults:
     shell: bash
 
 jobs:
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-26.04, windows-2025, macos-15]
+  package:
+    name: Test and package
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      CODE_JANITOR_TESTBED: ${{ github.workspace }}/.testbed
+      CODE_JANITOR_REQUIRE_TESTBED: '1'
+      CODE_JANITOR_REQUIRE_DOTNET: '1'
+      CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: edgarus-labs/code-janitor-testbed
+          ref: develop
+          path: .testbed
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
@@ -35,53 +45,26 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run compile
+      - name: Build the server
+        run: dotnet build -c Release server/CodeJanitor.Server.slnx
+      - name: Server tests
+        run: dotnet test -c Release server/CodeJanitor.Server.slnx --no-build
+      - name: Publish the server
+        run: dotnet publish server/src/CodeJanitor.Server/CodeJanitor.Server.csproj -c Release --no-build -o dist/server --nologo -v quiet
       - name: Test
         run: npm test
-      - name: Verify bundle
-        run: npm run build && npm run verify:bundle
-
-  package:
-    name: Package (${{ matrix.target }})
-    needs: test
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { os: windows-2025, target: win32-x64, rid: win-x64 }
-          - { os: windows-2025, target: win32-arm64, rid: win-arm64 }
-          - { os: ubuntu-26.04, target: linux-x64, rid: linux-x64 }
-          - { os: ubuntu-26.04, target: linux-arm64, rid: linux-arm64 }
-          - { os: macos-15, target: darwin-x64, rid: osx-x64 }
-          - { os: macos-15, target: darwin-arm64, rid: osx-arm64 }
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: 10.0.x
-      - name: Install dependencies
-        run: npm ci
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-      # The server is published for the target's runtime identifier (framework-dependent): only that platform's native
-      # assets and launcher go into the VSIX. MSBuild reads the two properties from the environment.
       - name: Package the extension (.vsix)
-        env:
-          RuntimeIdentifier: ${{ matrix.rid }}
-          SelfContained: 'false'
-        run: npx vsce package --target ${{ matrix.target }}
+        run: npx vsce package
       - name: Verify bundle
         run: npm run verify:bundle
       - uses: actions/upload-artifact@v7
         with:
-          name: vsix-${{ matrix.target }}
+          name: vsix
           path: '*.vsix'
           if-no-files-found: error
 
@@ -94,8 +77,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: vsix-*
-          merge-multiple: true
+          name: vsix
       - name: Create GitHub Release
         uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
         with:

@@ -22,6 +22,7 @@ shared/**
 package-lock.json
 .editorconfig
 tsconfig.scripts.json
+dist/server/**/*.pdb
 .editorconfig.original
 .gitattributes
 .prettierrc.json
