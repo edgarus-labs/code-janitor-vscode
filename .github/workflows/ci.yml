@@ -41,14 +41,10 @@ jobs:
         run: npm run format:check
 
   build:
-    name: Build and Test (${{ matrix.os }})
+    name: Build and Test
     needs: [lint, server]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -87,14 +83,10 @@ jobs:
           ! grep -E '^\.' vsix-files.txt
 
   e2e:
-    name: Extension tests in VS Code (e2e, ${{ matrix.os }})
+    name: Extension tests in VS Code (e2e)
     needs: [lint, build]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -122,14 +114,10 @@ jobs:
         run: xvfb-run -a npx vscode-test
 
   server:
-    name: C# engine server (build, artifact and xunit tests, ${{ matrix.os }})
+    name: C# engine server (build, artifact and xunit tests)
     needs: lint
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -173,10 +161,9 @@ jobs:
         run: echo "categories=$(jq -c 'keys - ["testbed"]' test/compilerTests.json)" >> "$GITHUB_OUTPUT"
 
   compiler-tests:
-    name: Compiler tests (${{ matrix.category }}, ${{ matrix.os }})
+    name: Compiler tests (${{ matrix.category }})
     needs: compiler-test-categories
-    # Public repository: GitHub-hosted runners only. One runner per category and system, so the builds of one never slow another down.
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
@@ -184,7 +171,6 @@ jobs:
       fail-fast: true
       matrix:
         category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
-        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -209,18 +195,14 @@ jobs:
         run: npm test
 
   compile-oracle:
-    name: Compile oracle (cleaned C# still builds, ${{ matrix.os }})
+    name: Compile oracle (cleaned C# still builds)
     needs: [lint, build]
     # Public repository: GitHub-hosted runners only. The run takes about a minute; the limit is a safety net
     # against a hung dotnet build or a long blame loop after a failure.
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -242,17 +224,13 @@ jobs:
         run: npm run verify:compile
 
   testbed:
-    name: Testbed (every cleanup option on bad C#, built and run, ${{ matrix.os }})
+    name: Testbed (every cleanup option on bad C#, built and run)
     needs: [lint, build]
     # Public repository: GitHub-hosted runners only. The whole job takes a few minutes; the limit is a safety net.
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-26.04]
     steps:
       # No token is left in .git/config: the testbed's MSBuild targets and program run in this job.
       - uses: actions/checkout@v7
