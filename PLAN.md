@@ -117,7 +117,10 @@ To package the extension locally:
 npm run package
 ```
 
-Install the resulting VSIX using **Extensions → Install from VSIX...**.
+Install the resulting VSIX using **Extensions → Install from VSIX...**. `npm run package` makes a universal VSIX; the release makes one
+per platform with `RuntimeIdentifier=<rid> SelfContained=false npx vsce package --target <target>` (MSBuild reads both properties from
+the environment, so the server is published with only that platform's native assets), for example
+`RuntimeIdentifier=linux-x64 SelfContained=false npx vsce package --target linux-x64`.
 
 ## Verification and contributions
 

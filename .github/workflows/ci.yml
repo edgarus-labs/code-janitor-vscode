@@ -10,10 +10,15 @@ on:
 permissions:
   contents: read
 
+# Bash on every runner, Windows included (Git Bash), so the steps are the same everywhere.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   lint:
     name: Lint and format (ESLint, Prettier, dotnet format)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +36,14 @@ jobs:
         run: npm run format:check
 
   build:
-    name: Build and Test
+    name: Build and Test (${{ matrix.os }})
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -66,10 +76,14 @@ jobs:
           ! grep -E '^(src|server|test|scripts|shared)/' vsix-files.txt
 
   e2e:
-    name: Extension tests in VS Code (e2e)
+    name: Extension tests in VS Code (e2e, ${{ matrix.os }})
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -82,14 +96,26 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      # Linux runners have no display: the VS Code host runs under a virtual one.
+      - name: Install xvfb
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Run the e2e tests under xvfb
+        if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:e2e
+      - name: Run the e2e tests
+        if: runner.os != 'Linux'
+        run: npm run test:e2e
 
   server:
-    name: C# engine server (build and test)
+    name: C# engine server (build and test, ${{ matrix.os }})
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,7 +142,7 @@ jobs:
   compiler-test-categories:
     name: List compiler test categories
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       categories: ${{ steps.list.outputs.categories }}
     steps:
@@ -126,15 +152,16 @@ jobs:
         run: echo "categories=$(jq -c 'keys - ["testbed"]' test/compilerTests.json)" >> "$GITHUB_OUTPUT"
 
   compiler-tests:
-    name: Compiler tests (${{ matrix.category }})
+    name: Compiler tests (${{ matrix.category }}, ${{ matrix.os }})
     needs: compiler-test-categories
-    # Public repository: GitHub-hosted runners only. One runner per category, so the builds of one never slow another down.
-    runs-on: ubuntu-latest
+    # Public repository: GitHub-hosted runners only. One runner per category and system, so the builds of one never slow another down.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
+        os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -154,12 +181,16 @@ jobs:
         run: npm test
 
   compile-oracle:
-    name: Compile oracle (cleaned C# still builds)
+    name: Compile oracle (cleaned C# still builds, ${{ matrix.os }})
     needs: lint
     # Public repository: GitHub-hosted runners only. The run takes about a minute; the limit is a safety net
     # against a hung dotnet build or a long blame loop after a failure.
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -176,11 +207,15 @@ jobs:
         run: npm run verify:compile
 
   testbed:
-    name: Testbed (every cleanup option on bad C#, built and run)
+    name: Testbed (every cleanup option on bad C#, built and run, ${{ matrix.os }})
     needs: lint
     # Public repository: GitHub-hosted runners only. The whole job takes a few minutes; the limit is a safety net.
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
       # No token is left in .git/config: the testbed's MSBuild targets and program run in this job.
       - uses: actions/checkout@v4

@@ -23,8 +23,11 @@ First release of the Visual Studio Code port.
   [code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) repository (one class per option) and builds and runs the
   cleaned solution with the real compiler. It found the fixes listed under **Fixed (found on real code)**.
   `CODE_JANITOR_TESTBED_SCENARIOS` (scenario ids or option names) runs only the named cleanups, with the same checks and build.
-- **CI.** The tests that build C# with the .NET SDK run in one job per category (`test/compilerTests.json`), each on its own runner
-  with the .NET 10 SDK (`10.0.x`); Build and Test runs the rest. The Code Style compiler tests build each rule group as its own project.
+- **CI.** Lint and format run first; every other job needs them. Build and Test, the e2e tests, the server tests, the compiler tests
+  (one job per category of `test/compilerTests.json`), the compile oracle and the testbed run on Linux (`ubuntu-26.04`), Windows
+  (`windows-2025`) and macOS (`macos-15`), with the .NET 10 SDK (`10.0.x`). Runner labels are explicit instead of `ubuntu-latest`.
+- **Release.** The tests run on the three systems, then one `.vsix` is packaged per platform (`win32-x64`, `win32-arm64`, `linux-x64`,
+  `linux-arm64`, `darwin-x64`, `darwin-arm64`), each with the server published for that runtime only.
 - **Cleanup per language.** Files that are not C# get the cleanup steps of their language family, as in Visual Studio: C-family
   languages (C/C++, CSS, LESS, SCSS, JavaScript, TypeScript, JSON, PHP, PowerShell, R) the blank line rules at braces and the padding
   before `//` comments; HTML, XAML and XML the three markup rules (never inside comments, CDATA, attribute values or HTML `script`,

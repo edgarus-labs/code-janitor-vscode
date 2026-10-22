@@ -26,10 +26,11 @@ Review the resulting diff and build your project, especially when enabling synta
 
 ## Installation
 
-Grab the latest `.vsix` from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases),
+Grab the `.vsix` for your platform from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases)
+(`code-janitor-<platform>-<version>.vsix`, for `win32-x64`, `win32-arm64`, `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`),
 then either:
 
-- run `code --install-extension code-janitor-<version>.vsix`, or
+- run `code --install-extension code-janitor-<platform>-<version>.vsix`, or
 - in VS Code, open the Extensions view, click the `...` menu, and choose **Install from VSIX...**.
 
 ## How to use it
@@ -131,7 +132,7 @@ its repository never changes what your CI runs):
 ```yaml
 jobs:
   code-janitor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -149,7 +150,7 @@ jobs:
           dotnet-version: '10.0.x'
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - run: npm ci
         working-directory: .code-janitor
       - run: npm run check --prefix .code-janitor -- --root "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/src"
