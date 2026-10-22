@@ -11,6 +11,7 @@ export default tseslint.config(
       'coverage/',
       '.vscode-test/',
       '.testbed/',
+      '.trash/',
       'server/',
       'shared/',
       'test/fixtures/',

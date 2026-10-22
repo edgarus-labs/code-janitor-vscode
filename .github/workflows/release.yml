@@ -22,11 +22,11 @@ jobs:
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -56,11 +56,11 @@ jobs:
           - { os: macos-15, target: darwin-x64, rid: osx-x64 }
           - { os: macos-15, target: darwin-arm64, rid: osx-arm64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - name: Install dependencies
@@ -79,7 +79,7 @@ jobs:
         run: npx vsce package --target ${{ matrix.target }}
       - name: Verify bundle
         run: npm run verify:bundle
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vsix-${{ matrix.target }}
           path: '*.vsix'
@@ -92,12 +92,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: vsix-*
           merge-multiple: true
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
         with:
           files: '*.vsix'
           draft: true

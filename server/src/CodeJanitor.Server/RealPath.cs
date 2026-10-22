@@ -6,9 +6,18 @@ namespace CodeJanitor.Server;
 /// </summary>
 internal static class RealPath
 {
+    /// <summary>The most links one path may pass through, as the operating systems allow.</summary>
+    private const int MaxLinks = 40;
+
     public static string Resolve(string path)
     {
-        var full = Path.GetFullPath(path);
+        var links = 0;
+
+        return Resolve(Path.GetFullPath(path), ref links);
+    }
+
+    private static string Resolve(string full, ref int links)
+    {
         var root = Path.GetPathRoot(full) ?? string.Empty;
         var current = root;
         foreach (var part in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
@@ -17,7 +26,13 @@ internal static class RealPath
             FileSystemInfo entry = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
             if (entry.Exists && entry.LinkTarget is not null && entry.ResolveLinkTarget(returnFinalTarget: true) is { } target)
             {
-                current = target.FullName;
+                if (++links > MaxLinks)
+                {
+                    throw new IOException($"Too many symbolic links: {full}");
+                }
+
+                // The target is a path of its own: on macOS the temporary folder /var/folders/... is reached through the link /var.
+                current = Resolve(target.FullName, ref links);
             }
         }
 

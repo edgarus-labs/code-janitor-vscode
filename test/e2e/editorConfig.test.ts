@@ -90,8 +90,11 @@ suite('.editorconfig cleanup (real VS Code host)', () => {
     fs.writeFileSync(filePath, 'namespace Demo;\n\ninternal class Saved\n{\n}\n', 'utf8');
     const editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(filePath));
 
+    // Its own type name: a `Counter` left in the engine's project by the first test (a deleted file the engine has not heard about yet)
+    // would make the rename of the private field a rename across files, which a cleanup on save does not make.
+    const unclean = UNCLEAN_COUNTER.replace('class Counter', 'class SavedCounter');
     await editor.edit((edit) =>
-      edit.replace(new vscode.Range(editor.document.positionAt(0), editor.document.positionAt(editor.document.getText().length)), UNCLEAN_COUNTER)
+      edit.replace(new vscode.Range(editor.document.positionAt(0), editor.document.positionAt(editor.document.getText().length)), unclean)
     );
     await editor.document.save();
 

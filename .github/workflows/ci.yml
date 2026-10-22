@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - name: Install dependencies
@@ -45,11 +45,11 @@ jobs:
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -85,11 +85,11 @@ jobs:
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -117,17 +117,17 @@ jobs:
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # The engine tests run the testbed scenarios: the testbed's develop branch, as in the testbed job.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: edgarus-labs/code-janitor-testbed
           ref: develop
           path: .testbed
           persist-credentials: false
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -146,7 +146,7 @@ jobs:
     outputs:
       categories: ${{ steps.list.outputs.categories }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The testbed category runs in its own job, which also clones the testbed.
       - id: list
         run: echo "categories=$(jq -c 'keys - ["testbed"]' test/compilerTests.json)" >> "$GITHUB_OUTPUT"
@@ -163,11 +163,11 @@ jobs:
         category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -192,11 +192,11 @@ jobs:
       matrix:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -218,20 +218,20 @@ jobs:
         os: [ubuntu-26.04, windows-2025, macos-15]
     steps:
       # No token is left in .git/config: the testbed's MSBuild targets and program run in this job.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # The testbed's develop branch: the testbed and this repository are not versioned separately.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: edgarus-labs/code-janitor-testbed
           ref: develop
           path: .testbed
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
