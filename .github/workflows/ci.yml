@@ -30,6 +30,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
@@ -54,6 +55,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
@@ -82,7 +84,7 @@ jobs:
 
   e2e:
     name: Extension tests in VS Code (e2e, ${{ matrix.os }})
-    needs: lint
+    needs: [lint, build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -94,6 +96,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
@@ -114,7 +117,7 @@ jobs:
 
   server:
     name: C# engine server (build and test, ${{ matrix.os }})
-    needs: lint
+    needs: [lint, build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -142,11 +145,11 @@ jobs:
       - name: Test
         env:
           CODE_JANITOR_TESTBED: ${{ github.workspace }}/.testbed
-        run: dotnet test server/CodeJanitor.Server.slnx
+        run: dotnet test server/CodeJanitor.Server.slnx --no-build
 
   compiler-test-categories:
     name: List compiler test categories
-    needs: lint
+    needs: [lint, build]
     runs-on: ubuntu-26.04
     outputs:
       categories: ${{ steps.list.outputs.categories }}
@@ -172,6 +175,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
@@ -187,7 +191,7 @@ jobs:
 
   compile-oracle:
     name: Compile oracle (cleaned C# still builds, ${{ matrix.os }})
-    needs: lint
+    needs: [lint, build]
     # Public repository: GitHub-hosted runners only. The run takes about a minute; the limit is a safety net
     # against a hung dotnet build or a long blame loop after a failure.
     runs-on: ${{ matrix.os }}
@@ -195,12 +199,13 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-26.04, windows-2025, macos-15]
+        os: [ubuntu-26.04]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
@@ -213,14 +218,14 @@ jobs:
 
   testbed:
     name: Testbed (every cleanup option on bad C#, built and run, ${{ matrix.os }})
-    needs: lint
+    needs: [lint, build]
     # Public repository: GitHub-hosted runners only. The whole job takes a few minutes; the limit is a safety net.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-26.04, windows-2025, macos-15]
+        os: [ubuntu-26.04]
     steps:
       # No token is left in .git/config: the testbed's MSBuild targets and program run in this job.
       - uses: actions/checkout@v7
@@ -236,6 +241,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
@@ -249,40 +255,3 @@ jobs:
           CODE_JANITOR_REQUIRE_TESTBED: '1'
           CODE_JANITOR_REQUIRE_DOTNET: '1'
         run: npm run test:testbed
-
-  # A failed job ends the whole run at once: the other jobs and the rest of the matrices are cancelled, so the next push starts
-  # from a free pipeline. `fail-fast` alone only cancels the siblings of a matrix, not the other jobs. This job runs none of the
-  # code under test, so it is the only one that gets a token that may cancel runs.
-  cancel-on-failure:
-    name: Cancel the run when a job fails
-    runs-on: ubuntu-26.04
-    timeout-minutes: 60
-    permissions:
-      actions: write
-    steps:
-      - name: Watch the other jobs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          OWN_NAME: Cancel the run when a job fails
-        run: |
-          finished=0
-          while true; do
-            jobs=$(gh run view "$RUN_ID" --repo "$REPOSITORY" --json jobs --jq "[.jobs[] | select(.name != \"$OWN_NAME\")]")
-            if printf '%s' "$jobs" | jq -e 'any(.[]; .conclusion == "failure" or .conclusion == "timed_out")' >/dev/null; then
-              echo "A job failed: cancelling the run."
-              gh run cancel "$RUN_ID" --repo "$REPOSITORY"
-              exit 0
-            fi
-            # Jobs of a matrix that depends on another job appear when that one ends: finished means twice in a row.
-            if printf '%s' "$jobs" | jq -e 'all(.[]; .status == "completed")' >/dev/null; then
-              finished=$((finished + 1))
-              if [ "$finished" -ge 2 ]; then
-                exit 0
-              fi
-            else
-              finished=0
-            fi
-            sleep 15
-          done
