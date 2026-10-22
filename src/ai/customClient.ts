@@ -39,7 +39,6 @@ export function isEndpointConfigured(endpointUrl: string | undefined): boolean {
 export function getNormalizedEndpointUrl(endpointUrl: string): string {
   const url = endpointUrl.trim();
   try {
-    // eslint-disable-next-line no-new
     new URL(url);
   } catch {
     return url;
@@ -60,7 +59,6 @@ export function getModelsEndpointUrl(endpointUrl: string): string {
 
   const url = endpointUrl.trim();
   try {
-    // eslint-disable-next-line no-new
     new URL(url);
   } catch {
     return url;
@@ -98,13 +96,7 @@ export function parseModelIds(json: string): string[] {
         if (item && typeof item === 'object') {
           const rec = item as Record<string, unknown>;
           const candidate = (
-            typeof rec.id === 'string'
-              ? rec.id
-              : typeof rec.name === 'string'
-              ? rec.name
-              : typeof rec.model === 'string'
-              ? rec.model
-              : undefined
+            typeof rec.id === 'string' ? rec.id : typeof rec.name === 'string' ? rec.name : typeof rec.model === 'string' ? rec.model : undefined
           )?.trim();
           if (candidate) {
             models.add(candidate);
@@ -146,6 +138,29 @@ export function isLocalEndpoint(endpointUrl: string): boolean {
 
 function isTransientStatusCode(status: number): boolean {
   return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+const BASE_RETRY_DELAY_MS = 500;
+const MAX_RETRY_DELAY_MS = 30_000;
+
+function sleep(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+
+  return promise;
+}
+
+/** The server's `Retry-After` (seconds or an HTTP date) when it sent one, else an exponential backoff; capped. */
+function retryDelayMs(attempt: number, retryAfter: string | null): number {
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const until = Number.isNaN(seconds) ? Date.parse(retryAfter) - Date.now() : seconds * 1000;
+    if (!Number.isNaN(until)) {
+      return Math.min(Math.max(0, until), MAX_RETRY_DELAY_MS);
+    }
+  }
+
+  return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS);
 }
 
 function buildRequestBody(userPrompt: string, maxTokens: number, systemPrompt: string | undefined, config: CustomEndpointConfig): Record<string, unknown> {
@@ -198,7 +213,9 @@ function extractContentFromResponse(payload: unknown): string | undefined {
   const content = anyPayload.content;
   if (Array.isArray(content)) {
     const text = content
-      .map((block) => (block && typeof block === 'object' && typeof (block as Record<string, unknown>).text === 'string' ? (block as Record<string, unknown>).text : ''))
+      .map((block) =>
+        block && typeof block === 'object' && typeof (block as Record<string, unknown>).text === 'string' ? (block as Record<string, unknown>).text : ''
+      )
       .join('');
     if (text) {
       return text as string;
@@ -212,6 +229,12 @@ function extractContentFromResponse(payload: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function assertSecureTransport(endpointUrl: string): void {
+  if (new URL(endpointUrl.trim()).protocol === 'http:' && !isLocalEndpoint(endpointUrl.trim())) {
+    throw new Error('AI endpoint uses plain http:// on a non-local host, which would send your API key and source code unencrypted. Use an https:// endpoint.');
+  }
 }
 
 function applyAuthHeaders(headers: Record<string, string>, config: CustomEndpointConfig): void {
@@ -232,6 +255,7 @@ async function postChatCompletion(userPrompt: string, maxTokens: number, systemP
   if (!isEndpointConfigured(config.endpointUrl)) {
     throw new Error('AI endpoint is not configured.');
   }
+  assertSecureTransport(config.endpointUrl);
 
   const url = getNormalizedEndpointUrl(config.endpointUrl);
   const timeoutSeconds = config.timeoutSeconds && config.timeoutSeconds > 0 ? config.timeoutSeconds : 30;
@@ -240,65 +264,69 @@ async function postChatCompletion(userPrompt: string, maxTokens: number, systemP
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   applyAuthHeaders(headers, config);
 
-  let lastError: string | undefined;
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
-
+    let response: Response;
+    let responseText: string;
     try {
-      const response = await fetch(url, {
+      response = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
         signal: controller.signal,
+        redirect: 'error',
       });
-
-      const responseText = await response.text();
-
-      if (!response.ok) {
-        lastError = `AI endpoint returned ${response.status} ${response.statusText}. ${responseText.slice(0, 512)}`;
-        if (attempt < MAX_ATTEMPTS && isTransientStatusCode(response.status)) {
-          continue;
-        }
-
-        throw new Error(lastError);
-      }
-
-      let payload: unknown;
-      try {
-        payload = JSON.parse(responseText);
-      } catch {
-        throw new Error(`AI endpoint response was not valid JSON. Response: ${responseText.slice(0, 512)}`);
-      }
-
-      const content = extractContentFromResponse(payload);
-      if (!content || !content.trim()) {
-        throw new Error(`AI endpoint response did not contain message content. Response: ${responseText.slice(0, 512)}`);
-      }
-
-      return content.trim();
+      responseText = await response.text();
     } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        throw new Error(`AI request timed out after ${timeoutSeconds} seconds.`);
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error(`AI request timed out after ${timeoutSeconds} seconds.`, { cause: err });
       }
 
       if (attempt >= MAX_ATTEMPTS) {
         throw err;
       }
 
-      lastError = (err as Error).message;
+      await sleep(retryDelayMs(attempt, null));
+      continue;
     } finally {
       clearTimeout(timeout);
     }
-  }
 
-  throw new Error(lastError ?? 'Unknown AI endpoint error.');
+    if (!response.ok) {
+      const message = `AI endpoint returned ${response.status} ${response.statusText}. ${responseText.slice(0, 512)}`;
+      if (attempt >= MAX_ATTEMPTS || !isTransientStatusCode(response.status)) {
+        throw new Error(message);
+      }
+
+      await sleep(retryDelayMs(attempt, response.headers.get('Retry-After')));
+      continue;
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      throw new Error(`AI endpoint response was not valid JSON. Response: ${responseText.slice(0, 512)}`);
+    }
+
+    const content = extractContentFromResponse(payload);
+    if (!content || !content.trim()) {
+      throw new Error(`AI endpoint response did not contain message content. Response: ${responseText.slice(0, 512)}`);
+    }
+
+    return content.trim();
+  }
 }
 
 export async function testCustomConnection(config: CustomEndpointConfig): Promise<ConnectionTestResult> {
   if (!isEndpointConfigured(config.endpointUrl)) {
     return { succeeded: false, errorMessage: 'AI endpoint is not configured.' };
+  }
+  try {
+    assertSecureTransport(config.endpointUrl);
+  } catch (err) {
+    return { succeeded: false, errorMessage: (err as Error).message };
   }
 
   const modelsUrl = getModelsEndpointUrl(config.endpointUrl);
@@ -307,13 +335,11 @@ export async function testCustomConnection(config: CustomEndpointConfig): Promis
   const headers: Record<string, string> = { Accept: 'application/json' };
   applyAuthHeaders(headers, config);
 
-  const queryModels = async (
-    url: string
-  ): Promise<{ ok: boolean; status: number; text: string } | undefined> => {
+  const queryModels = async (url: string): Promise<{ ok: boolean; status: number; text: string } | undefined> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
     try {
-      const resp = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+      const resp = await fetch(url, { method: 'GET', headers, signal: controller.signal, redirect: 'error' });
       const text = await resp.text();
 
       return { ok: resp.ok, status: resp.status, text };
@@ -328,15 +354,8 @@ export async function testCustomConnection(config: CustomEndpointConfig): Promis
   let modelsResult = firstTry;
 
   // Fallback: if modelsUrl returned 404 and didn't include "/v1", try with "/v1/models"
-  if (
-    firstTry &&
-    firstTry.status === 404 &&
-    !modelsUrl.includes('/v1/') &&
-    !modelsUrl.toLowerCase().endsWith('/v1/models')
-  ) {
-    const v1Url = modelsUrl.toLowerCase().endsWith('/models')
-      ? modelsUrl.slice(0, -'/models'.length).replace(/\/+$/, '') + '/v1/models'
-      : undefined;
+  if (firstTry && firstTry.status === 404 && !modelsUrl.includes('/v1/') && !modelsUrl.toLowerCase().endsWith('/v1/models')) {
+    const v1Url = modelsUrl.toLowerCase().endsWith('/models') ? modelsUrl.slice(0, -'/models'.length).replace(/\/+$/, '') + '/v1/models' : undefined;
     if (v1Url) {
       const fallbackTry = await queryModels(v1Url);
       if (fallbackTry && (fallbackTry.ok || fallbackTry.status === 401 || fallbackTry.status === 403)) {
@@ -366,14 +385,8 @@ export async function testCustomConnection(config: CustomEndpointConfig): Promis
 
     return { succeeded: true };
   } catch (err) {
-    return { succeeded: false, errorMessage: (err as Error).message };
+    return { succeeded: false, errorMessage: err instanceof Error ? err.message : String(err) };
   }
-}
-
-export async function fetchAvailableModels(config: CustomEndpointConfig): Promise<string[]> {
-  const result = await testCustomConnection(config);
-
-  return result.availableModels ?? [];
 }
 
 export async function getCustomChatCompletion(systemPrompt: string, userPrompt: string, maxTokens: number, config: CustomEndpointConfig): Promise<string> {

@@ -3,7 +3,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CODE_STYLE_GROUPS, CODE_STYLE_RULES } from '../src/cleanup/codeStyleRules';
-import { collectSettingSections, readOverrideNotes, registerSettingsUiCommand, resetSettingsPanelForTesting } from '../src/commands/settingsUi';
+import {
+  collectSettingSections,
+  parseListInput,
+  parseNumberInput,
+  readOverrideNotes,
+  registerSettingsUiCommand,
+  resetSettingsPanelForTesting,
+} from '../src/commands/settingsUi';
+import { useFakeEngine } from './helpers/fakeEngine';
 import { readCleanupSettings } from '../src/commands/settings';
 import {
   ConfigurationTarget,
@@ -15,6 +23,7 @@ import {
   simulateWebviewMessage,
   state,
   webviewDisposeHandlers,
+  webviewPostedMessages,
   webviewMessageHandlers,
   window,
   workspace as vscodeWorkspace,
@@ -37,18 +46,20 @@ describe('collectSettingSections', () => {
       'Cleaning: Code Style',
       'Cleaning: File Header',
       'Formatting',
+      'Cleaning: External Tools',
       'Cleaning: Razor',
       'Reorganizing',
       'AI: Provider',
       'AI: XML Documentation',
       'AI: Unit Tests',
+      'Spade (Code Structure)',
+      'Navigation',
+      'Features',
     ]);
   });
 
   it('covers every declared setting exactly once', () => {
-    const declared = manifest.contributes.configuration.flatMap((section: { properties: object }) =>
-      Object.keys(section.properties)
-    );
+    const declared = manifest.contributes.configuration.flatMap((section: { properties: object }) => Object.keys(section.properties));
     const collected = sections.flatMap((section) => section.settings.map((setting) => setting.key));
 
     expect([...collected].sort()).toEqual([...declared].sort());
@@ -65,9 +76,7 @@ describe('collectSettingSections', () => {
   });
 
   it('carries the enum choices and their descriptions', () => {
-    const provider = sections
-      .flatMap((section) => section.settings)
-      .find((setting) => setting.key === 'codeJanitor.ai.provider');
+    const provider = sections.flatMap((section) => section.settings).find((setting) => setting.key === 'codeJanitor.ai.provider');
 
     expect(provider?.options?.map((option) => option.value)).toEqual(['copilot', 'custom']);
     expect(provider?.options?.[0].description).toContain('Copilot');
@@ -90,9 +99,7 @@ describe('collectSettingSections', () => {
   });
 
   it('strips markdown markers from descriptions', () => {
-    const removeRegions = sections
-      .flatMap((section) => section.settings)
-      .find((setting) => setting.key === 'codeJanitor.cleanup.removeRegions');
+    const removeRegions = sections.flatMap((section) => section.settings).find((setting) => setting.key === 'codeJanitor.cleanup.removeRegions');
 
     expect(removeRegions?.description).toContain('#region');
     expect(removeRegions?.description).not.toContain('`');
@@ -121,7 +128,9 @@ describe('collectSettingSections', () => {
 describe('Code Style rules setting', () => {
   const codeStyleManifest = {
     contributes: {
-      configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {}, description: 'Rules.' } } }],
+      configuration: [
+        { title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {}, description: 'Rules.' } } },
+      ],
     },
   };
 
@@ -139,7 +148,10 @@ describe('Code Style rules setting', () => {
       diagnosticIds: ['IDE0036'],
       values: [],
     });
-    expect(setting.rules!.find((rule) => rule.key === 'csharp_prefer_braces')).toMatchObject({ values: ['true', 'false', 'when_multiline'], defaultValue: 'true' });
+    expect(setting.rules!.find((rule) => rule.key === 'csharp_prefer_braces')).toMatchObject({
+      values: ['true', 'false', 'when_multiline'],
+      defaultValue: 'true',
+    });
   });
 });
 
@@ -159,39 +171,57 @@ describe('override notes', () => {
     fs.rmSync(path.dirname(workspace), { recursive: true, force: true });
   });
 
-  it('names the key and the file for each setting the workspace .editorconfig overrides', () => {
+  it('shows the notes the C# engine reports for the workspace folder, sending it the user settings', async () => {
     const configPath = path.join(workspace, '.editorconfig');
-    fs.writeFileSync(
-      configPath,
-      '[*.cs]\ncsharp_style_var_when_type_is_apparent = false:warning\ndotnet_style_require_accessibility_modifiers = always\ncsharp_prefer_braces = true:warning\n'
-    );
+    const explicit = ['Classes', 'Delegates', 'Enumerations', 'Events', 'Fields', 'Interfaces', 'Methods', 'Properties', 'Structs'];
+    const engine = useFakeEngine({
+      overrideNotes: () => ({
+        notes: {
+          convertToVarWhenApparent: `Overridden by .editorconfig: csharp_style_var_when_type_is_apparent in ${configPath}`,
+          ...Object.fromEntries(
+            explicit.map((kind) => [
+              `insertExplicitAccessModifiersOn${kind}`,
+              `Overridden by .editorconfig: dotnet_style_require_accessibility_modifiers in ${configPath}`,
+            ])
+          ),
+          csharp_prefer_braces: `Overridden by .editorconfig: csharp_prefer_braces in ${configPath}`,
+        },
+      }),
+    });
     state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
 
-    expect(readOverrideNotes()).toEqual({
+    expect(await readOverrideNotes()).toEqual({
       notes: {
         'codeJanitor.cleanup.convertToVarWhenApparent': `Overridden by .editorconfig: csharp_style_var_when_type_is_apparent in ${configPath}`,
         'codeJanitor.cleanup.insertExplicitAccessModifiers': `Overridden by .editorconfig: dotnet_style_require_accessibility_modifiers in ${configPath}`,
       },
       ruleNotes: { csharp_prefer_braces: `Overridden by .editorconfig: csharp_prefer_braces in ${configPath}` },
     });
+    expect(engine.requests('overrideNotes')).toEqual([
+      { directory: workspace, settings: expect.objectContaining({ removeRegions: true, fileHeaderPosition: 'documentStart' }) },
+    ]);
   });
 
-  it('shows and locks nothing without a workspace', () => {
-    fs.writeFileSync(path.join(workspace, '.editorconfig'), '[*.cs]\ncsharp_style_var_when_type_is_apparent = false:warning\n');
+  it('shows and locks nothing without a workspace, without asking the engine', async () => {
+    const engine = useFakeEngine();
 
-    expect(readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
+    expect(await readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
+    expect(engine.requests('overrideNotes')).toEqual([]);
   });
 
-  it('ignores keys that are not enforced and .editorconfig files nested below the workspace', () => {
-    fs.writeFileSync(path.join(workspace, '.editorconfig'), '[*.cs]\ncsharp_style_var_when_type_is_apparent = false:silent\n');
-    fs.mkdirSync(path.join(workspace, 'src'));
-    fs.writeFileSync(path.join(workspace, 'src', '.editorconfig'), '[*.cs]\ndotnet_style_readonly_field = true\n');
+  it('shows only the .codejanitor notes when the engine is unavailable', async () => {
+    const policyPath = path.join(workspace, '.codejanitor');
+    fs.writeFileSync(policyPath, JSON.stringify({ cleanup: { removeRegions: false } }));
+    useFakeEngine({ overrideNotes: () => Promise.reject(new Error('no .NET')) });
     state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
 
-    expect(readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
+    expect(await readOverrideNotes()).toEqual({
+      notes: { 'codeJanitor.cleanup.removeRegions': `Overridden by .codejanitor: removeRegions in ${policyPath}` },
+      ruleNotes: {},
+    });
   });
 
-  it('names the key and the file for each setting and rule .codejanitor pins, unless .editorconfig decides it', () => {
+  it('names the key and the file for each setting and rule .codejanitor pins, unless the engine reports .editorconfig decides it', async () => {
     const policyPath = path.join(workspace, '.codejanitor');
     const configPath = path.join(workspace, '.editorconfig');
     fs.writeFileSync(
@@ -207,10 +237,17 @@ describe('override notes', () => {
         },
       })
     );
-    fs.writeFileSync(configPath, '[*.cs]\ndotnet_style_readonly_field = true:warning\ncsharp_prefer_braces = true:warning\n');
+    useFakeEngine({
+      overrideNotes: () => ({
+        notes: {
+          makeFieldsReadonlyWhenSafe: `Overridden by .editorconfig: dotnet_style_readonly_field in ${configPath}`,
+          csharp_prefer_braces: `Overridden by .editorconfig: csharp_prefer_braces in ${configPath}`,
+        },
+      }),
+    });
     state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
 
-    expect(readOverrideNotes()).toEqual({
+    expect(await readOverrideNotes()).toEqual({
       notes: {
         'codeJanitor.cleanup.removeRegions': `Overridden by .codejanitor: removeRegions in ${policyPath}`,
         'codeJanitor.cleanup.insertBlankLineBeforeReturnAndThrow': `Overridden by .codejanitor: insertBlankLineBeforeReturnAndThrow in ${policyPath}`,
@@ -224,18 +261,23 @@ describe('override notes', () => {
     });
   });
 
-  it('locks a group setting only when .codejanitor pins every flag of the group, since the others follow the setting', () => {
+  it('locks a group setting only when .codejanitor pins every flag of the group, since the others follow the setting', async () => {
     fs.writeFileSync(
       path.join(workspace, '.codejanitor'),
       JSON.stringify({ cleanup: { insertBlankLinePaddingBeforeClasses: false, insertExplicitAccessModifiersOnFields: false } })
     );
+    useFakeEngine();
     state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
 
-    expect(readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
+    expect(await readOverrideNotes()).toEqual({ notes: {}, ruleNotes: {} });
   });
 
   it('shows the stored Code Style rules with the values the editor offers', async () => {
-    state.configuration.set('codeJanitor.cleanup.codeStyleRules', { csharp_prefer_braces: 'True', dotnet_style_null_propagation: 'maybe', unknown_rule: 'true' });
+    state.configuration.set('codeJanitor.cleanup.codeStyleRules', {
+      csharp_prefer_braces: 'True',
+      dotnet_style_null_propagation: 'maybe',
+      unknown_rule: 'true',
+    });
     const created: { __postedMessages: unknown[] }[] = [];
     const spy = vi.spyOn(window, 'createWebviewPanel').mockImplementation(() => {
       const panel = createMockWebviewPanel();
@@ -246,11 +288,16 @@ describe('override notes', () => {
     resetWebviewPanels();
     resetSettingsPanelForTesting();
     registerSettingsUiCommand(
-      createContext({ contributes: { configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {} } } }] } })
+      createContext({
+        contributes: {
+          configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {} } } }],
+        },
+      })
     );
     await state.commands.get('codeJanitor.openSettings')!();
 
     simulateWebviewMessage(0, { type: 'ready' });
+    await vi.waitFor(() => expect(created[0].__postedMessages).toHaveLength(1));
 
     const init = created[0].__postedMessages[0] as { values: Record<string, unknown> };
     expect(init.values['codeJanitor.cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'true' });
@@ -258,7 +305,9 @@ describe('override notes', () => {
   });
 
   it('sends the notes with the values, and stores only valid Code Style rules', async () => {
-    fs.writeFileSync(path.join(workspace, '.editorconfig'), '[*.cs]\ndotnet_style_readonly_field = true\n');
+    useFakeEngine({
+      overrideNotes: () => ({ notes: { makeFieldsReadonlyWhenSafe: 'Overridden by .editorconfig: dotnet_style_readonly_field in /repo/.editorconfig' } }),
+    });
     state.workspaceFolders = [{ uri: Uri.file(workspace), name: 'repo' }];
     const created: { __postedMessages: unknown[] }[] = [];
     const spy = vi.spyOn(window, 'createWebviewPanel').mockImplementation(() => {
@@ -270,7 +319,9 @@ describe('override notes', () => {
     resetWebviewPanels();
     resetSettingsPanelForTesting();
     const context = createContext({
-      contributes: { configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {} } } }] },
+      contributes: {
+        configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {} } } }],
+      },
     });
     registerSettingsUiCommand(context);
     await state.commands.get('codeJanitor.openSettings')!();
@@ -308,7 +359,7 @@ describe('override notes', () => {
             const key = section ? `${section}.${relativeKey}` : relativeKey;
             const [userValue, workspaceValue] = [scopes.user[key], scopes.workspace[key]];
 
-            return (isObject(userValue) && isObject(workspaceValue) ? { ...userValue, ...workspaceValue } : workspaceValue ?? userValue) ?? defaultValue;
+            return (isObject(userValue) && isObject(workspaceValue) ? { ...userValue, ...workspaceValue } : (workspaceValue ?? userValue)) ?? defaultValue;
           },
           inspect: (key: string) => ({ globalValue: scopes.user[key], workspaceValue: scopes.workspace[key] }),
           update: (key: string, value: unknown, target: unknown) => {
@@ -330,19 +381,32 @@ describe('override notes', () => {
       resetWebviewPanels();
       resetSettingsPanelForTesting();
       registerSettingsUiCommand(
-        createContext({ contributes: { configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {} } } }] } })
+        createContext({
+          contributes: {
+            configuration: [{ title: 'Cleaning: Code Style', properties: { 'codeJanitor.cleanup.codeStyleRules': { type: 'object', default: {} } } }],
+          },
+        })
       );
       await state.commands.get('codeJanitor.openSettings')!();
       simulateWebviewMessage(0, { type: 'ready' });
       simulateWebviewMessage(0, { type: 'scope', scope: 'workspace' });
+      await vi.waitFor(() => expect(panels[0].__postedMessages).toHaveLength(2));
       // Workspace scope shows the rules in effect there, the User settings' included: what an update then writes keeps them.
       const shown = panels[0].__postedMessages.at(-1) as { values: Record<string, unknown> };
       expect(shown.values['codeJanitor.cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'true', dotnet_style_null_propagation: 'true' });
 
       // Only braces stays checked: null propagation, on in the User settings, is turned off here.
-      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.cleanup.codeStyleRules', value: { csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' } });
+      simulateWebviewMessage(0, {
+        type: 'update',
+        key: 'codeJanitor.cleanup.codeStyleRules',
+        value: { csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' },
+      });
       await vi.waitFor(() =>
-        expect(scopes.workspace['codeJanitor.cleanup.codeStyleRules']).toEqual({ csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true', dotnet_style_null_propagation: null })
+        expect(scopes.workspace['codeJanitor.cleanup.codeStyleRules']).toEqual({
+          csharp_prefer_braces: 'true',
+          csharp_style_throw_expression: 'true',
+          dotnet_style_null_propagation: null,
+        })
       );
       // The merged setting the cleanup reads has the rule off, and the User settings keep it on.
       expect(readCleanupSettings().codeStyleRules).toEqual({ csharp_prefer_braces: 'true', csharp_style_throw_expression: 'true' });
@@ -385,17 +449,6 @@ describe('SettingsPanel', () => {
     expect(webviewMessageHandlers.length).toBeGreaterThan(0);
   });
 
-  it('sends init message with sections and values when the webview sends ready', async () => {
-    const context = createContext();
-    registerSettingsUiCommand(context);
-    await state.commands.get('codeJanitor.openSettings')!();
-
-    simulateWebviewMessage(0, { type: 'ready' });
-
-    // The panel's postMessage should have been called with init data.
-    // We can't easily access it from the mock, but the fact that no error was thrown is enough.
-  });
-
   it('handles scope change to workspace', async () => {
     const context = createContext();
     registerSettingsUiCommand(context);
@@ -407,7 +460,7 @@ describe('SettingsPanel', () => {
   });
 
   it('handles update message by writing to configuration', async () => {
-    const context = createContext();
+    const context = createContext(manifest);
     registerSettingsUiCommand(context);
     await state.commands.get('codeJanitor.openSettings')!();
 
@@ -424,7 +477,7 @@ describe('SettingsPanel', () => {
   });
 
   it('handles update message with workspace scope', async () => {
-    const context = createContext();
+    const context = createContext(manifest);
     registerSettingsUiCommand(context);
     await state.commands.get('codeJanitor.openSettings')!();
 
@@ -454,20 +507,12 @@ describe('SettingsPanel', () => {
     registerSettingsUiCommand(context);
     await state.commands.get('codeJanitor.openSettings')!();
 
-    // Set some values first.
     state.configuration.set('codeJanitor.cleanup.removeRegions', false);
     state.configuration.set('codeJanitor.cleanup.organizeUsings', true);
-
-    // Verify they were set.
-    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
+    state.modalChoice = 'Reset';
 
     simulateWebviewMessage(0, { type: 'reset' });
-
-    // resetAll is async and iterates over many settings; give it time to complete.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // Reset clears to undefined (falls back to default).
-    expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBeUndefined();
+    await vi.waitFor(() => expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBeUndefined());
   });
 
   it('handles exportRepository message', async () => {
@@ -520,5 +565,147 @@ describe('SettingsPanel', () => {
 
     // Should not create a second panel.
     expect(webviewMessageHandlers.length).toBe(panelCount);
+  });
+
+  describe('hardening', () => {
+    const posted = (type: string): { type: string; [key: string]: unknown }[] =>
+      (webviewPostedMessages[0] ?? []).filter((message): message is { type: string } => (message as { type?: string })?.type === type);
+    const open = async (): Promise<void> => {
+      registerSettingsUiCommand(createContext(manifest));
+      await state.commands.get('codeJanitor.openSettings')!();
+    };
+    const settle = async (): Promise<void> => {
+      for (let turn = 0; turn < 5; turn++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
+    const written = (): string[] => state.configurationUpdates.map((update) => update.key);
+
+    it('answers ready with every setting section and the effective values', async () => {
+      await open();
+
+      simulateWebviewMessage(0, { type: 'ready' });
+      await vi.waitFor(() => expect(posted('init')).toHaveLength(1));
+
+      const init = posted('init')[0] as unknown as { sections: { settings: { key: string }[] }[]; values: Record<string, unknown>; scope: string };
+      expect(init.sections.flatMap((section) => section.settings.map((setting) => setting.key))).toContain('codeJanitor.cleanup.removeRegions');
+      expect(init.values['codeJanitor.cleanup.removeRegions']).toBe(true);
+      expect(init.scope).toBe('user');
+    });
+
+    it('does not answer ready after the panel was disposed', async () => {
+      await open();
+
+      simulateWebviewMessage(0, { type: 'ready' });
+      webviewDisposeHandlers[0].forEach((handler) => handler());
+      await settle();
+
+      expect(posted('init')).toEqual([]);
+    });
+
+    it('reports a failure to load the settings instead of leaving the rejection unhandled', async () => {
+      await open();
+      const configuration = vi.spyOn(vscodeWorkspace, 'getConfiguration').mockImplementation(() => {
+        throw new Error('settings unavailable');
+      });
+
+      try {
+        simulateWebviewMessage(0, { type: 'ready' });
+        await settle();
+      } finally {
+        configuration.mockRestore();
+      }
+
+      expect(state.errorMessages.join('\n')).toContain('settings unavailable');
+    });
+
+    it('refuses a key that is not a Code Janitor setting', async () => {
+      await open();
+
+      simulateWebviewMessage(0, { type: 'update', key: 'editor.fontSize', value: 40 });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.noSuchSetting', value: true });
+      await settle();
+
+      expect(written()).toEqual([]);
+      expect(state.errorMessages).toHaveLength(2);
+    });
+
+    it('refuses a value of the wrong type, outside the manifest range, or not an allowed choice', async () => {
+      await open();
+
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.cleanup.removeRegions', value: 'yes' });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.razor.indentSize', value: 99 });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.razor.indentSize', value: 2.5 });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.diagnostics.maxFileSizeKB', value: 0 });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.diagnostics.maxFileSizeKB', value: Number.NaN });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.ai.provider', value: 'other' });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.cleanup.exclude', value: ['ok', 3] });
+      await settle();
+
+      expect(written()).toEqual([]);
+      expect(state.errorMessages).toHaveLength(7);
+    });
+
+    it('stores a valid value and clears a setting whose value is missing, as an emptied number field sends', async () => {
+      await open();
+
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.razor.indentSize', value: 2 });
+      simulateWebviewMessage(0, { type: 'update', key: 'codeJanitor.diagnostics.maxFileSizeKB' });
+      await settle();
+
+      expect(state.configurationUpdates.map((update) => [update.key, update.value])).toEqual([
+        ['codeJanitor.razor.indentSize', 2],
+        ['codeJanitor.diagnostics.maxFileSizeKB', undefined],
+      ]);
+      expect(state.errorMessages).toEqual([]);
+    });
+
+    it('asks before resetting every setting and writes only the settings that have a value', async () => {
+      await open();
+      state.configuration.set('codeJanitor.cleanup.removeRegions', false);
+      state.configuration.set('codeJanitor.cleanup.organizeUsings', true);
+
+      state.modalChoice = undefined;
+      simulateWebviewMessage(0, { type: 'reset' });
+      await settle();
+      expect(state.configurationUpdates).toEqual([]);
+      expect(state.warningMessages).toHaveLength(1);
+
+      state.modalChoice = 'Reset';
+      simulateWebviewMessage(0, { type: 'reset' });
+      await settle();
+
+      expect([...written()].sort()).toEqual(['codeJanitor.cleanup.organizeUsings', 'codeJanitor.cleanup.removeRegions']);
+      expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBeUndefined();
+    });
+
+    it('labels every input of the form for assistive technology', async () => {
+      const create = vi.spyOn(window, 'createWebviewPanel');
+      try {
+        await open();
+        const html = (create.mock.results[0].value as { webview: { html: string } }).webview.html;
+
+        expect(html).toContain("setAttribute('aria-label'");
+        expect(html).toMatch(/id="search"[^>]*aria-label=/);
+        expect(html).toMatch(/<label for="scope">/);
+      } finally {
+        create.mockRestore();
+      }
+    });
+  });
+});
+
+describe('settings form input parsing', () => {
+  it('reads an empty or non-numeric number field as no value instead of 0', () => {
+    expect(parseNumberInput('')).toBeUndefined();
+    expect(parseNumberInput('   ')).toBeUndefined();
+    expect(parseNumberInput('abc')).toBeUndefined();
+    expect(parseNumberInput('0')).toBe(0);
+    expect(parseNumberInput(' 12.5 ')).toBe(12.5);
+  });
+
+  it('keeps the exact text of each list line, dropping only blank lines', () => {
+    expect(parseListInput('a \n\n  \r\n b\r\n')).toEqual(['a ', ' b']);
+    expect(parseListInput('')).toEqual([]);
   });
 });

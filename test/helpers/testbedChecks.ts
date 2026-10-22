@@ -1,6 +1,6 @@
 /**
  * The expectations of a scenario of the public Code Janitor testbed repository (`scenarios.json`),
- * and how one is checked against the cleaned text.
+ * how one is checked against the cleaned text, and which scenarios a run selects.
  */
 /** One expectation about the cleaned text of a scenario. */
 export type Check =
@@ -31,7 +31,9 @@ export function failure(check: Check, output: string, issues: readonly string[])
     case 'noBom':
       return text.charCodeAt(0) === 0xfeff ? 'expected the byte order mark to be removed' : undefined;
     case 'reported':
-      return issues.some((issue) => new RegExp(check.re).test(issue)) ? undefined : `expected a reported issue matching /${check.re}/, got: ${JSON.stringify(issues)}`;
+      return issues.some((issue) => new RegExp(check.re).test(issue))
+        ? undefined
+        : `expected a reported issue matching /${check.re}/, got: ${JSON.stringify(issues)}`;
     case 'order': {
       let from = 0;
       for (const part of check.s) {
@@ -57,7 +59,13 @@ export function failure(check: Check, output: string, issues: readonly string[])
       const between = text.slice(first + check.a.length, second);
       const blank = /\n[ \t]*\n/.test(between);
 
-      return check.t === 'blankBetween' ? (blank ? undefined : `expected a blank line between ${JSON.stringify(check.a)} and ${JSON.stringify(check.b)}`) : blank ? `expected no blank line between ${JSON.stringify(check.a)} and ${JSON.stringify(check.b)}` : undefined;
+      return check.t === 'blankBetween'
+        ? blank
+          ? undefined
+          : `expected a blank line between ${JSON.stringify(check.a)} and ${JSON.stringify(check.b)}`
+        : blank
+          ? `expected no blank line between ${JSON.stringify(check.a)} and ${JSON.stringify(check.b)}`
+          : undefined;
     }
 
     default: {
@@ -67,4 +75,43 @@ export function failure(check: Check, output: string, issues: readonly string[])
       return `unknown check type ${JSON.stringify(unknown.t)}`;
     }
   }
+}
+
+/** What a scenario names: its id and the options it turns on. */
+export interface SelectableScenario {
+  readonly id: string;
+  readonly settings: Record<string, unknown>;
+  readonly codeStyle: Record<string, string>;
+}
+
+/**
+ * The scenarios `filter` selects: a comma- or space-separated list of scenario ids and option names
+ * (`CsharpPreferBraces`, `removeRegions`, `csharp_prefer_braces`); every scenario when it is blank. A
+ * scenario answers to its id, its cleanup and Reorganize settings and its Code Style rules. A name no
+ * scenario has throws, so a typo does not pass by running nothing.
+ */
+export function selectScenarios<T extends SelectableScenario>(all: readonly T[], filter: string | undefined): T[] {
+  const wanted = (filter ?? '').split(/[\s,]+/).filter(Boolean);
+  if (wanted.length === 0) {
+    return [...all];
+  }
+
+  const names = new Map(
+    all.map((scenario) => {
+      const reorganize = scenario.settings.reorganize;
+      const options = [
+        ...Object.keys(scenario.settings),
+        ...(reorganize && typeof reorganize === 'object' ? Object.keys(reorganize) : []),
+        ...Object.keys(scenario.codeStyle),
+      ];
+
+      return [scenario, new Set([scenario.id, ...options])] as const;
+    })
+  );
+  const unknown = wanted.filter((name) => ![...names.values()].some((scenarioNames) => scenarioNames.has(name)));
+  if (unknown.length > 0) {
+    throw new Error(`No testbed scenario has the id or option ${unknown.map((name) => JSON.stringify(name)).join(', ')}.`);
+  }
+
+  return all.filter((scenario) => wanted.some((name) => names.get(scenario)!.has(name)));
 }

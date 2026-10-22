@@ -23,9 +23,7 @@ export const MAX_INDENT_SIZE = 8;
 export function resolveRazorLayout(options: Partial<RazorFormatOptions>, text: string): RazorLayout {
   const size = options.indentSize;
   const indentSize =
-    typeof size === 'number' && Number.isInteger(size) && size >= MIN_INDENT_SIZE && size <= MAX_INDENT_SIZE
-      ? size
-      : DEFAULT_RAZOR_OPTIONS.indentSize;
+    typeof size === 'number' && Number.isInteger(size) && size >= MIN_INDENT_SIZE && size <= MAX_INDENT_SIZE ? size : DEFAULT_RAZOR_OPTIONS.indentSize;
   const style = options.indentStyle ?? DEFAULT_RAZOR_OPTIONS.indentStyle;
   if (style === 'space' || style === 'tab') {
     return { indentSize, indentStyle: style };

@@ -16,7 +16,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - name: Install dependencies
         run: npm ci
       - name: Set version from tag
@@ -33,7 +38,7 @@ jobs:
       - name: Package the extension (.vsix)
         run: npm run package
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: '*.vsix'
           draft: true

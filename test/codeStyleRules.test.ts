@@ -9,7 +9,6 @@ import {
   getCodeStyleRule,
   parseCodeStyleSetting,
 } from '../src/cleanup/codeStyleRules';
-import { editorConfigCatalog } from '../src/cleanup/editorConfigRegistry';
 
 describe('Code Style rules catalog', () => {
   it('lists the 53 rules of the Visual Studio catalog, each key once', () => {
@@ -40,14 +39,11 @@ describe('Code Style rules catalog', () => {
     for (const rule of CODE_STYLE_RULES) {
       expect(rule.isValidValue(rule.defaultValue), rule.key).toBe(true);
       expect(rule.diagnosticIds.length, rule.key).toBeGreaterThan(0);
-      expect(rule.diagnosticIds.every((id) => /^IDE\d{4}$/.test(id)), rule.key).toBe(true);
+      expect(
+        rule.diagnosticIds.every((id) => /^IDE\d{4}$/.test(id)),
+        rule.key
+      ).toBe(true);
     }
-  });
-
-  it('has an implementation in the rule engine for every rule option', () => {
-    const implemented = new Set(editorConfigCatalog().settings);
-
-    expect(CODE_STYLE_RULES.filter((rule) => !implemented.has(rule.key)).map((rule) => rule.key)).toEqual([]);
   });
 
   it('validates csharp_preferred_modifier_order as distinct known modifiers', () => {
@@ -75,7 +71,12 @@ describe('Code Style setting', () => {
 
   it('ignores unknown keys, invalid values, JSON booleans and anything that is not an object', () => {
     expect(
-      parseCodeStyleSetting({ unknown_key: 'true', csharp_prefer_braces: true, csharp_preferred_modifier_order: 'public,loud', dotnet_style_null_propagation: null })
+      parseCodeStyleSetting({
+        unknown_key: 'true',
+        csharp_prefer_braces: true,
+        csharp_preferred_modifier_order: 'public,loud',
+        dotnet_style_null_propagation: null,
+      })
     ).toEqual({});
     expect(parseCodeStyleSetting(undefined)).toEqual({});
     expect(parseCodeStyleSetting(['csharp_prefer_braces'])).toEqual({});
@@ -93,7 +94,9 @@ describe('Code Style setting', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')) as {
       contributes: { configuration: { properties: Record<string, { default?: unknown; properties?: unknown; additionalProperties?: unknown }> }[] };
     };
-    const declared = manifest.contributes.configuration.flatMap((section) => Object.entries(section.properties)).find(([key]) => key === 'codeJanitor.cleanup.codeStyleRules');
+    const declared = manifest.contributes.configuration
+      .flatMap((section) => Object.entries(section.properties))
+      .find(([key]) => key === 'codeJanitor.cleanup.codeStyleRules');
 
     expect(declared, 'codeJanitor.cleanup.codeStyleRules is declared in package.json').toBeDefined();
     expect(declared![1].default).toEqual({});

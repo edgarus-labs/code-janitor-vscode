@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdits } from '../src/cleanup/parser';
+import { applyEdits } from '../src/razor/csharp/parser';
 
 describe('applyEdits', () => {
   it('applies edits given in any order against the original offsets', () => {
-    expect(applyEdits('abcdef', [{ start: 4, end: 5, text: 'E' }, { start: 0, end: 1, text: 'A' }, { start: 2, end: 2, text: '+' }])).toBe('Ab+cdEf');
+    expect(
+      applyEdits('abcdef', [
+        { start: 4, end: 5, text: 'E' },
+        { start: 0, end: 1, text: 'A' },
+        { start: 2, end: 2, text: '+' },
+      ])
+    ).toBe('Ab+cdEf');
   });
 
   it('places insertions at the same offset last-given first, before a replacement given earlier', () => {
@@ -17,11 +23,27 @@ describe('applyEdits', () => {
   });
 
   it('drops an edit that overlaps one starting later or a replacement given after an edit at the same offset', () => {
-    expect(applyEdits('abcdef', [{ start: 1, end: 4, text: 'X' }, { start: 3, end: 5, text: 'Y' }])).toBe('abcYf');
-    expect(applyEdits('abcdef', [{ start: 2, end: 2, text: 'I' }, { start: 2, end: 3, text: 'R' }])).toBe('abIcdef');
+    expect(
+      applyEdits('abcdef', [
+        { start: 1, end: 4, text: 'X' },
+        { start: 3, end: 5, text: 'Y' },
+      ])
+    ).toBe('abcYf');
+    expect(
+      applyEdits('abcdef', [
+        { start: 2, end: 2, text: 'I' },
+        { start: 2, end: 3, text: 'R' },
+      ])
+    ).toBe('abIcdef');
   });
 
   it('applies adjacent edits and edits at both ends of the text', () => {
-    expect(applyEdits('abc', [{ start: 0, end: 1, text: 'X' }, { start: 1, end: 2, text: 'Y' }, { start: 3, end: 3, text: '!' }])).toBe('XYc!');
+    expect(
+      applyEdits('abc', [
+        { start: 0, end: 1, text: 'X' },
+        { start: 1, end: 2, text: 'Y' },
+        { start: 3, end: 3, text: '!' },
+      ])
+    ).toBe('XYc!');
   });
 });

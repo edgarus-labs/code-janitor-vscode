@@ -1,29 +1,18 @@
 import * as path from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import * as vscode from 'vscode';
-import { Baseline, readHeadVersion } from '../cleanup/gitBaseline';
 import { countChangedRegions } from '../cleanup/lineDiff';
-import { PreviewResult } from '../cleanup/pipeline';
-import { loadEditorConfigProperties } from '../cleanup/editorconfig';
-import { planOneTypePerFile, readOneTypePerFileRules } from '../cleanup/oneTypePerFile';
-import { EditorConfigIssueListener, getCleanupPipeline } from '../cleanup/runCleanup';
-import { parseErrorCount } from '../cleanup/transformations/editorConfigSupport';
-import { CleanupSettings } from '../cleanup/types';
+import { DocumentText, RuleResult } from '../engine/protocol';
+import { reportEngineUnavailable } from '../engine/vscodeEngine';
 import { logError, logInfo } from '../logging';
-import {
-  cleanupChangedLines,
-  createEditorConfigIssueLog,
-  discoverDisqualifiedTypeNamesForFile,
-  isCSharp,
-  isPathCleanable,
-} from './cleanupCore';
-import { readCleanupSettings, readCleanupSettingsForUri } from './settings';
+import { cleanupCSharpResult, engineOutcome, isCSharp, isPathCleanable } from './cleanupCore';
+import { readCleanupSettingsForUri } from './settings';
 
 /**
  * The plan of a multi-file cleanup preview (the port of the Visual Studio "Preview C# Text
- * Changes"): every file's cleanup computed from its original text with the ordinary pipeline, but
- * not written anywhere. The plan is approved per file and per rule, then applied through one
- * `WorkspaceEdit` that refuses every file whose text changed since the plan.
+ * Changes"): every file's cleanup computed by the C# engine from its original text, but not written
+ * anywhere. The plan is approved per file and per rule, then applied through one `WorkspaceEdit`
+ * that refuses every file whose text changed since the plan.
  */
 
 export type PreviewStatus = 'changes' | 'unchanged' | 'skipped' | 'error';
@@ -31,25 +20,32 @@ export type PreviewStatus = 'changes' | 'unchanged' | 'skipped' | 'error';
 /** What a rule did to the original text of a file in the current selection of rules. */
 export type RuleOutcome = 'Changed' | 'No change' | 'Excluded';
 
-/** One rule of a file's preview: a step of the pipeline, or one rule of a step made of rules. */
+/** One rule (or Code Janitor step) of a file's preview. */
 export interface PreviewRule {
+  /** The rule id the engine leaves out when the rule is excluded. */
   readonly key: string;
   readonly name: string;
-  /** For a rule of a step made of rules: the step's name. */
+  /** The rule id, shown with the name when it differs. */
   readonly group?: string;
   include: boolean;
   outcome: RuleOutcome;
   /** The number of separate places the rule changed in the current selection. */
   changes: number;
-  /** Index of the pipeline step. */
-  readonly step: number;
-  /** For a rule of a step made of rules: its diagnostic id. */
-  readonly rule?: string;
+}
+
+/** A file's cleanup by the engine with some rules left out. */
+export interface ComputedPreview {
+  readonly updated: string;
+  readonly rules: readonly RuleResult[];
+  readonly otherFiles: readonly DocumentText[];
+  readonly newFiles: readonly DocumentText[];
+  readonly unresolved: number;
+  readonly issues: readonly string[];
 }
 
 /** How a file's updated text is computed from its original text and the rules left out. */
 interface Computation {
-  compute(original: string, excludedSteps: ReadonlySet<number>, excludedRules: ReadonlySet<string>): PreviewResult;
+  compute(original: string, excludedRules: readonly string[]): Promise<ComputedPreview>;
 }
 
 export class PreviewFile {
@@ -58,13 +54,13 @@ export class PreviewFile {
 
   readonly rules: PreviewRule[] = [];
 
-  /** Things the user should know that are not a status: a skipped type split, syntax problems. */
+  /** Things the user should know that are not a status: files a type split creates, the engine's messages. */
   readonly notes: string[] = [];
 
   /** Violations of `.editorconfig` rules cleanup could not fix safely. */
   unresolved = 0;
 
-  private result: PreviewResult | undefined;
+  private result: ComputedPreview | undefined;
 
   private problem: { readonly status: 'skipped' | 'error'; readonly reason: string } | undefined;
 
@@ -93,19 +89,30 @@ export class PreviewFile {
     return file;
   }
 
-  /** Runs the complete pipeline once: that result lists the rules, all included. */
-  static planned(uri: vscode.Uri, label: string, original: string, computation: Computation): PreviewFile {
+  /** Runs the complete cleanup once: that result lists the rules, all included. */
+  static async planned(uri: vscode.Uri, label: string, original: string, computation: Computation): Promise<PreviewFile> {
     const file = new PreviewFile(uri, label, original, computation);
     try {
-      file.evaluate(computation.compute(original, new Set(), new Set()));
-      file.listRules();
+      const result = await computation.compute(original, []);
+      file.evaluate(result);
+      file.rules.push(
+        ...result.rules.map((rule) => ({
+          key: rule.id,
+          name: rule.name,
+          group: rule.id !== rule.name ? rule.id : undefined,
+          include: true,
+          outcome: 'No change' as RuleOutcome,
+          changes: 0,
+        }))
+      );
       file.updateOutcomes();
-      const problems = parseErrorCount(original);
-      if (problems > 0) {
-        file.notes.push(`${problems} syntax ${problems === 1 ? 'problem' : 'problems'} in the file: code the parser does not understand is left unchanged.`);
-      }
+      file.unresolved = result.unresolved;
+      file.notes.push(...result.issues);
     } catch (err) {
-      logError(`Cleanup preview of ${uri.fsPath}`, err);
+      if (!reportEngineUnavailable(err)) {
+        logError(`Cleanup preview of ${uri.fsPath}`, err);
+      }
+
       file.problem = { status: 'error', reason: (err as Error).message };
       file.result = undefined;
     }
@@ -124,16 +131,21 @@ export class PreviewFile {
       return 'error';
     }
 
-    return this.result?.hasChanges ? 'changes' : 'unchanged';
+    return this.hasChanges ? 'changes' : 'unchanged';
   }
 
   get canApply(): boolean {
-    return this.problem === undefined && this.blocked === undefined && this.result?.hasChanges === true;
+    return this.problem === undefined && this.blocked === undefined && this.hasChanges;
   }
 
   /** The text cleanup would leave; the original when nothing applies. */
   get updated(): string {
-    return this.result?.updatedSource ?? this.original ?? '';
+    return this.result?.updated ?? this.original ?? '';
+  }
+
+  /** The files the current result creates (a type split), written with the file. */
+  get newFiles(): readonly DocumentText[] {
+    return this.result?.newFiles ?? [];
   }
 
   /** A short, user-facing statement of the file's status. */
@@ -146,23 +158,24 @@ export class PreviewFile {
       return `Not applied: ${this.blocked}`;
     }
 
-    if (!this.result?.hasChanges) {
+    if (!this.hasChanges) {
       return 'No changes';
     }
 
-    const count = countChangedRegions(this.result.originalSource, this.result.updatedSource);
+    const count = countChangedRegions(this.original ?? '', this.updated);
+    const created = this.newFiles.length > 0 ? `, ${this.newFiles.length} new ${this.newFiles.length === 1 ? 'file' : 'files'}` : '';
 
-    return `${count} ${count === 1 ? 'change' : 'changes'}`;
+    return `${count} ${count === 1 ? 'change' : 'changes'}${created}`;
   }
 
   /**
    * Replaces the included rules with exactly `keys` and recomputes the result from the original
    * text. A file left without changes drops out of the operation; one that regains them joins it.
    */
-  setIncludedRules(keys: ReadonlySet<string>): void {
+  async setIncludedRules(keys: ReadonlySet<string>): Promise<void> {
     const couldApply = this.canApply;
     this.rules.forEach((rule) => (rule.include = keys.has(rule.key)));
-    this.recalculate();
+    await this.recalculate();
     if (!this.canApply) {
       this.include = false;
     } else if (!couldApply) {
@@ -172,40 +185,32 @@ export class PreviewFile {
 
   /** Applies the result when `current` is still the text the plan was made from. */
   tryApply(current: string, replace: (updated: string) => void): boolean {
-    return this.result !== undefined && this.result.tryApply(current, replace);
+    if (this.result === undefined || current !== this.original) {
+      return false;
+    }
+
+    replace(this.updated);
+
+    return true;
   }
 
-  private listRules(): void {
-    for (const step of this.result?.steps ?? []) {
-      if (step.rules) {
-        for (const rule of step.rules) {
-          this.rules.push({
-            key: `${step.index}:${rule.id}`,
-            name: rule.id,
-            group: step.name,
-            include: true,
-            outcome: 'No change',
-            changes: 0,
-            step: step.index,
-            rule: rule.id,
-          });
-        }
-      } else {
-        this.rules.push({ key: `${step.index}`, name: step.name, include: true, outcome: 'No change', changes: 0, step: step.index });
-      }
-    }
+  private get hasChanges(): boolean {
+    return this.result !== undefined && (this.result.updated !== this.original || this.result.newFiles.length > 0);
   }
 
   /** Recomputes from the original text - never from an earlier result - with the rules left out. */
-  private recalculate(): void {
+  private async recalculate(): Promise<void> {
     if (this.computation === undefined || this.original === undefined) {
       return;
     }
 
-    const excludedSteps = new Set(this.rules.filter((rule) => !rule.include && rule.rule === undefined).map((rule) => rule.step));
-    const excludedRules = new Set(this.rules.flatMap((rule) => (!rule.include && rule.rule !== undefined ? [rule.rule] : [])));
     try {
-      this.evaluate(this.computation.compute(this.original, excludedSteps, excludedRules));
+      this.evaluate(
+        await this.computation.compute(
+          this.original,
+          this.rules.filter((rule) => !rule.include).map((rule) => rule.key)
+        )
+      );
     } catch (err) {
       logError(`Cleanup preview of ${this.uri.fsPath}`, err);
       this.problem = { status: 'error', reason: (err as Error).message };
@@ -219,26 +224,19 @@ export class PreviewFile {
 
   private updateOutcomes(): void {
     for (const rule of this.rules) {
-      const step = this.result?.steps.find((candidate) => candidate.index === rule.step);
-      const ruled = step?.rules?.find((candidate) => candidate.id === rule.rule);
-      rule.changes = rule.include ? (ruled ? ruled.changes : (step?.changes ?? 0)) : 0;
-      rule.outcome = !rule.include ? 'Excluded' : (ruled ? ruled.changes > 0 : step?.changed === true) ? 'Changed' : 'No change';
+      const ruled = this.result?.rules.find((candidate) => candidate.id === rule.key);
+      rule.changes = rule.include ? (ruled?.changes ?? 0) : 0;
+      rule.outcome = !rule.include ? 'Excluded' : rule.changes > 0 ? 'Changed' : 'No change';
     }
   }
 
-  /**
-   * Keeps a result and judges it: a rewrite with more syntax problems than the original may have
-   * broken the code, so it is never offered for application (the same check the rules use).
-   */
-  private evaluate(result: PreviewResult): void {
+  /** Keeps a result and judges it: a result changing other files is applied by Cleanup, never by the preview. */
+  private evaluate(result: ComputedPreview): void {
     this.result = result;
     this.blocked = undefined;
     this.problem = undefined;
-    if (result.hasChanges) {
-      const added = parseErrorCount(result.updatedSource) - parseErrorCount(result.originalSource);
-      if (added > 0) {
-        this.blocked = `the result would add ${added} syntax ${added === 1 ? 'problem' : 'problems'}`;
-      }
+    if (result.otherFiles.length > 0) {
+      this.blocked = `it would also change ${result.otherFiles.map((other) => path.basename(other.path)).join(', ')}; run Cleanup instead`;
     }
   }
 }
@@ -338,12 +336,14 @@ function asDocumentText(text: string): string {
 /**
  * Builds the plan for `uris` - deduplicated, in the given order - without writing a file and
  * without AI: every C# file gets the cleanup result the ordinary cleanup of the same files would
- * give, and every other file an explicit status saying why it is not part of the preview.
+ * give (without renames in other files), and every other file an explicit status saying why it is
+ * not part of the preview.
  */
 export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], options: PlanOptions = {}): Promise<CleanupPreviewPlan> {
   const unique = [...new Map(uris.map((uri) => [uri.toString(), uri])).values()];
   const maxBytes =
-    Math.max(1, options.maxFileSizeKB ?? vscode.workspace.getConfiguration('codeJanitor').get<number>('preview.maxFileSizeKB', DEFAULT_MAX_FILE_SIZE_KB)) * 1024;
+    Math.max(1, options.maxFileSizeKB ?? vscode.workspace.getConfiguration('codeJanitor').get<number>('preview.maxFileSizeKB', DEFAULT_MAX_FILE_SIZE_KB)) *
+    1024;
 
   const entries: { readonly uri: vscode.Uri; readonly label: string; readonly source?: Source; readonly file?: PreviewFile }[] = [];
   const pending: { readonly uri: vscode.Uri; readonly label: string; readonly text: string }[] = [];
@@ -372,24 +372,7 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
     }
   }
 
-  const first = pending[0];
-  // Like the batch cleanup: batch-wide flags come from the first file; each file is planned with the `.codejanitor` nearest to it.
-  const settings = first ? readCleanupSettingsForUri(first.uri) : readCleanupSettings();
-  // Like the batch cleanup: a subclass or generic constraint in one file of the batch keeps a class of another unsealed.
-  const covered = new Set(pending.map((item) => item.uri.toString()));
-  const disqualified = new Set<string>();
-  for (const item of pending) {
-    if (options.isCancelled?.()) {
-      break;
-    }
-
-    for (const name of await discoverDisqualifiedTypeNamesForFile(item.uri, item.text, covered)) {
-      disqualified.add(name);
-    }
-  }
-
-  const issues = createEditorConfigIssueLog(false);
-  const onlyChangedLines = options.honorOnlyChangedLines === true && settings.onlyChangedLines;
+  const honorOnlyChangedLines = options.honorOnlyChangedLines === true;
   const planned = new Map<string, PreviewFile>();
   let done = 0;
   for (const item of pending) {
@@ -397,10 +380,38 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
       break;
     }
 
-    planned.set(
-      item.uri.toString(),
-      await planFile(item.uri, item.label, item.text, readCleanupSettingsForUri(item.uri), disqualified, issues.report, onlyChangedLines)
-    );
+    const file = await PreviewFile.planned(item.uri, item.label, item.text, {
+      compute: async (original, excludedRules) => {
+        const result = await cleanupCSharpResult(
+          { uri: item.uri, content: original, isOpen: false },
+          { renameAcrossWorkspace: false, honorOnlyChangedLines, excludedRules }
+        );
+        // Only the complete first preview logs: the previews without some rules repeat its messages.
+        if (excludedRules.length === 0) {
+          engineOutcome(item.uri, result, 'Cleanup preview');
+        }
+
+        return {
+          updated: result.text,
+          rules: result.rules,
+          otherFiles: result.otherFiles,
+          newFiles: result.newFiles,
+          unresolved: result.unresolved.length,
+          issues: result.issues,
+        };
+      },
+    });
+    if (honorOnlyChangedLines && readCleanupSettingsForUri(item.uri).onlyChangedLines) {
+      file.notes.push('Only the lines changed since the last commit are cleaned.');
+    }
+
+    if (file.newFiles.length > 0) {
+      file.notes.push(
+        `The .editorconfig asks for one type per file: applying also creates ${file.newFiles.map((created) => path.basename(created.path)).join(', ')}.`
+      );
+    }
+
+    planned.set(item.uri.toString(), file);
     options.onProgress?.(++done, pending.length);
     await yieldToEventLoop();
   }
@@ -412,89 +423,10 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
 
     return file ? [file] : [];
   });
-  const { unresolved } = issues.finish();
+  const unresolved = files.reduce((total, file) => total + file.unresolved, 0);
   logInfo(`Cleanup preview: ${files.length} file(s) planned, ${files.filter((file) => file.canApply).length} with changes.`);
 
   return new CleanupPreviewPlan(`plan${++planCounter}`, files, unresolved);
-}
-
-async function planFile(
-  uri: vscode.Uri,
-  label: string,
-  text: string,
-  settings: CleanupSettings,
-  disqualified: ReadonlySet<string>,
-  report: EditorConfigIssueListener,
-  onlyChangedLines: boolean
-): Promise<PreviewFile> {
-  let unresolved = 0;
-  // Only the complete first preview reports: the previews without some rules repeat its issues.
-  let reporting = true;
-  const listen: EditorConfigIssueListener = (issue) => {
-    if (reporting) {
-      if (issue.kind === 'unresolved') {
-        unresolved++;
-      }
-
-      report(issue);
-    }
-  };
-
-  let file: PreviewFile;
-  try {
-    if (onlyChangedLines) {
-      file = await planChangedLines(uri, label, text, settings, disqualified, listen);
-    } else {
-      const pipeline = getCleanupPipeline(uri.fsPath, settings, disqualified, listen);
-      file = PreviewFile.planned(uri, label, text, {
-        compute: (original, excludedSteps, excludedRules) => pipeline.preview(original, excludedSteps, excludedRules),
-      });
-    }
-  } catch (err) {
-    logError(`Cleanup preview of ${uri.fsPath}`, err);
-    file = PreviewFile.failed(uri, label, (err as Error).message, text);
-  }
-
-  reporting = false;
-  file.unresolved = unresolved;
-  addTypeSplitNote(file, uri, text);
-
-  return file;
-}
-
-/** Only the lines changed since HEAD: a single result, as the lines are not cleaned rule by rule. */
-async function planChangedLines(
-  uri: vscode.Uri,
-  label: string,
-  text: string,
-  settings: CleanupSettings,
-  disqualified: ReadonlySet<string>,
-  report: EditorConfigIssueListener
-): Promise<PreviewFile> {
-  const baseline: Baseline = await readHeadVersion(uri.fsPath).catch((err: unknown): Baseline => ({ kind: 'unavailable', reason: String(err) }));
-  try {
-    const updated = cleanupChangedLines(text, uri.fsPath, settings, baseline, disqualified, report);
-    const file = PreviewFile.planned(uri, label, text, {
-      compute: (original) => new PreviewResult(original, updated, []),
-    });
-    file.notes.push('Only the lines changed since the last commit are cleaned; rules cannot be chosen one by one.');
-
-    return file;
-  } catch (err) {
-    return PreviewFile.failed(uri, label, (err as Error).message, text);
-  }
-}
-
-/** The one-type-per-file split creates files; the preview shows only the cleanup of the file itself. */
-function addTypeSplitNote(file: PreviewFile, uri: vscode.Uri, text: string): void {
-  try {
-    const rules = readOneTypePerFileRules(loadEditorConfigProperties(uri.fsPath));
-    if (rules && planOneTypePerFile(text, uri.fsPath, rules, new Set()).plan.hasChanges) {
-      file.notes.push('The .editorconfig asks for one type per file: Cleanup splits this file into several; the preview does not show the split.');
-    }
-  } catch {
-    // A note only: the plan of the file itself stands.
-  }
 }
 
 // ---------------------------------------------------------------- virtual documents for the diff
@@ -567,7 +499,16 @@ function addWhenUnchanged(file: PreviewFile, document: vscode.TextDocument | und
   const current = document.getText();
   const range = new vscode.Range(document.positionAt(0), document.positionAt(current.length));
 
-  return file.tryApply(current, (updated) => edit.replace(file.uri, range, updated));
+  return file.tryApply(current, (updated) => {
+    for (const created of file.newFiles) {
+      const uri = vscode.Uri.file(created.path);
+      // Fails the whole edit when the file exists: a split never overwrites a file.
+      edit.createFile(uri);
+      edit.insert(uri, new vscode.Position(0, 0), created.text.replace(/^\uFEFF/, ''));
+    }
+
+    edit.replace(file.uri, range, updated.replace(/^\uFEFF/, ''));
+  });
 }
 
 /**

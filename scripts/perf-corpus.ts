@@ -1,6 +1,7 @@
-// Performance probe: times every cleanup step over a C# corpus with the generated .editorconfig
-// (every rule cleanup applies set to warning) and writes each file's output and reports, so that
-// two runs (before and after a change) can be diffed for byte-identical results.
+// Performance probe: times the C# engine's cleanup of every file of a C# corpus with the generated
+// .editorconfig (every rule cleanup applies set to warning), counts what each rule changed, and writes
+// each file's output and reports, so that two runs (before and after a change) can be diffed for
+// byte-identical results.
 //
 // Development-time only; read-only for the corpus: it is copied to a temporary folder first.
 //
@@ -12,10 +13,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { getCleanupPipeline } from '../src/cleanup/runCleanup';
-import { discoverDisqualifiedTypeNames } from '../src/cleanup/transformations/sealedClass';
 import { createDefaultSettings } from '../src/cleanup/types';
+import { CleanupResult } from '../src/engine/protocol';
+import { toEngineSettings } from '../src/engine/settings';
 import { renderEditorConfig } from './editorConfigTemplate';
+import { startEngine } from './engineServer';
 
 const SKIPPED_FOLDERS = new Set(['bin', 'obj', '.git', '.vs', 'node_modules']);
 
@@ -56,86 +58,85 @@ if (!corpusArgument) {
   process.exit(1);
 }
 
-const corpus = path.resolve(corpusArgument);
-const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-perf-'));
-// The copy holds the whole corpus: it is removed even when a cleanup step throws.
-try {
-  copyTree(corpus, copy);
-  fs.writeFileSync(path.join(copy, '.editorconfig'), renderEditorConfig(), 'utf8');
-  const output = outputArgument ? path.resolve(outputArgument) : undefined;
-  const filter = process.env.PERF_FILTER;
+async function main(corpus: string): Promise<void> {
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-perf-'));
+  // The copy holds the whole corpus: it is removed even when a cleanup fails.
+  const engine = startEngine([copy]);
+  try {
+    copyTree(corpus, copy);
+    fs.writeFileSync(path.join(copy, '.editorconfig'), renderEditorConfig(), 'utf8');
+    const output = outputArgument ? path.resolve(outputArgument) : undefined;
+    const filter = process.env.PERF_FILTER;
 
-  const files = csharpFiles(copy).filter((file) => !filter || file.includes(filter));
-  const inputs = new Map(files.map((file) => [file, fs.readFileSync(file, 'utf8')]));
-  const disqualified = discoverDisqualifiedTypeNames(inputs.values());
-  const settings = createDefaultSettings();
-  const stageTotals = new Map<string, number>();
-  const fileTotals: { file: string; ms: number }[] = [];
-  let notIdempotent = 0;
+    const files = csharpFiles(copy).filter((file) => !filter || file.includes(filter));
+    const settings = toEngineSettings(createDefaultSettings());
+    const ruleTotals = new Map<string, number>();
+    const fileTotals: { file: string; ms: number }[] = [];
+    let notIdempotent = 0;
+    const clean = (text: string, filePath: string): Promise<CleanupResult> => engine.cleanup({ filePath, text, settings });
 
-  function clean(source: string, file: string, issues: string[], timed: boolean): string {
+    // The first request loads the projects: it is timed apart.
+    const loadStarted = performance.now();
+    if (files[0]) {
+      await clean(fs.readFileSync(files[0], 'utf8'), files[0]);
+    }
+    const load = performance.now() - loadStarted;
+
     const started = performance.now();
-    const pipeline = getCleanupPipeline(file, settings, disqualified, (issue) => issues.push(`${issue.kind}: ${issue.filePath}: ${issue.detail}`));
-    if (timed) {
-      stageTotals.set('(pipeline setup)', (stageTotals.get('(pipeline setup)') ?? 0) + performance.now() - started);
-    }
+    for (const file of files) {
+      const input = fs.readFileSync(file, 'utf8');
+      const fileStarted = performance.now();
+      const first = await clean(input, file);
+      fileTotals.push({ file: path.relative(copy, file), ms: performance.now() - fileStarted });
+      for (const rule of first.rules.filter((candidate) => candidate.changes > 0)) {
+        ruleTotals.set(rule.name, (ruleTotals.get(rule.name) ?? 0) + rule.changes);
+      }
 
-    let current = source;
-    for (const step of pipeline.transformations) {
-      const before = performance.now();
-      current = step.apply(current) ?? current;
-      if (timed) {
-        stageTotals.set(step.name, (stageTotals.get(step.name) ?? 0) + performance.now() - before);
+      const second = (await clean(first.text, file)).text;
+      if (second !== first.text) {
+        notIdempotent++;
+      }
+
+      if (output) {
+        const target = path.join(output, path.relative(copy, file));
+        const issues = [
+          ...first.issues,
+          ...first.unresolved.map((unresolved) => `unresolved: ${unresolved.id} line ${unresolved.line}: ${unresolved.message} (${unresolved.reason})`),
+        ];
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(`${target}.out`, first.text, 'utf8');
+        fs.writeFileSync(`${target}.issues`, issues.map((issue) => issue.replace(copy, '<corpus>')).join('\n'), 'utf8');
+        if (second !== first.text) {
+          fs.writeFileSync(`${target}.second`, second, 'utf8');
+        }
       }
     }
 
-    return current;
-  }
-
-  const started = performance.now();
-  for (const file of files) {
-    const input = inputs.get(file) as string;
-    const issues: string[] = [];
-    const fileStarted = performance.now();
-    const cleaned = clean(input, file, issues, true);
-    fileTotals.push({ file: path.relative(copy, file), ms: performance.now() - fileStarted });
-
-    const second = clean(cleaned, file, [], false);
-    if (second !== cleaned) {
-      notIdempotent++;
-    }
-
+    const total = performance.now() - started;
+    const cleanupTotal = fileTotals.reduce((sum, entry) => sum + entry.ms, 0);
+    const lines = [
+      `files: ${files.length}, project load: ${load.toFixed(0)} ms, cleanup: ${cleanupTotal.toFixed(0)} ms (with the idempotence pass: ${total.toFixed(0)} ms), not idempotent: ${notIdempotent}`,
+      '',
+      'changes by rule (first pass):',
+      ...[...ruleTotals].sort((a, b) => b[1] - a[1]).map(([name, changes]) => `  ${String(changes).padStart(7)}  ${name}`),
+      '',
+      'slowest files:',
+      ...[...fileTotals]
+        .sort((a, b) => b.ms - a.ms)
+        .slice(0, 10)
+        .map((entry) => `  ${entry.ms.toFixed(0).padStart(7)} ms  ${entry.file}`),
+    ];
+    console.log(lines.join('\n'));
     if (output) {
-      const target = path.join(output, path.relative(copy, file));
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(`${target}.out`, cleaned, 'utf8');
-      fs.writeFileSync(`${target}.issues`, issues.map((issue) => issue.replace(copy, '<corpus>')).join('\n'), 'utf8');
-      if (second !== cleaned) {
-        fs.writeFileSync(`${target}.second`, second, 'utf8');
-      }
+      fs.writeFileSync(path.join(output, 'timings.txt'), `${lines.join('\n')}\n`, 'utf8');
     }
+  } finally {
+    await engine.shutdown();
+    fs.rmSync(copy, { recursive: true, force: true });
   }
-
-  const total = performance.now() - started;
-  const cleanupTotal = fileTotals.reduce((sum, entry) => sum + entry.ms, 0);
-  const lines = [
-    `files: ${files.length}, cleanup: ${cleanupTotal.toFixed(0)} ms (with the idempotence pass: ${total.toFixed(0)} ms), not idempotent: ${notIdempotent}`,
-    '',
-    'stage totals (first pass):',
-    ...[...stageTotals]
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, ms]) => `  ${ms.toFixed(0).padStart(7)} ms  ${name}`),
-    '',
-    'slowest files:',
-    ...[...fileTotals]
-      .sort((a, b) => b.ms - a.ms)
-      .slice(0, 10)
-      .map((entry) => `  ${entry.ms.toFixed(0).padStart(7)} ms  ${entry.file}`),
-  ];
-  console.log(lines.join('\n'));
-  if (output) {
-    fs.writeFileSync(path.join(output, 'timings.txt'), `${lines.join('\n')}\n`, 'utf8');
-  }
-} finally {
-  fs.rmSync(copy, { recursive: true, force: true });
 }
+
+main(path.resolve(corpusArgument)).catch((err: unknown) => {
+  console.error(err);
+  process.exitCode = 1;
+});

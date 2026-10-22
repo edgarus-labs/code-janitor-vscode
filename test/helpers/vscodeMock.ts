@@ -59,8 +59,15 @@ export class RelativePattern {
   ) {}
 }
 
-export class ThemeIcon {
+export class ThemeColor {
   constructor(readonly id: string) {}
+}
+
+export class ThemeIcon {
+  constructor(
+    readonly id: string,
+    readonly color?: ThemeColor
+  ) {}
 }
 
 export const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 } as const;
@@ -85,6 +92,8 @@ export interface MockWebviewPanel {
 /** Registered webview message handlers. */
 export const webviewMessageHandlers: ((message: unknown) => void)[][] = [];
 export const webviewDisposeHandlers: (() => void)[][] = [];
+/** The messages `webview.postMessage` received, by panel id. */
+export const webviewPostedMessages: unknown[][] = [];
 
 let nextWebviewPanelId = 0;
 
@@ -92,6 +101,7 @@ let nextWebviewPanelId = 0;
 export function resetWebviewPanels(): void {
   webviewMessageHandlers.length = 0;
   webviewDisposeHandlers.length = 0;
+  webviewPostedMessages.length = 0;
   nextWebviewPanelId = 0;
 }
 
@@ -102,6 +112,7 @@ export function createMockWebviewPanel(): MockWebviewPanel {
   const postedMessages: unknown[] = [];
   webviewMessageHandlers[id] = messageHandlers;
   webviewDisposeHandlers[id] = disposeHandlers;
+  webviewPostedMessages[id] = postedMessages;
 
   const panel: MockWebviewPanel = {
     webview: {
@@ -234,6 +245,13 @@ export class TextEditor {
     selection?: Selection
   ) {
     this.selection = selection ?? new Selection(new Position(0, 0), new Position(0, 0));
+  }
+
+  /** Every `revealRange`, in order. */
+  readonly revealed: { range: Range; type: number | undefined }[] = [];
+
+  revealRange(range: Range, type?: number): void {
+    this.revealed.push({ range, type });
   }
 
   async edit(callback: (builder: { replace(range: Range, text: string): void }) => void): Promise<boolean> {
@@ -386,6 +404,9 @@ export const state = {
   informationMessages: [] as string[],
   warningMessages: [] as string[],
   errorMessages: [] as string[],
+  /** The action buttons of each error message, and the one the user picks. */
+  errorActions: [] as string[][],
+  errorChoice: undefined as string | undefined,
   inputBoxResult: undefined as string | undefined,
   modalChoice: undefined as string | undefined,
   /** Answers to the next messages, in order; `modalChoice` answers once they are used up. */
@@ -416,6 +437,13 @@ export const state = {
   documentListeners: { open: [], change: [], close: [], save: [] } as Record<'open' | 'change' | 'close' | 'save', ((argument: unknown) => void)[]>,
   /** Handlers of the `workspace.createFileSystemWatcher` watchers: a file created, changed or deleted on disk. */
   diskListeners: [] as ((uri: Uri) => void)[],
+  /** The globs of the `workspace.createFileSystemWatcher` watchers. */
+  watchedGlobs: [] as string[],
+  /** Handlers of `workspace.onDidChangeWorkspaceFolders`. */
+  workspaceFolderListeners: [] as (() => void)[],
+  configurationListeners: [] as ((event: { affectsConfiguration(section: string): boolean }) => void)[],
+  /** The links `env.openExternal` opened. */
+  openedExternal: [] as string[],
 };
 
 export function resetMock(): void {
@@ -434,6 +462,8 @@ export function resetMock(): void {
   state.informationMessages = [];
   state.warningMessages = [];
   state.errorMessages = [];
+  state.errorActions = [];
+  state.errorChoice = undefined;
   state.inputBoxResult = undefined;
   state.modalChoice = undefined;
   state.modalChoices = [];
@@ -453,7 +483,12 @@ export function resetMock(): void {
   state.tabListeners = [];
   state.documentListeners = { open: [], change: [], close: [], save: [] };
   state.diskListeners = [];
+  state.watchedGlobs = [];
+  state.workspaceFolderListeners = [];
+  state.configurationListeners = [];
+  state.openedExternal = [];
   window.activeTextEditor = undefined;
+  resetViews();
 }
 
 /** Opens an editor tab on `uri`, as VS Code does once a document is shown. */
@@ -501,6 +536,29 @@ export function createContext(packageJSON?: unknown): ExtensionContext {
 export const window = {
   activeTextEditor: undefined as TextEditor | undefined,
 
+  get visibleTextEditors(): TextEditor[] {
+    return window.activeTextEditor ? [window.activeTextEditor] : [];
+  },
+
+  onDidChangeActiveTextEditor(handler: (editor: TextEditor | undefined) => void): { dispose(): void } {
+    viewState.activeEditorListeners.push(handler);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidChangeTextEditorSelection(handler: (event: { textEditor: TextEditor; selections: readonly Selection[] }) => void): { dispose(): void } {
+    viewState.selectionListeners.push(handler);
+
+    return { dispose: () => undefined };
+  },
+
+  createTreeView<T>(id: string, options: MockTreeViewOptions<T>): MockTreeView<T> {
+    const view = new MockTreeView<T>(id, options);
+    viewState.treeViews.set(id, view as MockTreeView<unknown>);
+
+    return view;
+  },
+
   tabGroups: {
     get all(): { tabs: { input: unknown; isDirty: boolean }[] }[] {
       return [{ tabs: state.tabs }];
@@ -537,14 +595,15 @@ export const window = {
     return Promise.resolve(state.modalChoices.length > 0 ? state.modalChoices.shift() : state.modalChoice);
   },
 
-  showErrorMessage(message: string): Thenable<string | undefined> {
+  showErrorMessage(message: string, ...actions: string[]): Thenable<string | undefined> {
     state.errorMessages.push(message);
+    state.errorActions.push(actions);
 
-    return Promise.resolve(undefined);
+    return Promise.resolve(state.errorChoice);
   },
 
   showInputBox(_options?: unknown): Thenable<string | undefined> {
-    return Promise.resolve(state.inputBoxResult);
+    return Promise.resolve(viewState.inputBoxResults.length > 0 ? viewState.inputBoxResults.shift() : state.inputBoxResult);
   },
 
   showQuickPick<T extends { label: string }>(items: T[], options?: { canPickMany?: boolean }): Thenable<T | T[] | undefined> {
@@ -555,7 +614,9 @@ export const window = {
       return Promise.resolve(labels && items.filter((item) => labels.includes(item.label)));
     }
 
-    return Promise.resolve(items.find((item) => item.label === state.quickPickChoice));
+    const choice = viewState.quickPickChoices.length > 0 ? viewState.quickPickChoices.shift() : state.quickPickChoice;
+
+    return Promise.resolve(items.find((item) => item.label === choice));
   },
 
   showTextDocument(document: TextDocument, _options?: unknown): Thenable<TextEditor> {
@@ -563,15 +624,13 @@ export const window = {
   },
 
   withProgress<T>(_options: unknown, task: (progress: unknown, token: unknown) => Thenable<T>): Thenable<T> {
-    return task({ report: () => undefined }, { isCancellationRequested: false, onCancellationRequested: () => undefined });
+    return task(
+      { report: (value: unknown) => viewState.progressReports.push(value) },
+      { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) }
+    );
   },
 
-  createWebviewPanel(
-    _viewType: string,
-    _title: string,
-    _column: number,
-    _options: unknown
-  ): MockWebviewPanel {
+  createWebviewPanel(_viewType: string, _title: string, _column: number, _options: unknown): MockWebviewPanel {
     return createMockWebviewPanel();
   },
 };
@@ -591,6 +650,7 @@ export const commands = {
    */
   executeCommand(id: string, ...args: unknown[]): Thenable<unknown> {
     const handler = state.commands.get(id);
+    viewState.executedCommands.push({ id, args });
 
     return Promise.resolve(handler?.(...args));
   },
@@ -619,7 +679,7 @@ export const workspace = {
         const full = `${prefix}${key}`;
         state.configurationReads.push(full);
 
-        return (state.configuration.has(full) ? (state.configuration.get(full) as T) : defaultValue);
+        return state.configuration.has(full) ? (state.configuration.get(full) as T) : defaultValue;
       },
       update(key: string, value: unknown, target?: unknown): Thenable<void> {
         const full = `${prefix}${key}`;
@@ -631,9 +691,7 @@ export const workspace = {
       inspect<T>(key: string): { globalValue?: T; workspaceValue?: T; workspaceFolderValue?: T } | undefined {
         const full = `${prefix}${key}`;
 
-        return state.configuration.has(full)
-          ? { globalValue: state.configuration.get(full) as T, workspaceValue: undefined }
-          : undefined;
+        return state.configuration.has(full) ? { globalValue: state.configuration.get(full) as T, workspaceValue: undefined } : undefined;
       },
     };
   },
@@ -741,12 +799,13 @@ export const workspace = {
     return { dispose: () => undefined };
   },
 
-  createFileSystemWatcher(_glob: string): {
+  createFileSystemWatcher(glob: string): {
     onDidCreate(handler: (uri: Uri) => void): { dispose(): void };
     onDidChange(handler: (uri: Uri) => void): { dispose(): void };
     onDidDelete(handler: (uri: Uri) => void): { dispose(): void };
     dispose(): void;
   } {
+    state.watchedGlobs.push(glob);
     const listen = (handler: (uri: Uri) => void) => {
       state.diskListeners.push(handler);
 
@@ -756,7 +815,15 @@ export const workspace = {
     return { onDidCreate: listen, onDidChange: listen, onDidDelete: listen, dispose: () => undefined };
   },
 
-  onDidChangeConfiguration(_handler: (event: { affectsConfiguration(section: string): boolean }) => void): { dispose(): void } {
+  onDidChangeConfiguration(handler: (event: { affectsConfiguration(section: string): boolean }) => void): { dispose(): void } {
+    state.configurationListeners.push(handler);
+
+    return { dispose: () => undefined };
+  },
+
+  onDidChangeWorkspaceFolders(handler: () => void): { dispose(): void } {
+    state.workspaceFolderListeners.push(handler);
+
     return { dispose: () => undefined };
   },
 
@@ -810,11 +877,7 @@ export const workspace = {
         const isNested = rest.includes('/');
         const name = isNested ? rest.slice(0, rest.indexOf('/')) : rest;
 
-        const type = isNested
-          ? FileType.Directory
-          : state.symlinkedFiles.has(filePath)
-            ? FileType.File | FileType.SymbolicLink
-            : FileType.File;
+        const type = isNested ? FileType.Directory : state.symlinkedFiles.has(filePath) ? FileType.File | FileType.SymbolicLink : FileType.File;
         seen.set(name, type);
       }
 
@@ -836,14 +899,34 @@ export class LanguageModelChatMessage {
 }
 
 export class CancellationTokenSource {
-  readonly token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) };
+  private readonly listeners: (() => void)[] = [];
+
+  readonly token = {
+    isCancellationRequested: false,
+    onCancellationRequested: (listener: () => void) => {
+      this.listeners.push(listener);
+
+      return { dispose: () => undefined };
+    },
+  };
 
   cancel(): void {
-    this.token.isCancellationRequested = true;
+    if (!this.token.isCancellationRequested) {
+      this.token.isCancellationRequested = true;
+      this.listeners.forEach((listener) => listener());
+    }
   }
 
   dispose(): void {}
 }
+
+export const env = {
+  openExternal(uri: Uri): Thenable<boolean> {
+    state.openedExternal.push(uri.toString());
+
+    return Promise.resolve(true);
+  },
+};
 
 export interface MockChatModel {
   id: string;
@@ -854,10 +937,7 @@ export interface MockChatModel {
   sendRequest(messages: unknown[], _options: unknown, _token: unknown): Thenable<{ text: AsyncIterable<string> }>;
 }
 
-export function createMockChatModel(
-  overrides: Partial<MockChatModel> = {},
-  fragments: string[] = ['Hello']
-): MockChatModel {
+export function createMockChatModel(overrides: Partial<MockChatModel> = {}, fragments: string[] = ['Hello']): MockChatModel {
   return {
     id: 'copilot-4o',
     family: 'copilot-4o',
@@ -872,4 +952,146 @@ export function createMockChatModel(
       }),
     ...overrides,
   };
+}
+
+// ---------------------------------------------------------------- tree views and editor events
+
+export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 } as const;
+export const TextEditorRevealType = { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 } as const;
+
+export class TreeItem {
+  id?: string;
+  description?: string;
+  tooltip?: string;
+  iconPath?: ThemeIcon;
+  contextValue?: string;
+  command?: { command: string; title: string; arguments?: unknown[] };
+
+  constructor(
+    public label: string | { label: string; highlights?: [number, number][] },
+    public collapsibleState: number = TreeItemCollapsibleState.None
+  ) {}
+}
+
+export class EventEmitter<T> {
+  private readonly listeners: ((value: T) => void)[] = [];
+
+  readonly event = (listener: (value: T) => void): { dispose(): void } => {
+    this.listeners.push(listener);
+
+    return { dispose: () => undefined };
+  };
+
+  fire(value: T): void {
+    this.listeners.forEach((listener) => listener(value));
+  }
+
+  dispose(): void {}
+}
+
+export class DataTransferItem {
+  constructor(readonly value: unknown) {}
+
+  asString(): Thenable<string> {
+    return Promise.resolve(typeof this.value === 'string' ? this.value : JSON.stringify(this.value));
+  }
+}
+
+export class DataTransfer {
+  private readonly items = new Map<string, DataTransferItem>();
+
+  get(mimeType: string): DataTransferItem | undefined {
+    return this.items.get(mimeType);
+  }
+
+  set(mimeType: string, item: DataTransferItem): void {
+    this.items.set(mimeType, item);
+  }
+}
+
+export interface MockTreeViewOptions<T> {
+  treeDataProvider: {
+    getTreeItem(element: T): TreeItem | Thenable<TreeItem>;
+    getChildren(element?: T): T[] | Thenable<T[]>;
+    getParent?(element: T): T | undefined;
+  };
+  dragAndDropController?: {
+    handleDrag?(source: readonly T[], dataTransfer: DataTransfer, token: unknown): void | Thenable<void>;
+    handleDrop?(target: T | undefined, dataTransfer: DataTransfer, token: unknown): void | Thenable<void>;
+  };
+  canSelectMany?: boolean;
+  showCollapseAll?: boolean;
+}
+
+/** A `TreeView`: tests read what the extension set on it and fire its events. */
+export class MockTreeView<T> {
+  message?: string;
+  description?: string;
+  visible = true;
+  selection: T[] = [];
+  readonly reveals: { element: T; options: unknown }[] = [];
+  readonly collapseListeners: ((event: { element: T }) => void)[] = [];
+  readonly expandListeners: ((event: { element: T }) => void)[] = [];
+  readonly visibilityListeners: ((event: { visible: boolean }) => void)[] = [];
+
+  constructor(
+    readonly id: string,
+    readonly options: MockTreeViewOptions<T>
+  ) {}
+
+  reveal(element: T, options?: unknown): Thenable<void> {
+    this.reveals.push({ element, options });
+
+    return Promise.resolve();
+  }
+
+  onDidCollapseElement(handler: (event: { element: T }) => void): { dispose(): void } {
+    this.collapseListeners.push(handler);
+
+    return { dispose: () => undefined };
+  }
+
+  onDidExpandElement(handler: (event: { element: T }) => void): { dispose(): void } {
+    this.expandListeners.push(handler);
+
+    return { dispose: () => undefined };
+  }
+
+  onDidChangeVisibility(handler: (event: { visible: boolean }) => void): { dispose(): void } {
+    this.visibilityListeners.push(handler);
+
+    return { dispose: () => undefined };
+  }
+
+  dispose(): void {}
+}
+
+/** The tree views, editor event handlers, executed commands and progress reports; `resetMock` clears them. */
+export const viewState = {
+  treeViews: new Map<string, MockTreeView<unknown>>(),
+  activeEditorListeners: [] as ((editor: TextEditor | undefined) => void)[],
+  selectionListeners: [] as ((event: { textEditor: TextEditor; selections: readonly Selection[] }) => void)[],
+  /** Every `commands.executeCommand`, registered or not (built-in commands such as `setContext` or `editor.fold`). */
+  executedCommands: [] as { id: string; args: unknown[] }[],
+  /** Every `progress.report` of `window.withProgress`. */
+  progressReports: [] as unknown[],
+  /** Answers to the next single-select quick picks and input boxes, in order; `state.quickPickChoice` and `state.inputBoxResult` answer once they are used up. */
+  quickPickChoices: [] as (string | undefined)[],
+  inputBoxResults: [] as (string | undefined)[],
+};
+
+function resetViews(): void {
+  viewState.treeViews = new Map();
+  viewState.activeEditorListeners = [];
+  viewState.selectionListeners = [];
+  viewState.executedCommands = [];
+  viewState.progressReports = [];
+  viewState.quickPickChoices = [];
+  viewState.inputBoxResults = [];
+}
+
+/** Makes `editor` the active editor and tells the `onDidChangeActiveTextEditor` handlers. */
+export function setActiveEditor(editor: TextEditor | undefined): void {
+  window.activeTextEditor = editor;
+  viewState.activeEditorListeners.forEach((listener) => listener(editor));
 }

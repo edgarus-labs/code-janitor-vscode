@@ -130,7 +130,7 @@ function skipInterpolationHole(text: string, index: number): number {
 }
 
 /** The index after the character literal starting at `index` (a `'`), or -1. */
-function skipCharLiteral(text: string, index: number): number {
+export function skipCharLiteral(text: string, index: number): number {
   for (let i = index + 1; i < Math.min(text.length, index + 12); i++) {
     if (text[i] === '\\') {
       i++;
@@ -145,7 +145,7 @@ function skipCharLiteral(text: string, index: number): number {
 }
 
 /** The index after the comment starting at `index` (`//` or `/*`), or -1; `index` when there is no comment. */
-function skipCSharpComment(text: string, index: number): number {
+export function skipCSharpComment(text: string, index: number): number {
   if (text[index] !== '/') {
     return index;
   }
@@ -534,7 +534,13 @@ function skipChain(text: string, afterBlock: number, word: string): number {
       i++;
     }
 
-    const follow = ['if', 'else'].includes(word) ? ['else'] : ['try', 'catch', 'finally'].includes(word) ? ['catch', 'finally'] : word === 'do' ? ['while'] : [];
+    const follow = ['if', 'else'].includes(word)
+      ? ['else']
+      : ['try', 'catch', 'finally'].includes(word)
+        ? ['catch', 'finally']
+        : word === 'do'
+          ? ['while']
+          : [];
     const keyword = follow.find((candidate) => hasWordAt(text, i, candidate));
     if (!keyword) {
       return end;

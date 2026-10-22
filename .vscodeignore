@@ -18,3 +18,8 @@ dist/verify-bundle.cjs
 **/.eslintrc.json
 coverage/**
 .testbed/**
+server/**
+shared/**
+package-lock.json
+.editorconfig
+tsconfig.scripts.json

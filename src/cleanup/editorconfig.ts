@@ -1,22 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { ProjectAnalysis, loadProjectAnalyzerConfig } from './analyzerConfig';
-import { memoizeBySource } from './sourceCache';
-
-export type EditorConfigSeverity = 'none' | 'silent' | 'suggestion' | 'warning' | 'error';
 
 /** The properties that apply to one file after every matching `.editorconfig` section is folded in. */
 export interface EditorConfigProperties {
   /** Looks up a property by (case-insensitive) key; the nearest file and the later section win. */
   get(key: string): string | undefined;
   readonly entries: ReadonlyMap<string, string>;
-  /** The severity settings of the file's project (MSBuild properties); absent without a project. */
-  readonly analysis?: ProjectAnalysis;
-  /**
-   * Keys whose final state is `unset` (removed by an `.editorconfig` section). Only the ones whose
-   * `unset` carries meaning of its own need it: `file_header_template = unset` means "no header".
-   */
-  readonly unsetKeys?: ReadonlySet<string>;
 }
 
 export interface EditorConfigFile {
@@ -26,47 +15,19 @@ export interface EditorConfigFile {
 }
 
 /**
- * Resolves the analyzer configuration for `filePath` from the files on disk: every `.editorconfig`
- * from the file's directory up to (and including) the first one declaring `root = true`, over the
- * global AnalyzerConfig files (`.globalconfig`, `<GlobalAnalyzerConfigFiles>`) of its project, plus
- * the project's severity settings (see {@link loadProjectAnalyzerConfig}). An unreadable file is
- * skipped; it must never fail the cleanup.
+ * The `.editorconfig` properties of `filePath` from the files on disk: every `.editorconfig` from the
+ * file's directory up to (and including) the first one declaring `root = true`. An unreadable file
+ * is skipped; it must never fail the cleanup.
  */
 export function loadEditorConfigProperties(filePath: string): EditorConfigProperties {
   if (!filePath || !filePath.trim()) {
     return new PropertyMap(new Map());
   }
 
-  const editorConfig = resolveEditorConfigProperties(readEditorConfigFiles(filePath), filePath);
-  const project = loadProjectAnalyzerConfig(filePath);
-  if (!project) {
-    return editorConfig;
-  }
-
-  // An `.editorconfig` entry wins over a global one for the same key.
-  const entries = new Map(project.entries);
-  for (const key of editorConfig.unsetKeys ?? []) {
-    entries.delete(key);
-  }
-
-  for (const [key, value] of editorConfig.entries) {
-    entries.set(key, value);
-  }
-
-  return new PropertyMap(entries, project.analysis, editorConfig.unsetKeys);
-}
-
-/**
- * The `.editorconfig` files that apply to `filePath`, root-most first: every file from the file's
- * directory up to (and including) the first one declaring `root = true`. An unreadable file is skipped.
- */
-export function readEditorConfigFiles(filePath: string): EditorConfigFile[] {
   const files: EditorConfigFile[] = [];
   let directory = path.dirname(path.resolve(filePath));
-
   for (;;) {
-    const configPath = path.join(directory, '.editorconfig');
-    const text = tryReadFile(configPath);
+    const text = tryReadFile(path.join(directory, '.editorconfig'));
     if (text !== undefined) {
       files.unshift({ directory, text });
       if (parseEditorConfig(text).isRoot) {
@@ -82,46 +43,7 @@ export function readEditorConfigFiles(filePath: string): EditorConfigFile[] {
     directory = parent;
   }
 
-  return files;
-}
-
-/**
- * The `.editorconfig` file that defines `key` for `filePath`: the nearest file with a section
- * matching the file that sets it. Undefined when no file applies it (also when only a file above
- * a `root = true` file or a section for another language sets it), so a key that is not applied is
- * never attributed to a file.
- */
-export function findDefiningEditorConfigPath(filePath: string, key: string): string | undefined {
-  if (!filePath || !filePath.trim()) {
-    return undefined;
-  }
-
-  const files = readEditorConfigFiles(filePath);
-  const lowerKey = key.toLowerCase();
-  if (!resolveEditorConfigProperties(files, filePath).entries.has(lowerKey)) {
-    return undefined;
-  }
-
-  for (const file of [...files].reverse()) {
-    if (resolveEditorConfigProperties([file], filePath).entries.has(lowerKey)) {
-      return path.join(file.directory, '.editorconfig');
-    }
-  }
-
-  return undefined;
-}
-
-/**
- * The properties with `overrides` (keys in any case) set on top of the ones read from disk: the
- * Code Style rules Code Janitor adds are layered like this, for analysis only. Nothing is written.
- */
-export function withEntryOverrides(props: EditorConfigProperties, overrides: ReadonlyMap<string, string>): EditorConfigProperties {
-  const entries = new Map(props.entries);
-  for (const [key, value] of overrides) {
-    entries.set(key.toLowerCase(), value);
-  }
-
-  return new PropertyMap(entries, props.analysis, props.unsetKeys);
+  return resolveEditorConfigProperties(files, filePath);
 }
 
 /**
@@ -131,12 +53,8 @@ export function withEntryOverrides(props: EditorConfigProperties, overrides: Rea
  * `root` are ignored, a nearer file overrides a farther one and a later section overrides an
  * earlier one. The value `unset` removes a property.
  */
-export function resolveEditorConfigProperties(
-  files: readonly EditorConfigFile[],
-  filePath: string
-): EditorConfigProperties {
+export function resolveEditorConfigProperties(files: readonly EditorConfigFile[], filePath: string): EditorConfigProperties {
   const entries = new Map<string, string>();
-  const unsetKeys = new Set<string>();
   if (!filePath || !filePath.trim()) {
     return new PropertyMap(entries);
   }
@@ -165,148 +83,18 @@ export function resolveEditorConfigProperties(
       for (const [key, value] of section.properties) {
         if (value.toLowerCase() === 'unset') {
           entries.delete(key);
-          unsetKeys.add(key);
         } else {
           entries.set(key, value);
-          unsetKeys.delete(key);
         }
       }
     }
   }
 
-  return new PropertyMap(entries, undefined, unsetKeys);
-}
-
-// Severity names as Roslyn reads them from `.editorconfig`.
-const severityByName: Record<string, EditorConfigSeverity> = {
-  none: 'none',
-  silent: 'silent',
-  refactoring: 'silent',
-  suggestion: 'suggestion',
-  warning: 'warning',
-  error: 'error',
-};
-
-/** Parses a severity name as Roslyn reads it from `.editorconfig`; unknown names yield `undefined`. */
-export function parseSeverity(raw: string | undefined): EditorConfigSeverity | undefined {
-  const name = raw?.trim().toLowerCase();
-
-  return name !== undefined && Object.hasOwn(severityByName, name) ? severityByName[name] : undefined;
-}
-
-/**
- * Splits a code-style option value written as `value:severity`. The suffix is only treated as a
- * severity when it names one; otherwise the whole text is the value.
- */
-export function splitOptionSeverity(raw: string): { value: string; severity?: EditorConfigSeverity } {
-  const colon = raw.lastIndexOf(':');
-  if (colon >= 0) {
-    const severity = parseSeverity(raw.slice(colon + 1));
-    if (severity) {
-      return { value: raw.slice(0, colon).trim(), severity };
-    }
-  }
-
-  return { value: raw.trim() };
-}
-
-/**
- * Effective severity of a diagnostic, with Roslyn's precedence:
- *
- * 1. `NoWarn` of the project turns it off;
- * 2. `dotnet_diagnostic.<id>.severity` (`.editorconfig`, then global config files; `default` keeps
- *    the option's own severity, else the rule's default);
- * 3. the analysis-level rule set of the project (`AnalysisLevel`/`AnalysisMode`);
- * 4. `dotnet_analyzer_diagnostic.category-<category>.severity`, then
- *    `dotnet_analyzer_diagnostic.severity`;
- * 5. the severity the option itself carries (`option = value:severity`, or a naming rule's);
- * 6. with `includeRuleDefault`, the rule's own default where the .NET analyzers run (CA rules).
- *
- * A resulting `warning` is an `error` under `WarningsAsErrors`/`TreatWarningsAsErrors`. IDE
- * code-style and naming diagnostics use the `Style` category, the default here. Cleanup passes
- * `includeRuleDefault = false`: an implicit default never triggers a rewrite by itself.
- */
-export function resolveDiagnosticSeverity(
-  props: EditorConfigProperties,
-  diagnosticId: string,
-  optionSeverity?: EditorConfigSeverity,
-  category = 'Style',
-  includeRuleDefault = true
-): EditorConfigSeverity | undefined {
-  const analysis = props.analysis;
-  if (analysis?.isSuppressed(diagnosticId)) {
-    return 'none';
-  }
-
-  const ruleDefault = includeRuleDefault ? analysis?.defaultSeverity(diagnosticId) : undefined;
-  const severity = configuredSeverity(props, diagnosticId, optionSeverity, category) ?? ruleDefault;
-
-  return severity === 'warning' && analysis?.isWarningAsError(diagnosticId) ? 'error' : severity;
-}
-
-/**
- * The diagnostics cleanup follows that the .NET analyzers declare disabled by default
- * (`RuleLevel.Disabled`): only `dotnet_diagnostic.<id>.severity` or a rule set enables them. The other
- * CA rules with a default severity of `none` (CA1305, CA1310, CA1805, CA1852) are bulk-configurable.
- */
-const DISABLED_BY_DEFAULT_DIAGNOSTICS: Readonly<Record<string, true>> = { CA1307: true, CA1867: true };
-
-/** Whether category and global severities leave the rule off (only its own `dotnet_diagnostic` severity enables it). */
-export function isDisabledByDefaultDiagnostic(diagnosticId: string): boolean {
-  return DISABLED_BY_DEFAULT_DIAGNOSTICS[diagnosticId.toUpperCase()] === true;
-}
-
-function configuredSeverity(
-  props: EditorConfigProperties,
-  diagnosticId: string,
-  optionSeverity: EditorConfigSeverity | undefined,
-  category: string
-): EditorConfigSeverity | undefined {
-  const specific = props.get(`dotnet_diagnostic.${diagnosticId}.severity`);
-  if (specific !== undefined) {
-    if (specific.trim().toLowerCase() === 'default') {
-      return optionSeverity ?? props.analysis?.defaultSeverity(diagnosticId);
-    }
-
-    const severity = parseSeverity(specific);
-    if (severity) {
-      return severity;
-    }
-  }
-
-  const ruleSet = props.analysis?.ruleSetSeverity(diagnosticId);
-  if (ruleSet) {
-    return ruleSet;
-  }
-
-  // As in Roslyn, category and global severities do not enable a rule that is disabled by default.
-  const bulk = isDisabledByDefaultDiagnostic(diagnosticId)
-    ? undefined
-    : parseSeverity(props.get(`dotnet_analyzer_diagnostic.category-${category}.severity`)) ??
-      parseSeverity(props.get('dotnet_analyzer_diagnostic.severity'));
-
-  return bulk ?? optionSeverity;
-}
-
-/**
- * Whether analyzer configuration applies to the file: `.editorconfig` or global config entries, or
- * rule sets the project enables explicitly (`AnalysisMode` `Minimum`, `Recommended` or `All`).
- */
-export function hasAnalyzerConfiguration(props: EditorConfigProperties): boolean {
-  return props.entries.size > 0 || props.analysis?.enablesRules === true;
-}
-
-/** Only `suggestion`, `warning` and `error` rules are applied by cleanup. */
-export function isEnforced(severity: EditorConfigSeverity | undefined): boolean {
-  return severity === 'suggestion' || severity === 'warning' || severity === 'error';
+  return new PropertyMap(entries);
 }
 
 class PropertyMap implements EditorConfigProperties {
-  constructor(
-    readonly entries: ReadonlyMap<string, string>,
-    readonly analysis?: ProjectAnalysis,
-    readonly unsetKeys?: ReadonlySet<string>
-  ) {}
+  constructor(readonly entries: ReadonlyMap<string, string>) {}
 
   get(key: string): string | undefined {
     return this.entries.get(key.toLowerCase());
@@ -326,16 +114,11 @@ interface ParsedEditorConfig {
 // Line grammar as Roslyn's AnalyzerConfig parses it: `#`/`;` start comments, including trailing
 // ones; keys are lower-cased and separated from the value by `=` or `:`.
 const sectionPattern = /^\s*\[((?:[^#;]|\\#|\\;)+)\]\s*(?:[#;].*)?$/;
-const propertyPattern = /^\s*([\w.\-]+)\s*[=:]\s*(.*?)\s*(?:[#;].*)?$/;
+const propertyPattern = /^\s*([\w.-]+)\s*[=:]\s*(.*?)\s*(?:[#;].*)?$/;
 const commentPattern = /^\s*[#;]/;
 
-/**
- * The sections of one `.editorconfig` text, with their compiled globs. The files are read for every
- * cleaned file (so edits apply at once), but the same text is parsed only once.
- */
-const parseEditorConfig: (text: string) => ParsedEditorConfig = memoizeBySource(parseEditorConfigText, 16);
-
-function parseEditorConfigText(text: string): ParsedEditorConfig {
+/** The sections of one `.editorconfig` text, with their compiled globs. */
+function parseEditorConfig(text: string): ParsedEditorConfig {
   const sections: ParsedSection[] = [];
   let isRoot = false;
   let current: ParsedSection | undefined;
@@ -384,7 +167,7 @@ function relativeUnixPath(directory: string, filePath: string): string | undefin
  * `{a,b}` (nestable), `{n..m}` and `\` escapes. A glob without `/` matches the file name at any
  * depth; a glob with `/` is anchored at the `.editorconfig` directory. Matching is case-sensitive.
  */
-export function compileSectionMatcher(glob: string): ((relativePath: string) => boolean) | undefined {
+function compileSectionMatcher(glob: string): ((relativePath: string) => boolean) | undefined {
   const ranges: [number, number][] = [];
   let pattern: string;
 
@@ -587,7 +370,7 @@ function convertBracket(content: string): string {
 }
 
 function escapeClassCharacter(ch: string): string {
-  return /[\\\]\[^-]/.test(ch) ? `\\${ch}` : ch;
+  return /[\\\][^-]/.test(ch) ? `\\${ch}` : ch;
 }
 
 function findBraceEnd(glob: string, open: number): number {

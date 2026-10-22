@@ -159,11 +159,9 @@ function ruleSummary(file: PreviewFile): string {
 }
 
 function fileItem(file: PreviewFile): FileItem {
-  const detail = [
-    ruleSummary(file),
-    file.unresolved > 0 ? `${file.unresolved} .editorconfig violation(s) not fixed` : '',
-    ...file.notes,
-  ].filter((part) => part.length > 0);
+  const detail = [ruleSummary(file), file.unresolved > 0 ? `${file.unresolved} .editorconfig violation(s) not fixed` : '', ...file.notes].filter(
+    (part) => part.length > 0
+  );
 
   // Choose Rules stays while a rule changes the file or is left out: a file whose changes were all
   // left out, or whose result is blocked, can get a usable result back.
@@ -282,7 +280,7 @@ async function chooseRules(plan: CleanupPreviewPlan, file: PreviewFile, provider
     placeHolder: 'Clear the rules you do not want applied to this file',
   });
   if (picked) {
-    file.setIncludedRules(new Set(picked.map((choice) => choice.key)));
+    await file.setIncludedRules(new Set(picked.map((choice) => choice.key)));
     if (file.canApply) {
       await showDiff(plan, file, provider);
     }

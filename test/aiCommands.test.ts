@@ -1,16 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  Position,
-  Selection,
-  TextDocument,
-  TextEditor,
-  Uri,
-  createContext,
-  lm,
-  resetMock,
-  state,
-  window,
-} from './helpers/vscodeMock';
+import { Position, Selection, TextDocument, TextEditor, Uri, createContext, lm, resetMock, state, window } from './helpers/vscodeMock';
 
 const getAiChatCompletion = vi.fn<(...args: unknown[]) => Promise<string>>();
 const testAiConnection = vi.fn<(...args: unknown[]) => Promise<{ succeeded: boolean; message: string }>>();
@@ -26,11 +15,64 @@ const { registerAiActionCommands } = await import('../src/commands/aiActionComma
 const { registerAiUtilityCommands } = await import('../src/commands/aiUtilityCommands');
 const { registerGenerateXmlDocCommand } = await import('../src/commands/generateXmlDoc');
 const { registerCleanupCommands } = await import('../src/commands/cleanupCommands');
+const { useFakeEngine } = await import('./helpers/fakeEngine');
+type FakeEngine = import('./helpers/fakeEngine').FakeEngine;
+type XmlDocTargetResult = import('../src/engine/protocol').XmlDocTargetResult;
 
 const SOURCE = 'internal class Sample\n{\n    public int Add(int x, int y)\n    {\n        return x + y;\n    }\n}\n';
 
+/** The fake engine's `xmlDocTargets`: the types, public methods and public fields without a `///` line above them. */
+function xmlDocTargets(text: string): XmlDocTargetResult[] {
+  const lines = text.split('\n');
+  const none = {
+    parameters: [],
+    typeParameters: [],
+    returnType: null,
+    containingType: null,
+    exceptions: [],
+    accessors: null,
+    baseTypes: [],
+    members: [],
+    modifiers: [],
+    body: '',
+  };
+
+  return lines.flatMap((line, index): XmlDocTargetResult[] => {
+    if ((lines[index - 1] ?? '').trim().startsWith('///')) {
+      return [];
+    }
+
+    const indent = /^\s*/.exec(line)![0];
+    const type = /^\s*(?:internal |public )*(class|struct|interface|record|enum) (\w+)/.exec(line);
+    const method = /^\s*public (\w+) (\w+)\(([^)]*)\)/.exec(line);
+    const field = /^\s*public (\w+) (\w+);/.exec(line);
+    const base = { text: line.trim(), insertionLine: index, indent, signature: line.trim() };
+    if (type) {
+      return [{ ...none, ...base, name: type[2], kind: type[1] as XmlDocTargetResult['kind'] }];
+    }
+
+    if (method) {
+      const parameters = method[3]
+        .split(',')
+        .filter(Boolean)
+        .map((parameter) => {
+          const [parameterType, name] = parameter.trim().split(/\s+/);
+
+          return { name, type: parameterType };
+        });
+
+      return [{ ...none, ...base, name: method[2], kind: 'method', parameters, returnType: method[1], containingType: { name: 'Sample', kind: 'class' } }];
+    }
+
+    return field ? [{ ...none, ...base, name: field[2], kind: 'field' }] : [];
+  });
+}
+
+let engine: FakeEngine;
+
 beforeEach(() => {
   resetMock();
+  engine = useFakeEngine({ query: (params) => (params.query === 'xmlDocTargets' ? xmlDocTargets(params.text) : null) });
   getAiChatCompletion.mockReset();
   testAiConnection.mockReset();
   storeCustomApiKey.mockReset();
@@ -106,9 +148,7 @@ describe('generateXmlDoc', () => {
     await run('codeJanitor.generateXmlDoc');
 
     expect(document.getText()).not.toContain('/// Adds two numbers.');
-    expect(state.warningMessages).toContain(
-      'Code Janitor: the file changed while documentation was being generated - nothing was inserted.'
-    );
+    expect(state.warningMessages).toContain('Code Janitor: the file changed while documentation was being generated - nothing was inserted.');
   });
 
   it('falls back to a deterministic summary when the model returns nothing', async () => {
@@ -167,6 +207,27 @@ describe('generateXmlDoc', () => {
 
     expect(document.getText()).toContain('/// <summary>');
   });
+
+  it('counts a member documented by the deterministic fallback as deterministic, not as AI', async () => {
+    openCSharp();
+    getAiChatCompletion.mockRejectedValueOnce(new Error('endpoint unreachable')).mockResolvedValue('Adds two numbers.');
+    registerGenerateXmlDocCommand(createContext());
+
+    await run('codeJanitor.generateXmlDoc');
+
+    expect(state.informationMessages).toContain('Code Janitor: documented 2 member(s) - 1 via AI, 1 deterministic.');
+  });
+
+  it('counts only the members it documented when the fallback is off', async () => {
+    openCSharp();
+    getAiChatCompletion.mockRejectedValueOnce(new Error('endpoint unreachable')).mockResolvedValue('Adds two numbers.');
+    state.configuration.set('codeJanitor.ai.xmlDoc.allowDeterministicFallback', false);
+    registerGenerateXmlDocCommand(createContext());
+
+    await run('codeJanitor.generateXmlDoc');
+
+    expect(state.informationMessages).toContain('Code Janitor: documented 1 member(s) - 1 via AI, 0 deterministic.');
+  });
 });
 
 describe('generateXmlDoc batch commands', () => {
@@ -222,6 +283,22 @@ describe('generateXmlDoc batch commands', () => {
     expect(state.informationMessages.some((message) => message.includes('2 file(s) documented'))).toBe(true);
   });
 
+  it('does not overwrite a closed file that changed while the AI requests ran', async () => {
+    state.files.set('/w/a.cs', SOURCE);
+    state.modalChoice = 'Continue';
+    getAiChatCompletion.mockImplementation(async () => {
+      state.files.set('/w/a.cs', `${SOURCE}// edited on disk\n`);
+
+      return 'Adds two numbers.';
+    });
+    registerGenerateXmlDocCommand(createContext());
+
+    await run('codeJanitor.generateXmlDocSelectedFiles', Uri.file('/w/a.cs'), [Uri.file('/w/a.cs')]);
+
+    expect(state.files.get('/w/a.cs')).toBe(`${SOURCE}// edited on disk\n`);
+    expect(state.informationMessages.some((message) => message.includes('0 file(s) documented, 1 failed'))).toBe(true);
+  });
+
   it('documents every C# file in the workspace', async () => {
     state.foundFiles = [Uri.file('/w/a.cs')];
     state.files.set('/w/a.cs', SOURCE);
@@ -235,10 +312,7 @@ describe('generateXmlDoc batch commands', () => {
   });
 
   it('never asks for confirmation when nothing needs an AI request (deterministic-only members)', async () => {
-    state.files.set(
-      '/w/a.cs',
-      '/// <summary>Documented.</summary>\ninternal class Sample\n{\n    public int Value;\n}\n'
-    );
+    state.files.set('/w/a.cs', '/// <summary>Documented.</summary>\ninternal class Sample\n{\n    public int Value;\n}\n');
     registerGenerateXmlDocCommand(createContext());
 
     await run('codeJanitor.generateXmlDocSelectedFiles', Uri.file('/w/a.cs'), [Uri.file('/w/a.cs')]);
@@ -304,9 +378,7 @@ describe('AI editor actions', () => {
   });
 
   it('Clean and Refactor (Cleanup + AI) cleans up first, then offers the AI refactor', async () => {
-    const document = openCSharp(
-      'internal class Sample   \n{\n    public int Add(int x, int y)\n    {\n        return x + y;\n    }\n}\n'
-    );
+    const document = openCSharp('internal class Sample   \n{\n    public int Add(int x, int y)\n    {\n        return x + y;\n    }\n}\n');
     window.activeTextEditor = new TextEditor(document, new Selection(new Position(0, 0), new Position(0, 1)));
     state.modalChoice = 'Apply';
     getAiChatCompletion.mockResolvedValue('```csharp\ninternal sealed class Sample\n```');
@@ -329,6 +401,54 @@ describe('AI editor actions', () => {
     await run('codeJanitor.aiRefactor');
 
     expect(document.getText()).toBe(SOURCE);
+  });
+
+  it('does not replace a selection that moved because the document changed during the AI request', async () => {
+    const document = openCSharp();
+    window.activeTextEditor = new TextEditor(document, new Selection(new Position(0, 0), new Position(1, 1)));
+    state.modalChoice = 'Apply';
+    getAiChatCompletion.mockImplementation(async () => {
+      document.setText(`// header added meanwhile\n${SOURCE}`);
+
+      return '```csharp\ninternal sealed class Sample\n```';
+    });
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiRefactor');
+
+    expect(document.getText()).toBe(`// header added meanwhile\n${SOURCE}`);
+    expect(state.warningMessages).toContain('Code Janitor: the document changed while the refactoring was being prepared - nothing was replaced.');
+  });
+
+  it('does not replace the text when the document changed while the confirmation was open', async () => {
+    const document = openCSharp();
+    window.activeTextEditor = new TextEditor(document, new Selection(new Position(0, 0), new Position(1, 1)));
+    getAiChatCompletion.mockResolvedValue('```csharp\ninternal sealed class Sample\n```');
+    vi.spyOn(window, 'showInformationMessage').mockImplementationOnce(async () => {
+      document.setText(`// header added meanwhile\n${SOURCE}`);
+
+      return 'Apply' as never;
+    });
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiRefactor');
+
+    expect(document.getText()).toBe(`// header added meanwhile\n${SOURCE}`);
+    expect(state.warningMessages).toContain('Code Janitor: the document changed while the refactoring was being prepared - nothing was replaced.');
+  });
+
+  it('says so when VS Code does not apply the refactoring', async () => {
+    const document = openCSharp();
+    const editor = new TextEditor(document, new Selection(new Position(0, 0), new Position(1, 1)));
+    window.activeTextEditor = editor;
+    vi.spyOn(editor, 'edit').mockResolvedValue(false);
+    state.modalChoice = 'Apply';
+    getAiChatCompletion.mockResolvedValue('```csharp\ninternal sealed class Sample\n```');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiRefactor');
+
+    expect(state.warningMessages).toContain('Code Janitor: VS Code did not apply the refactoring.');
   });
 
   it('opens generated unit tests in a C# document', async () => {
@@ -377,9 +497,7 @@ describe('AI editor actions', () => {
       expect.stringContaining('coverage.opencover.xml'),
       2048
     );
-    expect(state.openedDocuments).toEqual([
-      { content: '### Summary\nCoverage needs attention.', language: 'markdown' },
-    ]);
+    expect(state.openedDocuments).toEqual([{ content: '### Summary\nCoverage needs attention.', language: 'markdown' }]);
   });
 
   it('opens generated tests for a source file referenced by coverage', async () => {
@@ -603,10 +721,7 @@ describe('coverage report edge cases', () => {
   it('prompts when multiple source files are found in coverage', async () => {
     state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
     state.foundFiles = [Uri.file('/w/coverage.cobertura.xml')];
-    state.files.set(
-      '/w/coverage.cobertura.xml',
-      '<class filename="src/Sample.cs" line-rate="0.25" /><class filename="src/Other.cs" line-rate="0.5" />'
-    );
+    state.files.set('/w/coverage.cobertura.xml', '<class filename="src/Sample.cs" line-rate="0.25" /><class filename="src/Other.cs" line-rate="0.5" />');
     state.files.set('/w/src/Sample.cs', SOURCE);
     state.files.set('/w/src/Other.cs', SOURCE);
     state.quickPickChoice = 'src/Other.cs';
@@ -650,5 +765,58 @@ describe('coverage report edge cases', () => {
 
     expect(state.informationMessages.join(' ')).toContain('no coverage report found');
     expect(getAiChatCompletion).not.toHaveBeenCalled();
+  });
+});
+
+describe('the C# engine queries of the AI commands', () => {
+  it('runs an AI action on the member the engine finds under the caret', async () => {
+    engine = useFakeEngine({
+      query: () => ({
+        name: 'Add',
+        kind: 'method',
+        startLine: 2,
+        endLine: 5,
+        text: 'public int Add(int x, int y)\n    {\n        return x + y;\n    }',
+        signature: 'public int Add(int x, int y)',
+      }),
+    });
+    const document = openCSharp();
+    window.activeTextEditor = new TextEditor(document, new Selection(new Position(4, 9), new Position(4, 9)));
+    state.modalChoice = 'Apply';
+    getAiChatCompletion.mockResolvedValue('```csharp\npublic int Add(int x, int y) => x + y;\n```');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiRefactor');
+
+    expect(engine.requests('query')).toEqual([
+      expect.objectContaining({ filePath: '/w/Sample.cs', query: 'memberAtPosition', arguments: { line: 4, character: 9 } }),
+    ]);
+    expect(document.getText()).toBe('internal class Sample\n{\n    public int Add(int x, int y) => x + y;\n}\n');
+  });
+
+  it('runs an AI action on the whole file when the engine finds no member, or is unavailable', async () => {
+    engine = useFakeEngine({ query: () => Promise.reject(new Error('no project')) });
+    openCSharp();
+    getAiChatCompletion.mockResolvedValue('Explained.');
+    registerAiActionCommands(createContext());
+
+    await run('codeJanitor.aiExplain');
+
+    expect(String(getAiChatCompletion.mock.calls[0][2])).toContain('return x + y;');
+    expect(state.openedDocuments).toEqual([{ content: 'Explained.', language: 'markdown' }]);
+  });
+
+  it('asks the engine for the undocumented members with the codeJanitor.ai.xmlDoc filters', async () => {
+    state.configuration.set('codeJanitor.ai.xmlDoc.ignoreTestMethods', true);
+    openCSharp();
+    getAiChatCompletion.mockResolvedValue('Adds two numbers');
+    registerGenerateXmlDocCommand(createContext());
+
+    await run('codeJanitor.generateXmlDoc');
+
+    expect(engine.requests('query')[0]).toMatchObject({
+      query: 'xmlDocTargets',
+      arguments: expect.objectContaining({ ignoreTestMethods: true, maxMembersPerFile: expect.any(Number), maxInputCharsPerMember: expect.any(Number) }),
+    });
   });
 });

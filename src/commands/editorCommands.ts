@@ -1,8 +1,9 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { removeXmlDocumentationConverter } from '../cleanup/transformations/removeXmlDocumentation';
-import { commentFormatConverter, regionDirectiveRemover } from '../cleanup/transformations/text';
-import { fixNamespace } from '../cleanup/transformations/namespaceAndNameOf';
+import { EngineCommand } from '../engine/protocol';
+import { reportEngineUnavailable } from '../engine/vscodeEngine';
+import { logError } from '../logging';
+import { CollectedFile, FileOutcome, applyFileOutcome, canFormatComments, formatCommentsOf, runEngineCommand } from './cleanupCore';
 import { sortLinesInEditor } from './editorText';
 
 /**
@@ -12,15 +13,9 @@ import { sortLinesInEditor } from './editorText';
 export function registerEditorCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codeJanitor.fixNamespace', fixNamespaceCommand),
-    vscode.commands.registerCommand('codeJanitor.removeRegions', () =>
-      transformActiveDocument('csharp', (source) => regionDirectiveRemover.apply(source))
-    ),
-    vscode.commands.registerCommand('codeJanitor.formatComments', () =>
-      transformActiveDocument('csharp', (source) => commentFormatConverter.apply(source))
-    ),
-    vscode.commands.registerCommand('codeJanitor.removeXmlDoc', () =>
-      transformActiveDocument('csharp', (source) => removeXmlDocumentationConverter.apply(source))
-    ),
+    vscode.commands.registerCommand('codeJanitor.removeRegions', () => runOnActiveDocument('removeRegions', 'Remove Regions')),
+    vscode.commands.registerCommand('codeJanitor.formatComments', formatCommentsCommand),
+    vscode.commands.registerCommand('codeJanitor.removeXmlDoc', () => runOnActiveDocument('removeXmlDocumentation', 'Remove XML Documentation')),
     vscode.commands.registerCommand('codeJanitor.joinLines', joinLinesCommand),
     vscode.commands.registerCommand('codeJanitor.sortLines', sortLinesCommand)
   );
@@ -45,13 +40,13 @@ async function fixNamespaceCommand(): Promise<void> {
     return;
   }
 
-  await replaceDocument(editor, (source) => fixNamespace(source, expected));
+  await runOnEditor(editor, 'Fix Namespace', (file) => runEngineCommand(file, 'fixNamespace', 'Fix Namespace', { namespace: expected }));
 }
 
 /**
- * Derives the namespace from the folders between the nearest project file (or the workspace root)
- * and the document, which is the convention the Visual Studio extension gets from the project
- * system.
+ * Suggests a namespace for the input box: the workspace folder's name followed by the folders between it and the
+ * document, each as an identifier. The project file and its root namespace are not consulted, so the suggestion
+ * can differ from what the batch Fix Namespace commands, which the engine resolves per project, give the file.
  */
 export function suggestNamespace(uri: vscode.Uri): string {
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
@@ -103,41 +98,48 @@ function selectionOrNextLine(editor: vscode.TextEditor): vscode.Range {
 
   const nextLine = Math.min(selection.active.line + 1, editor.document.lineCount - 1);
 
-  return new vscode.Range(
-    new vscode.Position(selection.active.line, 0),
-    editor.document.lineAt(nextLine).range.end
-  );
+  return new vscode.Range(new vscode.Position(selection.active.line, 0), editor.document.lineAt(nextLine).range.end);
 }
 
-async function transformActiveDocument(languageId: string, transform: (source: string) => string): Promise<void> {
+async function runOnActiveDocument(command: EngineCommand, label: string): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== languageId) {
-    void vscode.window.showInformationMessage(`Code Janitor: open a ${languageId} file first.`);
+  if (!editor || editor.document.languageId !== 'csharp') {
+    void vscode.window.showInformationMessage('Code Janitor: open a csharp file first.');
 
     return;
   }
 
-  await replaceDocument(editor, transform);
+  await runOnEditor(editor, label, (file) => runEngineCommand(file, command, label));
 }
 
-async function replaceDocument(editor: vscode.TextEditor, transform: (source: string) => string): Promise<void> {
-  const content = editor.document.getText();
+/** Formats the comments of the active document: C#, or a language whose comment prefix is known. */
+async function formatCommentsCommand(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !canFormatComments(editor.document.uri)) {
+    void vscode.window.showInformationMessage('Code Janitor: open a C#, Visual Basic, C-family, PowerShell or R file first.');
 
-  let output: string;
+    return;
+  }
+
+  await runOnEditor(editor, 'Format Comments', formatCommentsOf);
+}
+
+/** Runs `transform` on the editor's document and applies its outcome (other files included) as one edit. */
+async function runOnEditor(editor: vscode.TextEditor, label: string, transform: (file: CollectedFile) => Promise<FileOutcome>): Promise<void> {
+  const file = { uri: editor.document.uri, content: editor.document.getText(), isOpen: true };
   try {
-    output = transform(content);
+    const outcome = await transform(file);
+    if (outcome.text === file.content && outcome.otherFiles.length === 0 && outcome.newFiles.length === 0) {
+      void vscode.window.showInformationMessage('Code Janitor: nothing to change.');
+
+      return;
+    }
+
+    await applyFileOutcome(file, outcome);
   } catch (err) {
-    void vscode.window.showErrorMessage(`Code Janitor: ${(err as Error).message}`);
-
-    return;
+    if (!reportEngineUnavailable(err)) {
+      logError(`${label} of ${file.uri.fsPath}`, err);
+      void vscode.window.showErrorMessage(`Code Janitor: ${(err as Error).message}`);
+    }
   }
-
-  if (output === content) {
-    void vscode.window.showInformationMessage('Code Janitor: nothing to change.');
-
-    return;
-  }
-
-  const fullRange = new vscode.Range(editor.document.positionAt(0), editor.document.positionAt(content.length));
-  await editor.edit((builder) => builder.replace(fullRange, output));
 }

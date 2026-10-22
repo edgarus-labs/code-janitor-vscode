@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Uri, createContext, createMockChatModel, resetMock, state } from './helpers/vscodeMock';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createContext, createMockChatModel, resetMock, state } from './helpers/vscodeMock';
 
 // ---------------------------------------------------------------- aiService
 
@@ -90,9 +90,7 @@ describe('testAiConnection', () => {
 
 // ---------------------------------------------------------------- copilotClient
 
-const { listCopilotModels, describeCopilotModels, isCopilotAvailable, getCopilotChatCompletion } = await import(
-  '../src/ai/copilotClient'
-);
+const { listCopilotModels, describeCopilotModels, isCopilotAvailable, getCopilotChatCompletion } = await import('../src/ai/copilotClient');
 
 describe('listCopilotModels', () => {
   beforeEach(() => resetMock());
@@ -190,10 +188,7 @@ describe('getCopilotChatCompletion', () => {
   });
 
   it('prefers a model by family match', async () => {
-    state.copilotModels.push(
-      createMockChatModel({ id: 'a', family: 'alpha' }),
-      createMockChatModel({ id: 'b', family: 'beta' }, ['beta-response'])
-    );
+    state.copilotModels.push(createMockChatModel({ id: 'a', family: 'alpha' }), createMockChatModel({ id: 'b', family: 'beta' }, ['beta-response']));
 
     const result = await getCopilotChatCompletion('sys', 'usr', 'beta');
 
@@ -209,16 +204,8 @@ describe('getCopilotChatCompletion', () => {
 
 // ---------------------------------------------------------------- customClient
 
-const {
-  isEndpointConfigured,
-  getNormalizedEndpointUrl,
-  getModelsEndpointUrl,
-  parseModelIds,
-  fetchAvailableModels,
-  isLocalEndpoint,
-  testCustomConnection,
-  getCustomChatCompletion,
-} = await import('../src/ai/customClient');
+const { isEndpointConfigured, getNormalizedEndpointUrl, getModelsEndpointUrl, parseModelIds, isLocalEndpoint, testCustomConnection, getCustomChatCompletion } =
+  await import('../src/ai/customClient');
 
 describe('isEndpointConfigured', () => {
   it('returns false for undefined', () => {
@@ -249,15 +236,11 @@ describe('isEndpointConfigured', () => {
 
 describe('getNormalizedEndpointUrl', () => {
   it('returns a full chat/completions URL unchanged', () => {
-    expect(getNormalizedEndpointUrl('https://api.example.com/chat/completions')).toBe(
-      'https://api.example.com/chat/completions'
-    );
+    expect(getNormalizedEndpointUrl('https://api.example.com/chat/completions')).toBe('https://api.example.com/chat/completions');
   });
 
   it('returns a completions URL unchanged', () => {
-    expect(getNormalizedEndpointUrl('https://api.example.com/completions')).toBe(
-      'https://api.example.com/completions'
-    );
+    expect(getNormalizedEndpointUrl('https://api.example.com/completions')).toBe('https://api.example.com/completions');
   });
 
   it('returns a messages URL unchanged', () => {
@@ -269,15 +252,11 @@ describe('getNormalizedEndpointUrl', () => {
   });
 
   it('appends /chat/completions to a base URL', () => {
-    expect(getNormalizedEndpointUrl('https://api.example.com/v1')).toBe(
-      'https://api.example.com/v1/chat/completions'
-    );
+    expect(getNormalizedEndpointUrl('https://api.example.com/v1')).toBe('https://api.example.com/v1/chat/completions');
   });
 
   it('strips trailing slashes before appending', () => {
-    expect(getNormalizedEndpointUrl('https://api.example.com/v1/')).toBe(
-      'https://api.example.com/v1/chat/completions'
-    );
+    expect(getNormalizedEndpointUrl('https://api.example.com/v1/')).toBe('https://api.example.com/v1/chat/completions');
   });
 
   it('returns input unchanged for invalid URL', () => {
@@ -389,16 +368,20 @@ describe('testCustomConnection', () => {
   });
 
   it('returns failure when fetch fails', async () => {
+    vi.useFakeTimers();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = () => Promise.reject(new Error('network error'));
 
     try {
-      const result = await testCustomConnection({ endpointUrl: 'https://api.example.com' });
+      const pending = testCustomConnection({ endpointUrl: 'https://api.example.com' });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
 
       expect(result.succeeded).toBe(false);
       expect(result.errorMessage).toBe('network error');
     } finally {
       globalThis.fetch = originalFetch;
+      vi.useRealTimers();
     }
   });
 
@@ -428,9 +411,6 @@ describe('testCustomConnection', () => {
 
       expect(result.succeeded).toBe(true);
       expect(result.availableModels).toEqual(['gpt-4o', 'o3-mini']);
-
-      const models = await fetchAvailableModels({ endpointUrl: 'https://api.example.com/v1' });
-      expect(models).toEqual(['gpt-4o', 'o3-mini']);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -505,9 +485,7 @@ describe('getCustomChatCompletion', () => {
       } as Response);
 
     try {
-      await expect(
-        getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })
-      ).rejects.toThrow('not valid JSON');
+      await expect(getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })).rejects.toThrow('not valid JSON');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -524,9 +502,7 @@ describe('getCustomChatCompletion', () => {
       } as Response);
 
     try {
-      await expect(
-        getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })
-      ).rejects.toThrow('did not contain message content');
+      await expect(getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })).rejects.toThrow('did not contain message content');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -590,6 +566,7 @@ describe('getCustomChatCompletion', () => {
   });
 
   it('retries on transient 500 status', async () => {
+    vi.useFakeTimers();
     const originalFetch = globalThis.fetch;
     let callCount = 0;
     globalThis.fetch = () => {
@@ -599,6 +576,7 @@ describe('getCustomChatCompletion', () => {
           ok: false,
           status: 500,
           statusText: 'Internal Server Error',
+          headers: new Headers(),
           text: () => Promise.resolve('error'),
         } as Response);
       }
@@ -612,35 +590,127 @@ describe('getCustomChatCompletion', () => {
     };
 
     try {
-      const result = await getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' });
+      const pending = getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' });
+      await vi.advanceTimersByTimeAsync(10_000);
 
-      expect(result).toBe('retry success');
+      expect(await pending).toBe('retry success');
       expect(callCount).toBe(3);
     } finally {
       globalThis.fetch = originalFetch;
+      vi.useRealTimers();
     }
   });
 
-  it('does not retry on non-transient 400 (attempts all 3 then throws)', async () => {
+  it('does not retry a non-transient 400 or 401', async () => {
+    const originalFetch = globalThis.fetch;
+    for (const status of [400, 401]) {
+      let callCount = 0;
+      globalThis.fetch = () => {
+        callCount++;
+
+        return Promise.resolve({
+          ok: false,
+          status,
+          statusText: 'Rejected',
+          text: () => Promise.resolve('bad'),
+        } as Response);
+      };
+
+      try {
+        await expect(getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })).rejects.toThrow(String(status));
+
+        expect(callCount).toBe(1);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  });
+
+  it('waits for Retry-After on 429 before the next attempt', async () => {
+    vi.useFakeTimers();
     const originalFetch = globalThis.fetch;
     let callCount = 0;
     globalThis.fetch = () => {
       callCount++;
 
+      return Promise.resolve(
+        callCount === 1
+          ? ({
+              ok: false,
+              status: 429,
+              statusText: 'Too Many Requests',
+              headers: new Headers({ 'Retry-After': '2' }),
+              text: () => Promise.resolve('slow down'),
+            } as Response)
+          : ({
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              headers: new Headers(),
+              text: () => Promise.resolve('{"choices":[{"message":{"content":"done"}}]}'),
+            } as Response)
+      );
+    };
+
+    try {
+      const pending = getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(callCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pending).resolves.toBe('done');
+      expect(callCount).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it('backs off between attempts on transient 5xx without a Retry-After', async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = () => {
+      callCount++;
+
+      return Promise.resolve({ ok: false, status: 503, statusText: 'Unavailable', headers: new Headers(), text: () => Promise.resolve('down') } as Response);
+    };
+
+    try {
+      const pending = getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' });
+      const settled = expect(pending).rejects.toThrow('503');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settled;
+
+      expect(callCount).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses redirects so the key header never reaches another host', async () => {
+    const originalFetch = globalThis.fetch;
+    const inits: (RequestInit | undefined)[] = [];
+    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
+      inits.push(init);
+
       return Promise.resolve({
-        ok: false,
-        status: 400,
-        statusText: 'Bad Request',
-        text: () => Promise.resolve('bad'),
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: () => Promise.resolve('{"choices":[{"message":{"content":"ok"}}]}'),
       } as Response);
     };
 
     try {
-      await expect(
-        getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })
-      ).rejects.toThrow('400');
+      await getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com', apiKey: 'k' });
+      await testCustomConnection({ endpointUrl: 'https://api.example.com', apiKey: 'k' });
 
-      expect(callCount).toBe(3);
+      expect(inits.length).toBeGreaterThanOrEqual(2);
+      expect(inits.every((init) => init?.redirect === 'error')).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -697,6 +767,62 @@ describe('getCustomChatCompletion', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  describe('plain-http transport', () => {
+    const okResponse = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: () => Promise.resolve('{"choices":[{"message":{"content":"ok"}}]}'),
+    } as Response;
+    let originalFetch: typeof fetch;
+    let fetchCalls: Array<{ url: string; headers: Record<string, string> }>;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      fetchCalls = [];
+      globalThis.fetch = (url: string | URL | Request, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), headers: init?.headers as Record<string, string> });
+
+        return Promise.resolve(okResponse);
+      };
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('rejects a chat completion to a remote http endpoint before any network call', async () => {
+      await expect(getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'http://example.com/v1', apiKey: 'sk-secret' })).rejects.toThrow(/https/i);
+
+      expect(fetchCalls).toHaveLength(0);
+    });
+
+    it('does not send the key to a remote http endpoint when testing the connection', async () => {
+      const result = await testCustomConnection({ endpointUrl: 'http://example.com/v1', apiKey: 'sk-secret' });
+
+      expect(result.succeeded).toBe(false);
+      expect(result.errorMessage).toMatch(/https/i);
+      expect(fetchCalls).toHaveLength(0);
+    });
+
+    it.each(['http://localhost:11434', 'http://127.0.0.1:8080', 'http://192.168.1.10:8080', 'http://10.0.0.5'])(
+      'still sends the key over http to local endpoint %s',
+      async (endpointUrl) => {
+        await getCustomChatCompletion('sys', 'usr', 100, { endpointUrl, apiKey: 'sk-local' });
+
+        expect(fetchCalls).toHaveLength(1);
+        expect(fetchCalls[0].headers.Authorization).toBe('Bearer sk-local');
+      }
+    );
+
+    it('sends the key over https to a remote endpoint', async () => {
+      await getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://example.com/v1', apiKey: 'sk-remote' });
+
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0].headers.Authorization).toBe('Bearer sk-remote');
+    });
   });
 
   it('skips auth header when no apiKey', async () => {

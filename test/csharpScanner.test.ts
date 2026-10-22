@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CODE, COMMENT, STRING, classifyCSharp } from '../src/cleanup/csharpScanner';
+import { CODE, COMMENT, STRING, classifyCSharp } from '../src/razor/csharp/scanner';
 
 describe('classifyCSharp', () => {
   it('classifies plain code as CODE', () => {
@@ -228,14 +228,14 @@ describe('classifyCSharp', () => {
       ['$@ hole with nested regular literals', '$@"{(c ? "a" : "b")}\n  keep\n"', ';'],
       ['@$ hole with nested regular literal', '@$"{string.Join(",", x)}\n\n\nend"', ';'],
       ['$@ hole with nested verbatim literal', '$@"{F(@"a""b")}\n x"', ';'],
-      ['$@ hole with nested char literal', "$@\"{F('\"')}\n x\"", ';'],
+      ['$@ hole with nested char literal', '$@"{F(\'"\')}\n x"', ';'],
       ['$@ hole with nested raw literal', '$@"{F("""a"b""")}\n x"', ';'],
       ['$@ hole with nested interpolated literal', '$@"{F($"{"}"}")}\n x"', ';'],
       ['$@ hole with lambda braces', '$@"{F(() => { return "}"; })}\n x"', ';'],
       ['$@ hole with format clause', '$@"{d:yyyy}\n x"', ';'],
       ['$@ escaped braces', '$@"{{"" }}\n x"', ';'],
       ['$ hole with nested literal containing a brace', '$"{F("}")} x"', ';'],
-      ['$ hole with nested char literal', "$\"{F('\"')} x\"", ';'],
+      ['$ hole with nested char literal', '$"{F(\'"\')} x"', ';'],
       ['$ hole with alias qualifier', '$"{global::System.Math.PI} x"', ';'],
       ['$ multi-line hole (C# 11)', '$"{F(\n  1)} x"', ';'],
     ])('keeps the whole %s inside the literal', (_name, literal, after) => {

@@ -37,12 +37,7 @@ export async function storeCustomApiKey(context: vscode.ExtensionContext, apiKey
  * Language Model API, default) or a custom OpenAI/Claude-compatible endpoint. `maxTokens` bounds
  * the custom endpoint's answer; Copilot manages its own budget.
  */
-export async function getAiChatCompletion(
-  context: vscode.ExtensionContext,
-  systemPrompt: string,
-  userPrompt: string,
-  maxTokens = 2048
-): Promise<string> {
+export async function getAiChatCompletion(context: vscode.ExtensionContext, systemPrompt: string, userPrompt: string, maxTokens = 2048): Promise<string> {
   const provider = getProvider();
 
   if (provider === 'custom') {

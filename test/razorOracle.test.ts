@@ -39,27 +39,31 @@ describe.skipIf(!dotnetAvailable)('formatRazor against the compiler', () => {
     expect(baseline.errors, formatErrors(baseline)).toEqual([]);
   }, 180_000);
 
-  it.each(combinations)('adds no error and stays idempotent: %s', (_name, options, crlf) => {
-    const folder = copyProject(ORACLE);
-    folders.push(folder);
-    let changed = 0;
-    for (const file of projectFiles(folder).filter(isRazor)) {
-      const target = path.join(folder, file);
-      const original = fs.readFileSync(target, 'utf8');
-      const input = crlf ? original.replace(/\r?\n/g, '\r\n') : original;
-      const formatted = formatRazor(input, options);
-      expect(formatRazor(formatted, options), `${file} is not idempotent`).toBe(formatted);
-      if (formatted !== input) {
-        changed++;
+  it.each(combinations)(
+    'adds no error and stays idempotent: %s',
+    (_name, options, crlf) => {
+      const folder = copyProject(ORACLE);
+      folders.push(folder);
+      let changed = 0;
+      for (const file of projectFiles(folder).filter(isRazor)) {
+        const target = path.join(folder, file);
+        const original = fs.readFileSync(target, 'utf8');
+        const input = crlf ? original.replace(/\r?\n/g, '\r\n') : original;
+        const formatted = formatRazor(input, options);
+        expect(formatRazor(formatted, options), `${file} is not idempotent`).toBe(formatted);
+        if (formatted !== input) {
+          changed++;
+        }
+
+        fs.writeFileSync(target, formatted);
       }
 
-      fs.writeFileSync(target, formatted);
-    }
-
-    expect(changed, 'the formatter changed no file').toBeGreaterThan(4);
-    const after = buildRazorProject(folder, PROJECT);
-    expect(baseline.ok, baseline.output).toBe(true);
-    expect(after.ok, after.output).toBe(true);
-    expect(newCompilerErrors(baseline.errors, after.errors), formatErrors(after)).toEqual([]);
-  }, 180_000);
+      expect(changed, 'the formatter changed no file').toBeGreaterThan(4);
+      const after = buildRazorProject(folder, PROJECT);
+      expect(baseline.ok, baseline.output).toBe(true);
+      expect(after.ok, after.output).toBe(true);
+      expect(newCompilerErrors(baseline.errors, after.errors), formatErrors(after)).toEqual([]);
+    },
+    180_000
+  );
 });

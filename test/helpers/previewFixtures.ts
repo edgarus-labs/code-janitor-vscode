@@ -61,11 +61,11 @@ export function previewProject(source: string = FIXTURE_ROOT): PreviewProject {
   };
 }
 
-/** The C# files of a project, relative to its root, in a stable order. */
+/** The C# files of a project, relative to its root with `/` separators on every platform, in a stable order. */
 export function csharpFiles(project: PreviewProject): string[] {
   return [...project.originals.keys()]
     .filter((file) => file.endsWith('.cs'))
-    .map((file) => path.relative(project.root, file))
+    .map((file) => path.relative(project.root, file).split(path.sep).join('/'))
     .sort();
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCSharpSource } from '../src/cleanup/syntax/parser';
+import { parseCSharpSource } from '../src/razor/csharp/syntax/parser';
 
 /** Parses source and returns the root node. */
 function parse(source: string) {
@@ -745,7 +745,13 @@ describe('parseCSharpSource - broad coverage', () => {
 
     const lambda = root.descendantsOfType('lambda_expression')[0];
     expect(lambda?.text).toBe('current => current with { A = tracked, B = x.Select(i => i) }');
-    expect(root.descendantsOfType('argument').filter((argument) => argument.parent?.parent?.type === 'invocation_expression' && argument.parent.parent.childForFieldName('function')?.text === 'Update')).toHaveLength(1);
+    expect(
+      root
+        .descendantsOfType('argument')
+        .filter(
+          (argument) => argument.parent?.parent?.type === 'invocation_expression' && argument.parent.parent.childForFieldName('function')?.text === 'Update'
+        )
+    ).toHaveLength(1);
   });
 
   it('parses a with expression on a call result and chains of with', () => {
@@ -914,10 +920,7 @@ describe('parseCSharpSource - broad coverage', () => {
     const root = parse('class C { void M() { F(x < Math.Max(a, b), y > z); } }');
     const call = root.descendantsOfType('invocation_expression')[0];
 
-    expect(call.childForFieldName('arguments')?.namedChildren.map((n) => n.text)).toEqual([
-      'x < Math.Max(a, b)',
-      'y > z',
-    ]);
+    expect(call.childForFieldName('arguments')?.namedChildren.map((n) => n.text)).toEqual(['x < Math.Max(a, b)', 'y > z']);
   });
 
   it('parses function pointer type', () => {
@@ -1128,9 +1131,7 @@ describe('parseCSharpSource - broad coverage', () => {
   });
 
   it('parses query with join clause', () => {
-    const root = parse(
-      'class C { void M() { var q = from x in list join y in other on x.Id equals y.Id select x; } }'
-    );
+    const root = parse('class C { void M() { var q = from x in list join y in other on x.Id equals y.Id select x; } }');
     const join = root.descendantsOfType('join_clause')[0];
 
     expect(join).toBeDefined();
@@ -1153,10 +1154,8 @@ describe('parseCSharpSource - broad coverage', () => {
     expect(continuation.descendantsOfType('select_clause')).toHaveLength(1);
   });
 
-  it('parses a parenthesized subquery used as another query\'s from-clause source', () => {
-    const root = parse(
-      'class C { void M() { var q = from a in (from b in c select b) where a != null select a; } }'
-    );
+  it("parses a parenthesized subquery used as another query's from-clause source", () => {
+    const root = parse('class C { void M() { var q = from a in (from b in c select b) where a != null select a; } }');
 
     expect(root.descendantsOfType('query_expression')).toHaveLength(2);
     expect(root.descendantsOfType('query_where_clause')).toHaveLength(1);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MEMBER_TYPE_KEYS, createDefaultReorganizeSettings, parseReorganizeSettings } from '../src/reorganize/settings';
+import { MEMBER_TYPE_KEYS, createDefaultReorganizeSettings, parseReorganizeSettings } from '../src/cleanup/reorganizeSettings';
 
 // The defaults of Properties/Settings.settings of the Visual Studio extension.
 describe('default reorganize settings', () => {

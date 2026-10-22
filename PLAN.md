@@ -7,205 +7,105 @@ recorded in [CHANGELOG.md](CHANGELOG.md).
 
 This extension ports cleanup functionality from
 [Code Janitor for Visual Studio](https://github.com/edgarus-labs/code-janitor-vs), derived from
-[CodeMaid](https://github.com/codecadwallader/codemaid). The VS Code implementation uses
-TypeScript and JavaScript. It does not require a .NET process, WebAssembly grammar or native
-parser binary at runtime.
-
-The two extensions share cleanup concepts and transformation fixtures, but do not offer
-identical IDE integration or semantic analysis. Complexity views, the Spade code tree and
-third-party IDE integrations are outside this port's scope; navigation and member reorganization
-are ported (see "Visual Studio parity modules").
+[CodeMaid](https://github.com/codecadwallader/codemaid). C# is cleaned by Roslyn in a .NET server
+next to VS Code; the extension itself is TypeScript and handles the files that are not C#, Razor
+and the VS Code integration.
 
 ## Architecture
 
-- `src/cleanup/`: cleanup settings, ordered transformations, lexical scanning and EditorConfig support.
-- `src/cleanup/syntax/`: C# tokenizer, syntax node model and recursive-descent parser.
-- `src/cleanup/transformations/`: cleanup rules expressed as source-text edits.
-- `src/cleanup/naming/`: `.editorconfig` naming rules - Roslyn naming style/rule ports, the
-  syntactic symbol and scope model, and the safe in-file renamer.
-- `src/cleanup/analysis.ts`: cleanup in analyze mode - runs the pipeline step by step and locates
-  each rule's changes (`lineDiff.ts` hunks mapped back to the original lines) and the violations
-  reported, and fixes one rule or one occurrence (kept only when the rest of the rule's fix still
-  gives the same file). Used by `commands/diagnostics.ts` (diagnostics, quick fixes, debounced and
-  versioned per document) and `src/cli/check.ts` (check mode, `scripts/check.ts`, no VS Code; the
-  `.codejanitor` reader is `cleanup/repositoryOverrides.ts` for that reason).
-- `src/cleanup/changedLines.ts` and `gitBaseline.ts`: `onlyChangedLines` - the lines changed since
-  `git show HEAD:<path>`, and a pipeline run that keeps each step's (or rule's) hunks on those
-  lines, skipping a unit whose change spans unchanged lines or whose dropped hunks it needs.
-- `src/ai/`: GitHub Copilot and custom endpoint clients.
-- `src/commands/`: commands, settings integration and cleanup-on-save.
-- `src/extension.ts`: extension activation.
-- `test/`: unit and command tests; `test/e2e/` runs inside a real VS Code host.
-- `shared/tests/transformations/`: shared behavior fixtures for the VS and VS Code implementations.
+### The C# engine server (`server/`, .NET 10, Roslyn 5.9)
 
-### Visual Studio parity modules
+- `CodeJanitor.Server.slnx`, `Directory.Build.props` (net10.0, the target of Roslyn 5.9's MSBuild workspace; `RollForward=LatestMajor`, so
+  the server runs on the newest installed runtime, which is never older than the SDK whose MSBuild it loads; warnings as errors) and
+  `server/.editorconfig` (`root = true`, so a repository-level `.editorconfig` does not change how the server builds).
+- `src/CodeJanitor.Engine/Contracts/EngineContracts.cs`: the contract of the engine:
+  `IEffectiveSettings` (the settings of one file, keyed by the camelCase fields of `CleanupSettings` in
+  `src/cleanup/types.ts`), `ICleanupStep` (stage and order), `IDocumentCommand`, `IDocumentQuery`,
+  `ICleanupEngine` and the result records. Steps, commands and queries are discovered by reflection:
+  every non-abstract implementation with a public parameterless constructor runs.
+- `CleanupEngine.cs`: the orchestrator (stages Reorganize, Semantic, Text, Diagnostics, Final; change
+  counts per rule; excluded rules; changed lines; `onSave`/`partial` gating; generated files skipped;
+  a failing step is reported and undone).
+- `Settings/`: per-file precedence `.editorconfig` > `.codejanitor` > user settings
+  (`EffectiveSettings`, `RepositoryPolicy`, `EditorConfigOptions`, `OverrideNotes`).
+- `Diagnostics/`: the Roslyn diagnostic cleanup ported from the Visual Studio extension
+  (`DiagnosticCleanupEngine`, `CodeFixProviderCatalog`, compiler-error check over every project and
+  target framework, `RoslynRulesStep`, `OrganizeUsingsStep`, `NamingRenameScope`, `HostAnalyzers`: the
+  IDE analyzers and fixes of `Microsoft.CodeAnalysis(.CSharp).Features`).
+- `CodeStyle/`: the Code Style rules catalog (keys shared with `src/cleanup/codeStyleRules.ts`).
+- `Steps/`: Code Janitor's own steps, ported from `Logic/Transformations` of the Visual Studio
+  extension; `Comments/`: the comment formatter (`Model/Comments`).
+- `Reorganize/`: Reorganize on the Roslyn syntax tree and semantic model.
+- `Commands/`: `reorganize`, `splitTopLevelTypes`, `fixNamespace`, `removeXmlDocumentation`,
+  `removeRegions`, `formatComments`, `moveMember`, `deleteMember`; `Queries/`: `memberAtPosition`,
+  `xmlDocTargets`, `structure` (Spade), `branches` (target coverage), `memberLines`, `reorganizeReport`.
+- `src/CodeJanitor.Server/`: JSON-RPC over stdio (StreamJsonRpc, `Content-Length` framing, camelCase;
+  `Protocol.cs`, `RpcServer.cs`), `WorkspaceHost` (one `MSBuildWorkspace` per workspace folder: the
+  solution listing the file's project, else that project and the projects of the folder referencing it;
+  a fallback project for loose files; unsaved text overlaid per request; `fileChanged` reloads),
+  `ResultMapper` (solution diff to texts, line endings and BOM), `CheckCommand` (`check` CLI) and
+  `AnalyzerDependencyUnification` (the SDK's analyzers reference newer `System.Composition` and Roslyn
+  assemblies than the server ships; they are answered with the server's copies).
+- `tests/CodeJanitor.Engine.Tests/`: xunit, one folder per area; `Testbed/TestbedScenarios.cs` runs the
+  testbed scenarios through `CleanupEngine`. The Visual Studio extension's MSTest tests are ported here.
 
-- `src/cleanup/codeStyleRules.ts`: catalog of the 53 Code Style rules (key, group, label, diagnostic ids, values, default, `csharp_preferred_modifier_order` validation), the setting format and its package.json schema.
-- `src/cleanup/effectiveSettings.ts`: port of `EffectiveCleanupSettings.cs`: resolves per file which settings `.editorconfig` decides (severity resolution of the Visual Studio doc: `:none` stopper, diagnostic > category > global > suffix, CA1852 disabled by default, Roslyn default values for severity-only enforcement), merges the policy and the enabled Code Style rules over `.editorconfig` (the synthetic analyzer-config layer: rule with `suggestion`, diagnostics raised, sibling rules of a shared diagnostic silenced with `:none`; in memory only). `getCleanupPipeline` (`runCleanup.ts`) and `analysis.ts` use it; `buildPipeline` only sees the effective settings and properties.
-- `src/cleanup/repositoryOverrides.ts`: `.codejanitor` reader: `findRepositoryConfigFile` (walk up), `readRepositoryPolicy`, `parseRepositoryPolicy`, `applyRepositoryPolicy` (policy over user). `commands/settings.ts`: `readCleanupSettings(startDirectory)` / `readCleanupSettingsForUri(uri)`.
-- `src/cleanup/overrideNotes.ts`: the settings panel override notes (`editorConfigOverrideNotes`); `findDefiningEditorConfigPath` in `editorconfig.ts` names the file.
-- `test/oracle/CodeStyle/` (one file per group); `scripts/compile-oracle.ts` also runs every oracle project with all Code Style rules enabled and no `.editorconfig` rule (the opt-in layer).
-- `src/cleanup/usings/` holds the using-directive placement: `layout.ts` (token-level layout of directives and namespaces), `declarations.ts` (per-file declaration summaries, the `DeclarationIndex` view and the generated `bclIndex.generated.ts` of the .NET reference assemblies, written by `scripts/bclIndex`), `workspaceIndex.ts` (project discovery, caches), `names.ts` (used names, what a directive imports), `placement.ts` (qualification, hazards, text edits, verification). `transformations/namespaceScope.ts` wires it and owns the namespace style conversions. Verified against the C# compiler by `test/usingPlacementCompile.test.ts` (corpora `test/oracle/Usings`, `test/oracle/UsingsGlobal`).
-- `src/commands/cleanupPreview.ts`: the plan (`buildCleanupPreviewPlan`, `PreviewFile` with per-rule outcomes recomputed from the original text, parse-problem guard via `parseErrorCount`), the virtual-document provider (`codejanitor-preview:`) and `applyCleanupPreviewPlan` (stale check per file, one `WorkspaceEdit`, per-file retry when VS Code rejects it). `cleanupPreviewUi.ts`: QuickPick review loop (`createQuickPick`, item buttons, `vscode.diff`), progress with cancellation, closing the diff tabs. `cleanupCommands.ts` registers the four preview commands and the optional options dialog. `switchFile.ts` / `navigation.ts`: Switch File (VS `SwitchFileCommand` ordering) and the workflow commands; `registerNavigationCommands(context)` must be called from `extension.ts`.
-- Tests: `test/cleanupPreview.test.ts`, `test/navigation.test.ts`, `test/cleanupPreviewCompile.test.ts` (real `dotnet build` before/after for every scope), helpers `test/helpers/previewMock.ts` (scriptable `createQuickPick`, virtual-document providers, tabs) and `previewFixtures.ts`; fixtures in `test/fixtures/preview/`.
-- Known differences from Visual Studio: the options dialog has no temporary-settings page; rule list shows the `.editorconfig` rules that change the file (as in the active-file preview); no disk-level rollback; closed files become unsaved buffers.
-- `src/reorganize/`: Reorganize, the port of `Logic/Reorganizing` of the Visual Studio extension on the syntax tree (no Roslyn).
-  `settings.ts` (the `Reorganizing_*` settings), `comparer.ts` (`CodeItemTypeComparer`), `structure.ts` (a container's members, comments,
-  `#if` blocks, regions and barriers as line-aligned entries), `memberInfo.ts` (kind, access, static/const/read-only, explicit
-  interface), `initializers.ts` (which initializers must keep their order), `regions.ts` (`GenerateRegionLogic` names),
-  `reorganize.ts` (sorting, region removal/insertion, emission, safety nets; `reorganizeSource`, `createReorganizeTransformation`),
-  `sortLines.ts`, `regionEdits.ts` (insert/remove region commands). `src/commands/reorganizeCommands.ts` are the commands.
-  A rewrite only ever permutes the lines of a body (plus region directives): a body whose lines differ, whose `#if`/`#region` nesting
-  broke, or a file that parses worse afterwards is left unchanged. What is left alone is reported (`ReorganizeResult.skipped`,
-  logged to the output channel). `test/oracle/Reorganize` is the real-compiler corpus (`test/reorganizeCompile.test.ts` builds it before
-  and after with 11 setting combinations and compares what `Program.cs` prints: the value of every static and instance field).
-- `src/razor/`: Razor/Blazor formatter (`razorScanner.ts`, `csharpLayout.ts` runs the repo's own formatting engine under fixed Roslyn-default rules, `razorFormatter.ts`, `razorOptions.ts`, `razorSettings.ts`); `commands/razorCommands.ts`. A layout is used only when the wrapped code parses cleanly and the token stream is unchanged; only whitespace changes. Verified by `test/razorOracle.test.ts` (a Razor SDK project built before and after).
-- Real-compiler tests: `test/helpers/dotnetBuild.ts` (`buildFiles`, `writeProject`, `buildProject`) builds fixtures before and after; wrap such tests in `describe.skipIf(!dotnetAvailable)`. Regenerate the framework index of the using placement with `dotnet run --project scripts/bclIndex -- src/cleanup/usings/bclIndex.generated.ts <Microsoft.NETCore.App.Ref version dir> <Microsoft.AspNetCore.App.Ref version dir>`, passing the pack version folders (for example `/usr/lib/dotnet/packs/Microsoft.NETCore.App.Ref/10.0.12`), not their `ref/net10.0` subfolders.
+### The extension (`src/`)
 
-The parser supports the transformations implemented here; it is not a replacement for Roslyn's
-compiler or semantic model. Text edits preserve surrounding source formatting. When changing a
-transformation, test comments, literals, preprocessor directives and line endings as well as the
-intended syntax. Document intentional differences from the Visual Studio implementation.
+- `src/engine/`: the client of the server (`client.ts`: lazy start, restart with backoff, cancellation;
+  `serverProcess.ts`: finding `dotnet` 8+ via `codeJanitor.dotnetPath` or the `PATH`; `protocol.ts`: the
+  DTOs; `vscodeEngine.ts`: activation, file watcher, request parameters; `changedLines.ts`: the git diff
+  for `onlyChangedLines`; `xmlDoc.ts`: prompts and insertion from `xmlDocTargets`).
+- `src/commands/`: commands, settings, cleanup on save, preview, diagnostics and quick fixes
+  (`analyze`/`fixRule`), Razor and navigation. `cleanupCore.ts` routes C# files to the server and the
+  other files to `src/cleanup/layoutCleanup.ts`.
+- `src/cleanup/`: `types.ts` (the settings shape sent to the server), `layoutCleanup.ts` and
+  `languages/` (the cleanup of files that are not C#: language detection, per-family steps, file
+  headers, markup rules), `editorconfig.ts` (layout keys for those files), `repositoryOverrides.ts`
+  (`.codejanitor` for the settings panel and export/import), `codeStyleRules.ts` (the Code Style
+  catalog behind `package.json` and the settings panel).
+- `src/razor/`: the Razor/Blazor formatter; `src/razor/csharp/` is the only C# parser left in
+  TypeScript, used to lay out the C# of Razor blocks.
+- `src/spade/`: the Spade view over the `structure` query; `src/ai/`: AI clients, actions, target
+  coverage (`coverage/`) and XML documentation during cleanup; `src/text/`: Insert Region and Sort Lines.
+- `test/`: Vitest with a VS Code API mock (`test/helpers/vscodeMock.ts`) and a fake engine
+  (`helpers/fakeEngine.ts`, `fakeEngineServer.ts`); `test/e2e/` runs inside a real VS Code host.
+- `shared/tests/transformations/`: behaviour fixtures shared with the Visual Studio extension.
 
-### `.editorconfig`-driven categories
-
-`src/cleanup/editorconfig.ts` resolves the `.editorconfig` properties of a file and the effective
-severity of a diagnostic. `src/cleanup/editorConfigRegistry.ts` is the single registry of the
-settings cleanup applies and when each takes effect (always, while IDE0055 is enforced, or while
-the option's diagnostic is enforced); it lists the file's unsupported settings and tells
-`buildPipeline` which settings the `.editorconfig` decides. For those, the step of the conflicting
-Code Janitor setting is skipped or adjusted (the mapping is in the README). The code-style, naming
-and formatting categories run at the end of `buildPipeline` (`runCleanup.ts`), in that order,
-after every other step, whenever the file has `.editorconfig` properties; when a rename changed the
-code-style output, code style runs once more without reporting (a `this.` the rename made redundant),
-so that cleaning the result again changes nothing. Issues reach the
-commands as `EditorConfigIssue`s (`{ kind, filePath, detail }`): `unresolved` violations
-(counted in the cleanup summary), `unsupported` settings and `note`s (what a Code Janitor setting
-left undone: an enabled Code Style rule that is not implemented or is suppressed by `NoWarn`, a
-namespace not converted, using directives not moved; logged as `Cleanup note:` and counted apart,
-never as violations). `editorConfigIssueLog.ts` logs them
-for one run: violations per file, each unsupported setting once with its file count, and for
-single-file runs (cleanup on save, preview, Cleanup Active File) only for `.editorconfig`
-configurations not yet reported in the session. The preview (`pipeline.preview`) can leave out
-steps by index and `.editorconfig` rules by diagnostic id: the code-style converter implements
-`SourceTransformation.applyRules`, which reports how many places each rule changed. `lineDiff.ts`
-counts those places.
-
-- `oneTypePerFile.ts`: `SA1402`/`MA0048`/`SA1649` (explicit `dotnet_diagnostic` severity only).
-  Not a pipeline step: it creates files, so `commands/cleanupCore.ts` (`splitTypesForEditorConfig`)
-  runs it before the pipeline in the cleanup commands, using `topLevelTypeSplit.ts` with
-  `movableKinds` and `refuseFileNameCollisions`, and cleans the created files like the rest; a file
-  and its new files are written all or nothing (`writeFileGroup`). Cleanup on save only reports
-  (`reportOneTypePerFileOnSave`): VS Code can drop a save's edits, so it never creates files.
-- `transformations/editorConfigNaming.ts`: IDE1006. `naming/namingRules.ts` parses and orders
-  the rules (Roslyn `EditorConfigNamingStyleParser`), `naming/namingStyle.ts` checks names and
-  derives the fixed name (Roslyn `NamingStyle`), `naming/sourceModel.ts` collects declarations,
-  scopes and every identifier occurrence with its role, and `naming/renamer.ts` plans a rename
-  that is refused unless every occurrence in the symbol's scope is understood. Violations are
-  fixed in passes over the re-parsed text until none can be fixed; the rest are reported.
-  With `renamePublicSymbolsAcrossWorkspace`, `naming/workspaceScope.ts` reads the workspace's
-  project files (files, `ProjectReference`s, packaging, `InternalsVisibleTo`) and
-  `naming/workspaceRenamer.ts` plans the renames of types and non-private members across the
-  declaring project and the projects referencing it; `commands/workspaceRename.ts` previews them
-  and applies them as one WorkspaceEdit after batch cleanup.
-- `transformations/editorConfigCodeStyle.ts`: code-style rules in a fixed order, reusing the
-  existing converters (file-scoped namespaces, explicit access modifiers, readonly fields, `out`
-  variable inlining, using placement). Rule modules: `editorConfigQualification.ts` (`this.`),
-  `editorConfigVarPreference.ts` (`var`), `editorConfigBraces.ts` (braces),
-  `editorConfigExpressionPreferences.ts` (target-typed `new`, `default`, index/range, `is null`,
-  `nameof`, UTF-8 literals, implicit lambdas), `editorConfigStatementPreferences.ts` (`throw`
-  expressions, tuple swap, local functions, deconstruction, conditional assignment/return,
-  object and collection initializers, switch expressions, `is` patterns over `as`/casts), `editorConfigTypePreferences.ts` (`System.Threading.Lock`,
-  primary constructors), `editorConfigOperatorPreferences.ts` (parentheses, predefined types,
-  compound assignment, simplified booleans, `??`, `?.`, delegate calls, `is null`/`not`/combined
-  patterns, inferred names, explicit tuple names, simplified interpolation, extended property
-  patterns, method groups), `editorConfigPrecedence.ts` (shared precedence and null-check helpers), `editorConfigMemberPreferences.ts` (modifier order, `readonly`
-  structs and struct members, `static` local functions, auto properties; namespace/folder and unused parameters
-  reported) and `editorConfigExpressionBodies.ts` (expression-bodied members and lambdas),
-  `editorConfigSimplificationRules.ts` (IDE0035, IDE0080, IDE0082, IDE0100, IDE0110; IDE0050,
-  IDE0070, IDE0072, IDE0076, IDE0077 reported), `editorConfigCollectionExpressions.ts`
-  (IDE0300 - IDE0306), `editorConfigLanguageRules.ts` (IDE0001/0002, IDE0058/0059, IDE0064,
-  IDE0120/0121, IDE0240/0241, IDE0260, IDE0270, IDE0280, IDE0320, IDE0360, IDE0380; IDE0079,
-  IDE0210/0211, IDE0220, IDE0390/0391 reported) and `editorConfigBlankLineRules.ts` (IDE2000 -
-  IDE2006, run last). The rules run in passes until one changes nothing (at most three), and only
-  the last pass reports.
-  `projectInfo.ts` reads the nearest `.csproj` (root namespace, target frameworks, C# language
-  version, `<Nullable>` context and whether the runtime has `System.Index`/`Range`) for rules that
-  depend on it, through the static evaluator of `msbuildProperties.ts` (`Directory.Build.props`,
-  the project, resolvable imports, `Directory.Build.targets`; a value a `Condition`, `<Choose>`,
-  unknown import or property decides is unknown, never guessed); a rule whose rewrite needs a newer C# version or runtime is skipped and reported.
-  `typeFacts.ts` holds what the file proves about a type (reference types without `operator ==`,
-  non-nullable value types, plain null comparisons, variables, the written delegate type of a
-  lambda), shared by the code-style rules and the legacy converters.
-- `transformations/editorConfigQualityRules.ts`: the code-quality (CA) rules and the IDE rules
-  without a code-style option (`SUPPORTED_DIAGNOSTICS` in the registry), run by the code-style
-  stage before the member preferences, each gated on its diagnostic's severity (including the
-  category bulk severity). `editorConfigQualityRulesMembers.ts` (CA1822 `static`, IDE0051/IDE0052
-  unused/unread private members, repeated until stable), `editorConfigQualityRulesSealing.ts`
-  (CA1852), `editorConfigQualityRulesExpressions.ts` (CA1805, CA1825, CA1827-CA1829, CA1860, CA1507,
-  CA1834, CA1847, CA1865-CA1867, CA2249, IDE0004, IDE0005), `editorConfigQualityRulesSupport.ts`
-  (suppressions, generated code, `dotnet_code_quality` options, visibility, target-framework API
-  checks, declared-type lookup on the naming `SourceModel`) and `editorConfigQualityRulesProject.ts`
-  (facts from the project's other C# files - derived types, member-access names, interfaces,
-  `InternalsVisibleTo` - cached per file version; a project whose files cannot all be listed or read
-  makes CA1822/CA1852 report instead of fixing). `editorConfigQualityRulesCollections.ts` (CA1836,
-  CA1841, CA1854, CA1864, CA1868), `editorConfigQualityRulesStrings.ts` (CA1858, CA1862; CA1305,
-  CA1307, CA1310 reported) and `editorConfigQualityRulesCalls.ts` (CA1861, CA1869 - both add
-  `private static readonly` fields named by the naming rules -, CA2016, CA2263).
-- Severity sources: `editorconfig.ts` `loadEditorConfigProperties` merges the `.editorconfig` entries
-  over the project's global AnalyzerConfig files and attaches the project's `ProjectAnalysis`
-  (`analyzerConfig.ts`: `.globalconfig`/`GlobalAnalyzerConfigFiles` resolved by `global_level`;
-  `NoWarn`, `WarningsAsErrors`, `TreatWarningsAsErrors`, `CodeAnalysisTreatWarningsAsErrors`;
-  `AnalysisLevel`/`AnalysisMode` and their per-category variants). `msbuildProperties.ts` reads the
-  unconditional properties and items of the `.csproj` and the nearest `Directory.Build.props`/
-  `.targets`. `analyzerRules.ts` holds the CA rules' category, default severity and the SDK rule sets
-  (copied from .NET SDK 10.0.112 `analysislevel_*.globalconfig` and `analysislevelstyle_*`); the
-  registry's `SUPPORTED_DIAGNOSTICS` takes the CA entries from it. `resolveDiagnosticSeverity`
-  applies them in the compiler's order; `isDiagnosticEnforced` ignores a CA rule's implicit default
-  severity, so cleanup only rewrites what is enabled explicitly.
-- `transformations/editorConfigFormatting.ts`: core EditorConfig properties and using order, and the
-  C# formatting options gated on IDE0055, in this order: `editorConfigWrapping.ts` (single-line
-  blocks and statements, initializer and anonymous-type members), brace and keyword new lines,
-  `editorConfigSpacing.ts` (every `csharp_space_*` option, one horizontal gap at a time), query
-  clauses (aligned with `from` once spacing is final) and `editorConfigIndentation.ts` (re-indents
-  each line from the syntax tree to `indent_size`, following the `csharp_indent_*` options).
-- `transformations/editorConfigSupport.ts`: option/severity reading, indentation and line helpers,
-  and parse-error detection shared by the rules.
-
-Differences from the Visual Studio implementation, which applies Roslyn's code fixes: rules are
-implemented natively on the syntax tree, a subset of options is supported (see the README), and a
-rewrite happens only when it is certain from syntax. Otherwise the violation is passed to the
-pipeline's reporter, which logs it to the output channel and counts it in the cleanup summary.
-Members the parser only partially understood (`hasParseErrors`) are skipped, and a rule whose result
-parses worse than its input is discarded. Reported line numbers refer to the text at that point of
-the cleanup, after earlier steps.
-
-The Visual Studio naming fix renames a symbol across the solution; here a symbol is renamed only
-when all its references are in the file and each one is identified from the syntax (so types,
-non-private members and members of partial types are always reported, never renamed).
+Protocol, contract and engine changes go together: a new protocol method needs `Protocol.cs`,
+`RpcServer.cs`, `src/engine/protocol.ts` and `client.ts`. `npm run build` publishes the server to
+`dist/server` (`npm run build:server`), and the tests that start it publish it when the sources are
+newer (`scripts/engineServer.ts`; `CODE_JANITOR_SERVER_DLL` points them at another build).
 
 ## Local development
 
-Clone this repository and create a topic branch from `develop`. Use Node.js and npm compatible
-with the repository's dependencies and CI workflow.
+Clone this repository and create a topic branch from `develop`. You need Node.js 22 or later and npm compatible
+with the repository's dependencies and CI workflow, and the .NET 10 SDK or later for the server.
 
 ```sh
 npm ci
 npm run compile
 npm test
+dotnet test server/CodeJanitor.Server.slnx
 npm run build
 npm run verify:bundle
 npm run test:e2e
 ```
 
 - `compile` checks TypeScript without emitting files.
-- `test` runs the Vitest suite. `CODE_JANITOR_TEST_CATEGORY` narrows it: `unit` skips the tests that build C#
-  with the .NET SDK, a category of `test/compilerTests.json` (`codestyle`, `usings`, ...) runs only its files.
-  CI runs `unit` in Build and Test and each category in its own `compiler-tests` job, with
+- `lint` runs ESLint (`eslint.config.mjs`); `format` writes and `format:check` verifies Prettier (`.prettierrc.json`) for the
+  TypeScript and JavaScript files and `dotnet format whitespace` (`server/.editorconfig`) for the server's C#.
+  `npm ci` installs a Git pre-commit hook (Husky, `.husky/pre-commit`) that runs `.lintstagedrc.mjs` on the staged files:
+  Prettier and ESLint for TypeScript and JavaScript, `dotnet format whitespace` for C# under `server/`.
+- `test` runs the Vitest suite. `CODE_JANITOR_TEST_CATEGORY` narrows it: `unit` skips the tests that need
+  the .NET SDK, a category of `test/compilerTests.json` (`preview`, `razor`, `engine`, `testbed`) runs only
+  its files. CI runs `unit` in Build and Test and each category in its own job, with
   `CODE_JANITOR_REQUIRE_DOTNET=1` so a missing SDK fails instead of skipping. A new test file that uses
-  `dotnetAvailable` must be added to a category; `test/compilerTestCategories.test.ts` fails otherwise.
-- `build` bundles the extension to `dist/extension.js`.
-- `verify:bundle` exercises the bundled cleanup pipeline.
+  `dotnetAvailable` or starts the server must be added to a category; `test/compilerTestCategories.test.ts`
+  fails otherwise.
+- `dotnet test server/CodeJanitor.Server.slnx` runs the server's xunit tests; the testbed tests among
+  them need `.testbed` (or `CODE_JANITOR_TESTBED`) and fail with the command that downloads it when it is missing.
+- `build` publishes the server to `dist/server` and bundles the extension to `dist/extension.js`.
+- `verify:bundle` runs the bundled client against the published server.
 - `test:e2e` builds the extension, compiles tests and runs a real VS Code host. It downloads
   a test host and requires a graphical display (or a virtual display on headless Linux).
 
@@ -232,53 +132,50 @@ Update shared transformation fixtures when changing behavior shared with the VS 
 ### The testbed
 
 [code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) is a solution of deliberately bad C#: one class per
-cleanup option, named after the option, plus `scenarios.json` saying what each cleanup must do. Without Roslyn it is the measure of
-whether a rewrite is right, so it covers everything the engine does and is checked for completeness:
+cleanup option, named after the option, plus `scenarios.json` saying what each cleanup must do. It covers what the engine does
+and is checked for completeness:
 
-- every Code Style rule, every cleanup setting that changes text, every Reorganize option and every key and diagnostic of the
-  `.editorconfig` catalog (`editorConfigCatalog()`) needs a scenario; a missing one fails the test, and the few exemptions are listed in
-  `test/testbed.test.ts` with the reason (`onlyChangedLines` and the workspace rename need git history or a whole workspace);
+- every Code Style rule, every cleanup setting that changes text and every Reorganize option needs a scenario; a missing one fails
+  the test, and the exemptions are listed in `test/testbed.test.ts` with the reason (`onlyChangedLines` and the workspace rename
+  need git history or a whole workspace);
 - each rule also runs through a real `.editorconfig`, with its value turned off, with its severity turned off, and, for the rules that
   rewrite both ways, with the opposite value;
 - traps: code a rewrite must not touch (a field written in an interpolation, a lambda that captures, `string.Format` with side effects,
   expression trees, string literals, `#if` blocks), run with every option on at once;
 - using placement and namespace style, the `.codejanitor` policy and its precedence, several `.editorconfig` files, layout cleanup of
   other file types, Razor, the line commands (sort lines, insert and remove region) and the file commands (XML documentation, namespace,
-  split types, one type per file).
+  split types, one type per file, move and delete a member).
 
 `npm run test:testbed` (`test/testbed.test.ts`) runs every scenario alone, requires cleaning the result again to change nothing
 (except wrapping lines in a region, which is an action), and builds and runs the whole solution before and after the cleanups, each
 alone and then every option at once: a rewrite that does not compile or changes what a scenario prints fails the test. A scenario the
 engine gets wrong carries a `knownDefect` marker: its checks must fail, and the test tells you when it starts to pass.
 
-CI clones the testbed at the commit pinned in `.github/workflows/ci.yml` (bumped deliberately, after the scenarios it adds pass here)
-into `.testbed` and sets `CODE_JANITOR_REQUIRE_TESTBED=1`, so a missing testbed fails the
-build; locally set `CODE_JANITOR_TESTBED` or keep a sibling `code-janitor-testbed` folder, otherwise the test is skipped. Add a
+To check one cleanup, name it in `CODE_JANITOR_TESTBED_SCENARIOS`: scenario ids or option names, separated by commas or spaces
+(`CODE_JANITOR_TESTBED_SCENARIOS=CsharpPreferBraces npm run test:testbed`, or `removeRegions,csharp_prefer_braces` for every scenario
+of those options). Only those scenarios are cleaned and checked, and only their cleanups are applied before the solution is built and
+run; the coverage checks still read the whole `scenarios.json`. A name no scenario has fails the run.
+
+CI first runs the Lint and format job (`npm run lint`, `npm run format:check`); every other job needs it, so unclean code fails the
+build before anything else runs. Those jobs clone the testbed's `develop` branch (the testbed is not versioned separately from
+this repository) into `.testbed` and the testbed job sets `CODE_JANITOR_REQUIRE_TESTBED=1`, so a missing testbed fails the
+build; locally set `CODE_JANITOR_TESTBED` or keep a sibling `code-janitor-testbed` folder, otherwise the Vitest suite is skipped with a message that says how to download the testbed (`git clone https://github.com/edgarus-labs/code-janitor-testbed .testbed`). Add a
 scenario there whenever an option is added or a rewrite that broke the build is fixed. Not covered, because they are not text
 transformations of one file: AI actions, the preview, diagnostics and quick fixes, `check` mode, `Join Lines` (its logic is in the
 editor command) and the navigation commands.
 
-An optional read-only smoke test can exercise cleanup and XML documentation planning on a
-source directory you are authorized to inspect:
-
-```sh
-npm run smoke-test -- <source-directory>
-```
-
 `npm run generate:editorconfig -- [path]` writes an `.editorconfig` (default `./.editorconfig`)
 with every C# code-style, formatting and naming option Microsoft documents at its documented
-default. Its severities come from the `.editorconfig` registry: what cleanup applies is a
-`warning`, the other documented style rules are `suggestion`s. The option data and its
-documentation links are in `scripts/editorConfigTemplate.ts`; `test/editorConfigTemplate.test.ts`
-checks that the file makes every supported setting take effect.
+default, every documented style rule at `warning` and a fixed list of CA rules
+(`ENFORCED_DIAGNOSTIC_IDS`). The option data and its documentation links are in
+`scripts/editorConfigTemplate.ts`.
 
-`npm run verify:compile -- [<folder>[=<project file>] ...]` is the compile oracle (needs the .NET
-SDK; development only, the extension never runs .NET). For each project - by default the corpus
-under `test/oracle`, C# written to be tricky for the rules - it builds a copy with the generated
-`.editorconfig`, runs cleanup on it (one type per file included), builds again and fails on every
-new compiler error. For new errors it runs cleanup once per rule (each diagnostic of the registry,
-each boolean setting) and lists the rules that break the build. Add a case to `test/oracle` for
-every construct a rule mishandled.
+`npm run verify:compile -- [<folder>[=<project file>] ...]` is the compile oracle. For each project
+(by default the corpus under `test/oracle`, C# written to be tricky for the rules) it builds a
+copy with the generated `.editorconfig`, runs the cleanup through the server (one type per file
+included), builds again and fails on every new compiler error. For new errors it runs cleanup once
+per rule (each enforced diagnostic, each boolean setting) and lists the rules that break the build.
+Add a case to `test/oracle` for every construct a rule mishandled.
 
 ## AI behavior
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lex } from '../src/cleanup/syntax/lexer';
+import { lex } from '../src/razor/csharp/syntax/lexer';
 
 describe('lex', () => {
   it('tokenizes a simple class', () => {
@@ -48,121 +48,102 @@ describe('lex', () => {
   it('tokenizes string literals', () => {
     const { tokens } = lex('string s = "hello";');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'string_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'string_literal', ';', 'end']);
   });
 
   it('tokenizes interpolated strings', () => {
     const { tokens } = lex('string s = $"{x}";');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'interpolated_string_expression', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'interpolated_string_expression', ';', 'end']);
   });
 
   it('tokenizes verbatim strings', () => {
     const { tokens } = lex('string s = @"path";');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'verbatim_string_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'verbatim_string_literal', ';', 'end']);
   });
 
   it('tokenizes raw strings', () => {
     const { tokens } = lex('string s = """raw""";');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'raw_string_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'raw_string_literal', ';', 'end']);
   });
 
   it('tokenizes char literals', () => {
     const { tokens } = lex("char c = 'a';");
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'character_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'character_literal', ';', 'end']);
   });
 
   it('tokenizes integer literals', () => {
     const { tokens } = lex('int x = 42;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'integer_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'integer_literal', ';', 'end']);
   });
 
   it('tokenizes real literals', () => {
     const { tokens } = lex('double d = 3.14;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'real_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'real_literal', ';', 'end']);
   });
 
   it('tokenizes hex literals', () => {
     const { tokens } = lex('int x = 0xFF;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'integer_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'integer_literal', ';', 'end']);
   });
 
   it('tokenizes binary literals', () => {
     const { tokens } = lex('int x = 0b1010;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'integer_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'integer_literal', ';', 'end']);
   });
 
   it('tokenizes numbers with suffixes', () => {
     const { tokens } = lex('long x = 42L;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'integer_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'integer_literal', ';', 'end']);
   });
 
   it('tokenizes float suffix', () => {
     const { tokens } = lex('float f = 1.5f;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'real_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'real_literal', ';', 'end']);
   });
 
   it('tokenizes exponent notation', () => {
     const { tokens } = lex('double d = 1e10;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'real_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'real_literal', ';', 'end']);
   });
 
   it('tokenizes keywords', () => {
     const { tokens } = lex('public static void Main() { }');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'public', 'static', 'predefined_type', 'identifier', '(', ')', '{', '}', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['public', 'static', 'predefined_type', 'identifier', '(', ')', '{', '}', 'end']);
   });
 
   it('tokenizes null as null_literal', () => {
     const { tokens } = lex('object x = null;');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'null_literal', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'null_literal', ';', 'end']);
   });
 
   it('tokenizes true/false as boolean_literal', () => {
     const { tokens } = lex('bool a = true; bool b = false;');
 
     expect(tokens.map((t) => t.type)).toEqual([
-      'predefined_type', 'identifier', '=', 'boolean_literal', ';',
-      'predefined_type', 'identifier', '=', 'boolean_literal', ';', 'end',
+      'predefined_type',
+      'identifier',
+      '=',
+      'boolean_literal',
+      ';',
+      'predefined_type',
+      'identifier',
+      '=',
+      'boolean_literal',
+      ';',
+      'end',
     ]);
   });
 
@@ -270,7 +251,7 @@ describe('lex', () => {
 
   it('handles preprocessor not at line start', () => {
     // A # in the middle of a line is not a preprocessor directive
-    const { tokens, trivia } = lex('a # b');
+    const { trivia } = lex('a # b');
 
     expect(trivia).toEqual([]);
   });
@@ -307,9 +288,7 @@ describe('lex', () => {
   it('tokenizes method call with member access', () => {
     const { tokens } = lex('Console.WriteLine("hi");');
 
-    expect(tokens.map((t) => t.type)).toEqual([
-      'identifier', '.', 'identifier', '(', 'string_literal', ')', ';', 'end',
-    ]);
+    expect(tokens.map((t) => t.type)).toEqual(['identifier', '.', 'identifier', '(', 'string_literal', ')', ';', 'end']);
   });
 
   it('tokenizes using directive', () => {

@@ -3,5 +3,8 @@ dist/
 node_modules/
 *.vsix
 .vscode-test/
-coverage/
+/coverage/
 .testbed/
+server/**/bin/
+server/**/obj/
+test/e2e/fixtures/**/obj/

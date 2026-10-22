@@ -1,19 +1,22 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import * as vscode from 'vscode';
-import { runCleanup } from '../cleanup/runCleanup';
-import { logError } from '../logging';
-import { Baseline, readHeadVersion } from '../cleanup/gitBaseline';
-import {
-  cleanupChangedLines,
-  createEditorConfigIssueLog,
-  discoverDisqualifiedTypeNamesForFile,
-  isPathCleanable,
-  reportOneTypePerFileOnSave,
-} from './cleanupCore';
-import { readCleanupSettingsForUri } from './settings';
+import { logDiagnostic, logError, logInfo } from '../logging';
+import { reportEngineUnavailable } from '../engine/vscodeEngine';
+import { cleanupCSharpResult, engineOutcome, externalFileCleanup, isOutsideWorkspaceFolders, isPathCleanable } from './cleanupCore';
 
 /**
- * Optional cleanup on save. It never blocks or fails a save: a problem leaves the document
- * untouched and is logged. It never creates files (see {@link reportOneTypePerFileOnSave}).
+ * How long cleanup on save waits for the C# engine: VS Code gives all save participants about 1.5 s, and a
+ * save must never wait longer (the engine's first request loads the projects, which takes longer).
+ */
+export const SAVE_CLEANUP_TIMEOUT_MS = 1250;
+
+/**
+ * Optional cleanup on save. It never blocks or fails a save: a problem, or an engine slower than
+ * {@link SAVE_CLEANUP_TIMEOUT_MS}, leaves the document untouched and is logged. It never changes other
+ * files or creates files: VS Code can drop the edits of a save, which would leave a split type both in
+ * the saved file and in its new file. A file outside the workspace folders is cleaned partially without
+ * asking, unless `codeJanitor.cleanup.performPartialCleanupOnExternal` is `never`. Format Document, the other
+ * cleaning commands and AI documentation never run on save: they would hold up the save.
  */
 export function registerFormatOnSave(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
@@ -36,35 +39,63 @@ export function registerFormatOnSave(context: vscode.ExtensionContext): void {
 }
 
 async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
-  // Saves repeat: the unsupported settings of an `.editorconfig` are reported once per session.
-  const issues = createEditorConfigIssueLog(true);
-
+  const cancellation = new vscode.CancellationTokenSource();
+  const timeout = new AbortController();
   try {
-    const content = document.getText();
-    const settings = readCleanupSettingsForUri(document.uri);
-    const disqualifiedTypeNames = await discoverDisqualifiedTypeNamesForFile(document.uri, content);
-    let output: string;
-    if (settings.onlyChangedLines) {
-      const baseline: Baseline =
-        document.uri.scheme === 'file' ? await readHeadVersion(document.uri.fsPath) : { kind: 'unavailable', reason: 'the document is not a file' };
-      output = cleanupChangedLines(content, document.uri.fsPath, settings, baseline, disqualifiedTypeNames, issues.report);
-    } else {
-      await reportOneTypePerFileOnSave({ uri: document.uri, content, isOpen: true }, issues.report);
-      output = runCleanup(content, document.uri.fsPath, settings, disqualifiedTypeNames, issues.report);
+    const partial = isOutsideWorkspaceFolders(document.uri);
+    const skipBecause = partial ? (await externalFileCleanup(document.uri, false)).skipBecause : undefined;
+    if (skipBecause) {
+      logDiagnostic(`Cleanup on save of ${document.uri.fsPath} skipped: ${skipBecause}.`);
+
+      return [];
     }
 
+    const content = document.getText();
+    // The engine may still be starting, which the request's cancellation does not cut short.
+    const result = await Promise.race([
+      cleanupCSharpResult(
+        { uri: document.uri, content, isOpen: true },
+        { renameAcrossWorkspace: false, honorOnlyChangedLines: true, onSave: true, partial, token: cancellation.token }
+      ),
+      delay(SAVE_CLEANUP_TIMEOUT_MS, undefined, { signal: timeout.signal }),
+    ]);
+    if (result === undefined) {
+      cancellation.cancel();
+      logInfo(`Cleanup on save of ${document.uri.fsPath} skipped: the C# engine did not answer within ${SAVE_CLEANUP_TIMEOUT_MS} ms.`);
+
+      return [];
+    }
+
+    if (result.otherFiles.length > 0 || result.newFiles.length > 0) {
+      logInfo(
+        `Cleanup on save of ${document.uri.fsPath} skipped: it would also change or create other files (${[...result.otherFiles, ...result.newFiles]
+          .map((file) => file.path)
+          .join(', ')}); run Cleanup Active File instead.`
+      );
+
+      return [];
+    }
+
+    const output = engineOutcome(document.uri, result, 'Cleanup on save').text.replace(/^\uFEFF/, '');
     if (output === content) {
       return [];
     }
 
-    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(content.length));
+    if (document.getText() !== content) {
+      logInfo(`Cleanup on save of ${document.uri.fsPath} skipped: the document changed while the C# engine was cleaning it.`);
 
-    return [vscode.TextEdit.replace(fullRange, output)];
+      return [];
+    }
+
+    return [vscode.TextEdit.replace(new vscode.Range(document.positionAt(0), document.positionAt(content.length)), output)];
   } catch (err) {
-    logError(`Cleanup on save of ${document.uri.fsPath}`, err);
+    if (!reportEngineUnavailable(err)) {
+      logError(`Cleanup on save of ${document.uri.fsPath}`, err);
+    }
 
     return [];
   } finally {
-    issues.finish();
+    timeout.abort();
+    cancellation.dispose();
   }
 }

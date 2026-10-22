@@ -41,11 +41,7 @@ export async function isCopilotAvailable(): Promise<boolean> {
   return (await listCopilotModels()).length > 0;
 }
 
-export async function getCopilotChatCompletion(
-  systemPrompt: string,
-  userPrompt: string,
-  preferredModel?: string
-): Promise<string> {
+export async function getCopilotChatCompletion(systemPrompt: string, userPrompt: string, preferredModel?: string): Promise<string> {
   const model = await resolveCopilotModel(preferredModel);
   const messages = [vscode.LanguageModelChatMessage.User(`${systemPrompt}\n\n${userPrompt}`)];
   const request = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
@@ -66,9 +62,7 @@ async function resolveCopilotModel(preferredModel?: string): Promise<vscode.Lang
   const models = await listCopilotModels();
 
   if (models.length === 0) {
-    throw new Error(
-      'No GitHub Copilot Chat model is available. Install and sign in to GitHub Copilot Chat, or set codeJanitor.ai.provider to "custom".'
-    );
+    throw new Error('No GitHub Copilot Chat model is available. Install and sign in to GitHub Copilot Chat, or set codeJanitor.ai.provider to "custom".');
   }
 
   if (!preferredModel) {
@@ -85,7 +79,6 @@ async function resolveCopilotModel(preferredModel?: string): Promise<vscode.Lang
   const available = [...new Set(models.map((model) => model.family))].join(', ');
 
   throw new Error(
-    `GitHub Copilot offers no model matching "${preferredModel}". Available: ${available}. ` +
-      'Run "Code Janitor: Use GitHub Copilot Model..." to pick one.'
+    `GitHub Copilot offers no model matching "${preferredModel}". Available: ${available}. ` + 'Run "Code Janitor: Use GitHub Copilot Model..." to pick one.'
   );
 }

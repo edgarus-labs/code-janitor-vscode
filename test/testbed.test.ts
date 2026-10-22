@@ -4,33 +4,46 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CODE_STYLE_RULES } from '../src/cleanup/codeStyleRules';
-import { loadEditorConfigProperties, resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
-import { planOneTypePerFile, readOneTypePerFileRules } from '../src/cleanup/oneTypePerFile';
-import { applyRepositoryPolicy, readRepositoryPolicy } from '../src/cleanup/repositoryOverrides';
-import { diagnosticIdsOfOption, editorConfigCatalog } from '../src/cleanup/editorConfigRegistry';
-import { runCleanup, runLayoutCleanup } from '../src/cleanup/runCleanup';
-import { createTopLevelTypeSplitPlan } from '../src/cleanup/topLevelTypeSplit';
-import { insertRegionAroundLines, removeRegionsInLines } from '../src/reorganize/regionEdits';
-import { sortLineRange } from '../src/reorganize/sortLines';
-import { fixNamespace } from '../src/cleanup/transformations/namespaceAndNameOf';
-import { removeXmlDocumentationConverter } from '../src/cleanup/transformations/removeXmlDocumentation';
-import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
-import { createDefaultReorganizeSettings } from '../src/reorganize/settings';
+import { runLanguageCleanup } from '../src/cleanup/layoutCleanup';
+import { insertRegionAroundLines } from '../src/text/regionEdits';
+import { sortLineRange } from '../src/text/sortLines';
+import { CleanupSettings, createDefaultCommentFormatOptions, createDefaultSettings } from '../src/cleanup/types';
+import { createDefaultReorganizeSettings } from '../src/cleanup/reorganizeSettings';
 import { RazorFormatOptions } from '../src/razor/razorOptions';
 import { formatRazor } from '../src/razor/razorFormatter';
+import { EngineClient } from '../src/engine/client';
+import { CleanupResult } from '../src/engine/protocol';
+import { toEngineSettings } from '../src/engine/settings';
+import { startEngine } from '../scripts/engineServer';
 import { dotnetAvailable } from './helpers/dotnetBuild';
-import { Check, failure } from './helpers/testbedChecks';
+import { Check, failure, selectScenarios } from './helpers/testbedChecks';
 
 /**
  * The Code Janitor testbed (https://github.com/edgarus-labs/code-janitor-testbed): a solution of
  * deliberately bad C#, one class per cleanup option, and `scenarios.json` saying what each cleanup
- * must do to it. Every scenario runs here on its own file with only its own option on; then the
- * whole solution is built and run before and after the cleanup, so a rewrite that breaks the build
- * or changes what the code prints fails the test.
+ * must do to it. Every scenario runs here on its own file with only its own option on - the C# ones
+ * through one C# engine process (the Roslyn server) for the whole file, the layout and Razor ones
+ * in the extension; then the whole solution is built and run before and after the cleanup, so a
+ * rewrite that breaks the build or changes what the code prints fails the test.
  *
  * The testbed is found through `CODE_JANITOR_TESTBED` (CI clones it), else in a sibling folder.
+ * `CODE_JANITOR_TESTBED_SCENARIOS` (scenario ids or option names, e.g. `CsharpPreferBraces` or
+ * `removeRegions,csharp_prefer_braces`) runs only those scenarios: their cleanups, alone and with every
+ * option on, are the only ones applied before the solution is built and run.
  */
-type EntryPoint = 'cleanup' | 'layout' | 'razor' | 'removeXmlDoc' | 'fixNamespace' | 'splitTypes' | 'oneTypePerFile' | 'sortLines' | 'insertRegion' | 'removeRegion';
+type EntryPoint =
+  | 'cleanup'
+  | 'layout'
+  | 'razor'
+  | 'removeXmlDoc'
+  | 'fixNamespace'
+  | 'splitTypes'
+  | 'oneTypePerFile'
+  | 'sortLines'
+  | 'insertRegion'
+  | 'removeRegion'
+  | 'moveMember'
+  | 'deleteMember';
 
 interface ScenarioEntry {
   readonly id: string;
@@ -53,6 +66,10 @@ interface ScenarioEntry {
   readonly fileDir?: string;
   readonly userSettings?: Record<string, unknown>;
   readonly userCodeStyle?: Record<string, string>;
+  /** `moveMember`: the arguments of the command (the member and the sibling it goes before or after). */
+  readonly move?: Record<string, unknown>;
+  /** `deleteMember`: the arguments of the command (the line and name of the member). */
+  readonly delete?: Record<string, unknown>;
   readonly checks: Check[];
 }
 
@@ -62,12 +79,8 @@ const NOT_A_TEXT_TRANSFORMATION: Readonly<Record<string, string>> = {
   renamePublicSymbolsAcrossWorkspace: 'renames public symbols across the projects of a workspace (batch commands only)',
 };
 
-/**
- * `.editorconfig` keys and diagnostics the engine supports that no scenario can exercise, with the reason.
- * Everything else the registry lists must have a scenario.
- */
-const EXEMPT_KEYS: Readonly<Record<string, string>> = {};
-const EXEMPT_DIAGNOSTICS: Readonly<Record<string, string>> = {};
+/** Entry points that are actions on a place in the file, not normalizations: doing one twice does something else. */
+const ACTIONS: ReadonlySet<EntryPoint> = new Set(['insertRegion', 'moveMember', 'deleteMember']);
 
 /** The `.editorconfig` a scenario ships next to its file, or an empty text. */
 function scenarioEditorConfig(root: string, scenario: ScenarioEntry): string {
@@ -90,13 +103,21 @@ function findTestbed(): string | undefined {
 const testbed = findTestbed();
 const suite = testbed ? describe : describe.skip;
 
-// CI sets this: a missing testbed must fail the build instead of skipping the test.
-if (!testbed && process.env.CODE_JANITOR_REQUIRE_TESTBED === '1') {
-  describe('the Code Janitor testbed', () => {
-    it('is present', () => {
-      throw new Error('The testbed was not found: clone edgarus-labs/code-janitor-testbed into .testbed or set CODE_JANITOR_TESTBED.');
+const TESTBED_MISSING =
+  'The testbed was not found. Download it (it is public): git clone https://github.com/edgarus-labs/code-janitor-testbed .testbed ' +
+  'in the repository root, or set CODE_JANITOR_TESTBED to a clone of it.';
+
+if (!testbed) {
+  if (process.env.CODE_JANITOR_REQUIRE_TESTBED === '1') {
+    // CI sets this: a missing testbed must fail the build instead of skipping the test.
+    describe('the Code Janitor testbed', () => {
+      it('is present', () => {
+        throw new Error(TESTBED_MISSING);
+      });
     });
-  });
+  } else {
+    console.warn(`[testbed tests skipped] ${TESTBED_MISSING}`);
+  }
 }
 
 function allOff(): CleanupSettings {
@@ -146,6 +167,8 @@ function settingsOf(scenario: ScenarioEntry): CleanupSettings {
       const defaults = createDefaultReorganizeSettings();
       const override = value as Partial<typeof defaults>;
       settings.reorganize = { ...defaults, ...override, memberTypes: { ...defaults.memberTypes, ...(override.memberTypes ?? {}) } };
+    } else if (key === 'commentFormat') {
+      settings.commentFormat = { ...createDefaultCommentFormatOptions(), ...(value as object) };
     } else {
       settings[key] = value;
     }
@@ -173,55 +196,56 @@ interface Produced {
   readonly issues: string[];
 }
 
-function produce(root: string, scenario: ScenarioEntry, text: string, collect: boolean): Produced {
-  const file = path.join(root, scenario.file);
-  const issues: string[] = [];
+/** An engine result as a scenario sees it; the issues are listed like the engine's own testbed tests list them. */
+function fromResult(result: CleanupResult): Produced {
+  return {
+    output: result.text,
+    created: new Map(result.newFiles.map((created) => [path.basename(created.path), created.text])),
+    issues: [
+      ...result.issues,
+      ...result.unresolved.map((unresolved) => `unresolved: ${unresolved.id} line ${unresolved.line}: ${unresolved.message} (${unresolved.reason})`),
+    ],
+  };
+}
+
+async function produce(engine: EngineClient, root: string, scenario: ScenarioEntry, text: string): Promise<Produced> {
+  const filePath = path.join(root, scenario.file);
   const created = new Map<string, string>();
+  const issues: string[] = [];
+  const document = { filePath, text, settings: toEngineSettings(settingsOf(scenario)) };
   switch (scenario.entry) {
     case 'razor':
       return { output: formatRazor(text, scenario.razor ?? {}), created, issues };
     case 'layout':
-      return { output: runLayoutCleanup(text, file, settingsOf(scenario)), created, issues };
-    case 'removeXmlDoc':
-      return { output: removeXmlDocumentationConverter.apply(text), created, issues };
-    case 'fixNamespace':
-      return { output: fixNamespace(text, scenario.expectedNamespace ?? ''), created, issues };
-    case 'splitTypes': {
-      const plan = createTopLevelTypeSplitPlan(text, file);
-      for (const planned of plan.newFiles) {
-        created.set(path.basename(planned.filePath), planned.content);
-      }
-
-      return { output: plan.updatedSource, created, issues };
-    }
-
+      return {
+        output: await runLanguageCleanup(text, filePath, settingsOf(scenario), {
+          formatComments: async (comments, commentPrefix) =>
+            (await engine.formatCommentText({ text: comments, commentPrefix, settings: document.settings })).text,
+        }),
+        created,
+        issues,
+      };
     case 'sortLines':
       return { output: sortLineRange(text, scenario.lines![0], scenario.lines![1]), created, issues };
     case 'insertRegion':
       return { output: insertRegionAroundLines(text, scenario.lines![0], scenario.lines![1], createDefaultSettings()).text, created, issues };
+    case 'removeXmlDoc':
+      return fromResult(await engine.command({ ...document, command: 'removeXmlDocumentation' }));
+    case 'fixNamespace':
+      return fromResult(await engine.command({ ...document, command: 'fixNamespace', arguments: { namespace: scenario.expectedNamespace ?? '' } }));
+    case 'splitTypes':
+      return fromResult(await engine.command({ ...document, command: 'splitTopLevelTypes' }));
     case 'removeRegion':
-      return { output: removeRegionsInLines(text, scenario.lines![0], scenario.lines![1]), created, issues };
-    case 'oneTypePerFile': {
-      const rules = readOneTypePerFileRules(loadEditorConfigProperties(file));
-      if (!rules) {
-        return { output: text, created, issues };
-      }
-
-      const reserved = new Set(fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith('.cs')));
-      const outcome = planOneTypePerFile(text, file, rules, reserved);
-      for (const planned of outcome.plan.newFiles) {
-        created.set(path.basename(planned.filePath), planned.content);
-      }
-
-      return { output: outcome.plan.hasChanges ? outcome.plan.updatedSource : text, created, issues: [...outcome.issues] };
-    }
-
-    default: {
-      const user = settingsOf(scenario);
-      const settings = scenario.policy ? applyRepositoryPolicy(user, readRepositoryPolicy(path.dirname(file))) : user;
-
-      return { output: runCleanup(text, file, settings, undefined, (issue) => collect && issues.push(`${issue.kind}: ${issue.detail}`)), created, issues };
-    }
+      return fromResult(
+        await engine.command({ ...document, command: 'removeRegions', arguments: { startLine: scenario.lines![0], endLine: scenario.lines![1] } })
+      );
+    case 'moveMember':
+      return fromResult(await engine.command({ ...document, command: 'moveMember', arguments: scenario.move }));
+    case 'deleteMember':
+      return fromResult(await engine.command({ ...document, command: 'deleteMember', arguments: scenario.delete }));
+    default:
+      // `cleanup` and `oneTypePerFile`; the engine applies the scenario's `.codejanitor` and `.editorconfig` itself.
+      return fromResult(await engine.cleanup(document));
   }
 }
 
@@ -229,12 +253,27 @@ interface Outcome extends Produced {
   readonly scenario: ScenarioEntry;
   readonly input: string;
   readonly again: string;
+  /** The engine failed on the scenario. */
+  readonly error?: string;
 }
 
-function clean(root: string, scenario: ScenarioEntry, input: string): Outcome {
-  const first = produce(root, scenario, input, true);
+async function clean(engine: EngineClient, root: string, scenario: ScenarioEntry, input: string): Promise<Outcome> {
+  try {
+    const first = await produce(engine, root, scenario, input);
 
-  return { ...first, scenario, input, again: produce(root, scenario, first.output, false).output };
+    return { ...first, scenario, input, again: ACTIONS.has(scenario.entry) ? first.output : (await produce(engine, root, scenario, first.output)).output };
+  } catch (err) {
+    return { output: input, created: new Map(), issues: [], scenario, input, again: input, error: (err as Error).message };
+  }
+}
+
+/** The output of a cleanup through the engine with `settings`, or the error it failed with. */
+async function cleanupText(engine: EngineClient, filePath: string, text: string, settings: CleanupSettings): Promise<string> {
+  try {
+    return (await engine.cleanup({ filePath, text, settings: toEngineSettings(settings) })).text;
+  } catch (err) {
+    return `the engine failed: ${(err as Error).message}`;
+  }
 }
 
 function copyTestbed(source: string): string {
@@ -258,7 +297,12 @@ function buildAndRun(root: string): BuildRun {
   let output = '';
   let failed: string | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const build = spawnSync('dotnet', ['build', path.join(root, 'CodeJanitor.Testbed.slnx'), '-nologo', '-v:q', '-clp:NoSummary', '-nodeReuse:false'], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 900_000 });
+    const build = spawnSync('dotnet', ['build', path.join(root, 'CodeJanitor.Testbed.slnx'), '-nologo', '-v:q', '-clp:NoSummary', '-nodeReuse:false'], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: 900_000,
+    });
     output = `${build.stdout}\n${build.stderr}`;
     // A build can fail without a coded error line: a timeout, a signal, the CLR error left after the last attempt, a bare `error :`.
     failed = build.error
@@ -271,7 +315,10 @@ function buildAndRun(root: string): BuildRun {
     }
   }
 
-  const coded = output.split('\n').filter((line) => /: error [A-Z]+\d+/.test(line)).map((line) => line.replace(root, '').replace(/\s+\[[^\]]+\]$/, ''));
+  const coded = output
+    .split('\n')
+    .filter((line) => /: error [A-Z]+\d+/.test(line))
+    .map((line) => line.replace(root, '').replace(/\s+\[[^\]]+\]$/, ''));
   const errors = [...new Set(coded.length === 0 && failed ? [failed] : coded)];
   const lines = new Map<string, string>();
   if (errors.length === 0) {
@@ -299,26 +346,33 @@ function differences(before: BuildRun, after: BuildRun): string[] {
 suite('the Code Janitor testbed', () => {
   // Vitest also runs the body of a skipped suite to collect it: without a testbed there is nothing to read.
   const root = testbed ?? '';
-  const scenarios = testbed ? (JSON.parse(fs.readFileSync(path.join(root, 'scenarios.json'), 'utf8')) as { scenarios: ScenarioEntry[] }).scenarios : [];
+  const all = testbed ? (JSON.parse(fs.readFileSync(path.join(root, 'scenarios.json'), 'utf8')) as { scenarios: ScenarioEntry[] }).scenarios : [];
+  const scenarios = selectScenarios(all, process.env.CODE_JANITOR_TESTBED_SCENARIOS);
   const outcomes = new Map<string, Outcome>();
   const folders: string[] = [];
+  let engine: EngineClient;
 
-  beforeAll(() => {
+  // One engine process for the whole file; the scenarios run one after the other.
+  beforeAll(async () => {
+    engine = startEngine([root], (line) => process.env.CODE_JANITOR_TESTBED_LOG === '1' && console.log(line));
     for (const scenario of scenarios) {
-      outcomes.set(scenario.id, clean(root, scenario, fs.readFileSync(path.join(root, scenario.file), 'utf8')));
+      outcomes.set(scenario.id, await clean(engine, root, scenario, fs.readFileSync(path.join(root, scenario.file), 'utf8')));
     }
+  }, 1_800_000);
+  afterAll(async () => {
+    await engine?.shutdown();
+    folders.forEach((folder) => fs.rmSync(folder, { recursive: true, force: true }));
   });
-  afterAll(() => folders.forEach((folder) => fs.rmSync(folder, { recursive: true, force: true })));
 
   describe('coverage of the options', () => {
     it('has a scenario for every Code Style rule', () => {
-      const covered = new Set(scenarios.flatMap((scenario) => Object.keys(scenario.codeStyle)));
+      const covered = new Set(all.flatMap((scenario) => Object.keys(scenario.codeStyle)));
 
       expect(CODE_STYLE_RULES.map((rule) => rule.key).filter((key) => !covered.has(key))).toEqual([]);
     });
 
     it('has a scenario for every cleanup setting that changes the text of a file', () => {
-      const covered = new Set(scenarios.flatMap((scenario) => Object.keys(scenario.settings)));
+      const covered = new Set(all.flatMap((scenario) => Object.keys(scenario.settings)));
       const settings = createDefaultSettings() as unknown as Record<string, unknown>;
       const options = Object.keys(settings).filter((key) => typeof settings[key] === 'boolean' && !(key in NOT_A_TEXT_TRANSFORMATION));
 
@@ -326,54 +380,19 @@ suite('the Code Janitor testbed', () => {
     });
 
     it('has a scenario for every Reorganize option', () => {
-      const covered = new Set(scenarios.flatMap((scenario) => Object.keys((scenario.settings.reorganize ?? {}) as Record<string, unknown>)));
+      const covered = new Set(all.flatMap((scenario) => Object.keys((scenario.settings.reorganize ?? {}) as Record<string, unknown>)));
       const options = Object.keys(createDefaultReorganizeSettings());
 
       expect(options.filter((key) => !covered.has(key))).toEqual([]);
     });
 
-    it('has a scenario for every .editorconfig key the engine supports', () => {
-      const used = new Set<string>();
-      for (const scenario of scenarios) {
-        for (const line of scenarioEditorConfig(root, scenario).split(/\r?\n/)) {
-          const key = /^\s*([\w.*-]+)\s*=/.exec(line)?.[1];
-          if (key) {
-            used.add(key);
-          }
-        }
-      }
-
-      expect(editorConfigCatalog().settings.filter((key) => !used.has(key) && !(key in EXEMPT_KEYS))).toEqual([]);
-    });
-
-    it('has a scenario for every diagnostic the engine honors', () => {
-      const covered = new Set<string>();
-      for (const scenario of scenarios) {
-        const text = scenarioEditorConfig(root, scenario);
-        const props = resolveEditorConfigProperties([{ directory: '/r', text: `root = true\n[*.cs]\n${text}` }], '/r/a.cs');
-        for (const line of text.split(/\r?\n/)) {
-          const explicit = /^\s*dotnet_diagnostic\.(\w+)\.severity/.exec(line)?.[1];
-          if (explicit) {
-            covered.add(explicit);
-          }
-
-          const key = /^\s*([\w*.-]+)\s*=/.exec(line)?.[1];
-          if (key && /^dotnet_naming_rule\./.test(key)) {
-            covered.add('IDE1006');
-          }
-
-          if (key) {
-            diagnosticIdsOfOption(props, key).split(/[/,]/).forEach((id) => covered.add(id.trim()));
-          }
-        }
-      }
-
-      expect([...editorConfigCatalog().diagnostics].filter((id) => !covered.has(id) && !(id in EXEMPT_DIAGNOSTICS)).sort()).toEqual([]);
-    });
-
     it('names every scenario class after its option', () => {
-      const names = (key: string): string => key.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
-      for (const scenario of scenarios.filter((candidate) => candidate.category === 'CodeStyle')) {
+      const names = (key: string): string =>
+        key
+          .split('_')
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join('');
+      for (const scenario of all.filter((candidate) => candidate.category === 'CodeStyle')) {
         expect(Object.keys(scenario.codeStyle).map(names), scenario.id).toContain(scenario.id);
       }
     });
@@ -382,7 +401,10 @@ suite('the Code Janitor testbed', () => {
   describe('each cleanup, alone, on its own bad code', () => {
     it.each(scenarios.map((scenario) => [scenario.id, scenario] as const))('%s', (_id, scenario) => {
       const outcome = outcomes.get(scenario.id) as Outcome;
-      const problems = scenario.checks.map((check) => failure(check, outcome.output, outcome.issues)).filter((problem): problem is string => problem !== undefined);
+      expect(outcome.error, `${scenario.id}: the engine failed`).toBeUndefined();
+      const problems = scenario.checks
+        .map((check) => failure(check, outcome.output, outcome.issues))
+        .filter((problem): problem is string => problem !== undefined);
 
       if (scenario.knownDefect) {
         expect(problems.length, `${scenario.id} now works: remove its knownDefect (${scenario.knownDefect})`).toBeGreaterThan(0);
@@ -398,33 +420,47 @@ suite('the Code Janitor testbed', () => {
       }
 
       expect([...outcome.created.keys()].sort(), 'the files the command creates').toEqual([...(scenario.createdFiles ?? [])].sort());
-      // Wrapping lines in a region is an action, not a normalization: doing it twice nests another region.
-      if (scenario.entry !== 'insertRegion') {
+      // An action (wrapping lines in a region, moving or deleting a member) is not a normalization: it is not repeated.
+      if (!ACTIONS.has(scenario.entry)) {
         expect(outcome.again, 'cleaning the result again must change nothing').toBe(outcome.output);
       }
     });
   });
 
   describe('with its option turned off', () => {
-    it.each(scenarios.filter((scenario) => scenario.entry === 'cleanup' && !scenario.everything && !scenario.editorconfig && !scenario.alwaysOn && !scenario.policy).map((scenario) => [scenario.id, scenario] as const))('%s leaves its code alone', (_id, scenario) => {
+    it.each(
+      scenarios
+        .filter((scenario) => scenario.entry === 'cleanup' && !scenario.everything && !scenario.editorconfig && !scenario.alwaysOn && !scenario.policy)
+        .map((scenario) => [scenario.id, scenario] as const)
+    )('%s leaves its code alone', async (_id, scenario) => {
       const input = fs.readFileSync(path.join(root, scenario.file), 'utf8');
       const off: ScenarioEntry = { ...scenario, settings: {}, codeStyle: {} };
 
-      expect(runCleanup(input, path.join(root, scenario.file), settingsOf(off), undefined, () => undefined)).toBe(input);
+      expect(await cleanupText(engine, path.join(root, scenario.file), input, settingsOf(off))).toBe(input);
     });
   });
 
   describe('with every severity turned off', () => {
-    it.each(scenarios.filter((scenario) => scenario.editorconfig && !scenario.alwaysOn && !scenario.reportOnly && scenario.entry === 'cleanup' && !scenario.policy && !scenario.fileDir).map((scenario) => [scenario.id, scenario] as const))('%s leaves its code alone', (_id, scenario) => {
+    it.each(
+      scenarios
+        .filter(
+          (scenario) =>
+            scenario.editorconfig && !scenario.alwaysOn && !scenario.reportOnly && scenario.entry === 'cleanup' && !scenario.policy && !scenario.fileDir
+        )
+        .map((scenario) => [scenario.id, scenario] as const)
+    )('%s leaves its code alone', async (_id, scenario) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-silent-'));
       folders.push(dir);
       fs.writeFileSync(path.join(dir, '.editorconfig'), `root = true\n\n[*.cs]\n${silenced(scenarioEditorConfig(root, scenario))}\n`);
-      fs.writeFileSync(path.join(dir, 'Scenarios.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>');
+      fs.writeFileSync(
+        path.join(dir, 'Scenarios.csproj'),
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
+      );
       const file = path.join(dir, path.basename(scenario.file));
       const input = fs.readFileSync(path.join(root, scenario.file), 'utf8');
       fs.writeFileSync(file, input);
 
-      expect(runCleanup(input, file, allOff(), undefined, () => undefined)).toBe(input);
+      expect(await cleanupText(engine, file, input, allOff())).toBe(input);
     });
   });
 
@@ -445,16 +481,26 @@ suite('the Code Janitor testbed', () => {
       expect(differences(before, after), 'a cleanup changed what the code does').toEqual([]);
     }, 900_000);
 
-    it('builds and prints the same values with every option on at once', () => {
+    it('builds and prints the same values with every option on at once', async () => {
       const copy = copyTestbed(root);
       folders.push(copy);
       const before = buildAndRun(copy);
       expect(before.errors, 'the unfixed testbed must build').toEqual([]);
       expect(before.lines.size).toBeGreaterThan(0);
       const everything: CleanupSettings = { ...everythingOn(), reorganize: { ...createDefaultReorganizeSettings(), runAtStartOfCleanup: true } };
-      for (const scenario of scenarios.filter((candidate) => candidate.entry === 'cleanup')) {
-        const file = path.join(copy, scenario.file);
-        fs.writeFileSync(file, runCleanup(fs.readFileSync(file, 'utf8'), file, everything));
+      // The copy is its own workspace; each file is cleaned as the files cleaned before it left their project.
+      const copyEngine = startEngine([copy]);
+      try {
+        for (const scenario of scenarios.filter((candidate) => candidate.entry === 'cleanup')) {
+          const file = path.join(copy, scenario.file);
+          const result = await copyEngine.cleanup({ filePath: file, text: fs.readFileSync(file, 'utf8'), settings: toEngineSettings(everything) });
+          for (const changed of [{ path: file, text: result.text }, ...result.otherFiles, ...result.newFiles]) {
+            fs.writeFileSync(changed.path, changed.text);
+            copyEngine.fileChanged(changed.path);
+          }
+        }
+      } finally {
+        await copyEngine.shutdown();
       }
 
       const after = buildAndRun(copy);

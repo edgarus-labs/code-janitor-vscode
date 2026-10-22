@@ -12,9 +12,8 @@ export function registerAiUtilityCommands(context: vscode.ExtensionContext): voi
     vscode.commands.registerCommand('codeJanitor.selectCopilotModel', () => selectCopilotModel()),
 
     vscode.commands.registerCommand('codeJanitor.testAiConnection', async () => {
-      const result = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Code Janitor: testing AI connection...' },
-        () => testAiConnection(context)
+      const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Code Janitor: testing AI connection...' }, () =>
+        testAiConnection(context)
       );
 
       if (result.succeeded) {

@@ -10,8 +10,15 @@
     "type": "git",
     "url": "https://github.com/edgarus-labs/code-janitor-vscode.git"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Code Janitor loads the workspace's MSBuild projects and analyzers, which run code from the workspace."
+    }
+  },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.90.0",
+    "node": ">=22"
   },
   "categories": [
     "Formatters",
@@ -297,6 +304,77 @@
         "command": "codeJanitor.formatRazor",
         "title": "Format Razor",
         "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.aiGenerateTestsToTargetCoverage",
+        "title": "Generate Tests to Target Coverage (AI)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.showSpade",
+        "title": "Show Spade (Code Structure)",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.spade.refresh",
+        "title": "Refresh",
+        "category": "Code Janitor",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codeJanitor.spade.search",
+        "title": "Search Members",
+        "category": "Code Janitor",
+        "icon": "$(search)"
+      },
+      {
+        "command": "codeJanitor.spade.clearSearch",
+        "title": "Clear Member Search",
+        "category": "Code Janitor",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "codeJanitor.spade.sortByFile",
+        "title": "Sort Members in File Order",
+        "category": "Code Janitor",
+        "icon": "$(list-ordered)"
+      },
+      {
+        "command": "codeJanitor.spade.sortByType",
+        "title": "Sort Members by Type",
+        "category": "Code Janitor",
+        "icon": "$(symbol-class)"
+      },
+      {
+        "command": "codeJanitor.spade.sortAlphabetically",
+        "title": "Sort Members Alphabetically",
+        "category": "Code Janitor",
+        "icon": "$(case-sensitive)"
+      },
+      {
+        "command": "codeJanitor.spade.goToMember",
+        "title": "Go to Member",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.spade.deleteMember",
+        "title": "Delete",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.spade.findReferences",
+        "title": "Find All References",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.spade.insertRegion",
+        "title": "Insert Region Around",
+        "category": "Code Janitor"
+      },
+      {
+        "command": "codeJanitor.spade.removeRegion",
+        "title": "Remove Region",
+        "category": "Code Janitor"
       }
     ],
     "menus": {
@@ -307,15 +385,211 @@
         },
         {
           "command": "codeJanitor.insertRegion",
-          "when": "editorLangId == csharp && editorHasSelection"
+          "when": "(editorLangId == csharp && editorHasSelection) && config.codeJanitor.features.regions"
         },
         {
           "command": "codeJanitor.removeRegion",
-          "when": "editorLangId == csharp"
+          "when": "(editorLangId == csharp) && config.codeJanitor.features.regions"
         },
         {
           "command": "codeJanitor.formatRazor",
           "when": "resourceExtname == .razor || resourceExtname == .cshtml || editorLangId == razor || editorLangId == aspnetcorerazor"
+        },
+        {
+          "command": "codeJanitor.spade.refresh",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.search",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.clearSearch",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.sortByFile",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.sortByType",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.sortAlphabetically",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.goToMember",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.deleteMember",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.findReferences",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.insertRegion",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.spade.removeRegion",
+          "when": "false"
+        },
+        {
+          "command": "codeJanitor.cleanupActiveFile",
+          "when": "config.codeJanitor.features.cleanupActiveCode"
+        },
+        {
+          "command": "codeJanitor.previewCleanupActiveFile",
+          "when": "config.codeJanitor.features.cleanupActiveCode"
+        },
+        {
+          "command": "codeJanitor.cleanupSelectedFiles",
+          "when": "config.codeJanitor.features.cleanupSelectedCode"
+        },
+        {
+          "command": "codeJanitor.previewCleanupSelectedFiles",
+          "when": "config.codeJanitor.features.cleanupSelectedCode"
+        },
+        {
+          "command": "codeJanitor.cleanupOpenFiles",
+          "when": "config.codeJanitor.features.cleanupOpenCode"
+        },
+        {
+          "command": "codeJanitor.previewCleanupOpenFiles",
+          "when": "config.codeJanitor.features.cleanupOpenCode"
+        },
+        {
+          "command": "codeJanitor.cleanupWorkspace",
+          "when": "config.codeJanitor.features.cleanupAllCode"
+        },
+        {
+          "command": "codeJanitor.previewCleanupWorkspace",
+          "when": "config.codeJanitor.features.cleanupAllCode"
+        },
+        {
+          "command": "codeJanitor.cleanupChangedFiles",
+          "when": "config.codeJanitor.features.cleanupChangedFiles"
+        },
+        {
+          "command": "codeJanitor.previewCleanupChangedFiles",
+          "when": "config.codeJanitor.features.cleanupChangedFiles"
+        },
+        {
+          "command": "codeJanitor.toggleCleanupOnSave",
+          "when": "config.codeJanitor.features.settingCleanupOnSave"
+        },
+        {
+          "command": "codeJanitor.closeAllReadOnly",
+          "when": "config.codeJanitor.features.closeAllReadOnly"
+        },
+        {
+          "command": "codeJanitor.collapseExplorer",
+          "when": "config.codeJanitor.features.collapseAllExplorer"
+        },
+        {
+          "command": "codeJanitor.collapseSelectedInExplorer",
+          "when": "config.codeJanitor.features.collapseSelectedExplorer"
+        },
+        {
+          "command": "codeJanitor.formatComments",
+          "when": "config.codeJanitor.features.commentFormat"
+        },
+        {
+          "command": "codeJanitor.formatCommentsSelectedFiles",
+          "when": "config.codeJanitor.features.commentFormat"
+        },
+        {
+          "command": "codeJanitor.findInExplorer",
+          "when": "config.codeJanitor.features.findInExplorer"
+        },
+        {
+          "command": "codeJanitor.joinLines",
+          "when": "config.codeJanitor.features.joinLines"
+        },
+        {
+          "command": "codeJanitor.toggleReadOnly",
+          "when": "config.codeJanitor.features.readOnlyToggle"
+        },
+        {
+          "command": "codeJanitor.removeRegions",
+          "when": "config.codeJanitor.features.regions"
+        },
+        {
+          "command": "codeJanitor.removeRegionsSelectedFiles",
+          "when": "config.codeJanitor.features.regions"
+        },
+        {
+          "command": "codeJanitor.reorganizeActiveFile",
+          "when": "config.codeJanitor.features.reorganizeActiveCode"
+        },
+        {
+          "command": "codeJanitor.reorganizeSelectedFiles",
+          "when": "config.codeJanitor.features.reorganizeActiveCode"
+        },
+        {
+          "command": "codeJanitor.sortLines",
+          "when": "config.codeJanitor.features.sortLines"
+        },
+        {
+          "command": "codeJanitor.showSpade",
+          "when": "config.codeJanitor.features.spade"
+        },
+        {
+          "command": "codeJanitor.switchFile",
+          "when": "config.codeJanitor.features.switchFile"
+        },
+        {
+          "command": "codeJanitor.generateXmlDoc",
+          "when": "config.codeJanitor.features.addXmlDoc"
+        },
+        {
+          "command": "codeJanitor.generateXmlDocSelectedFiles",
+          "when": "config.codeJanitor.features.addXmlDoc"
+        },
+        {
+          "command": "codeJanitor.generateXmlDocWorkspace",
+          "when": "config.codeJanitor.features.addXmlDoc"
+        },
+        {
+          "command": "codeJanitor.removeXmlDoc",
+          "when": "config.codeJanitor.features.removeXmlDoc"
+        },
+        {
+          "command": "codeJanitor.removeXmlDocSelectedFiles",
+          "when": "config.codeJanitor.features.removeXmlDoc"
+        },
+        {
+          "command": "codeJanitor.removeXmlDocWorkspace",
+          "when": "config.codeJanitor.features.removeXmlDoc"
+        },
+        {
+          "command": "codeJanitor.aiExplain",
+          "when": "config.codeJanitor.features.aiExplain"
+        },
+        {
+          "command": "codeJanitor.aiGenerateUnitTests",
+          "when": "config.codeJanitor.features.aiGenerateUnitTests"
+        },
+        {
+          "command": "codeJanitor.aiRefactor",
+          "when": "config.codeJanitor.features.aiCleanRefactor"
+        },
+        {
+          "command": "codeJanitor.cleanAndRefactor",
+          "when": "config.codeJanitor.features.aiCleanRefactor"
+        },
+        {
+          "command": "codeJanitor.aiCodeReview",
+          "when": "config.codeJanitor.features.aiCodeReview"
+        },
+        {
+          "command": "codeJanitor.aiGenerateTestsToTargetCoverage",
+          "when": "config.codeJanitor.features.aiTargetCoverage"
         }
       ],
       "explorer/context": [
@@ -334,7 +608,7 @@
         {
           "command": "codeJanitor.cleanupActiveFile",
           "group": "1_modification",
-          "when": "resourceLangId == csharp"
+          "when": "(resourceLangId == csharp) && config.codeJanitor.features.cleanupActiveCode"
         },
         {
           "submenu": "codeJanitor.editorSubmenu",
@@ -350,15 +624,18 @@
       "codeJanitor.editorSubmenu": [
         {
           "command": "codeJanitor.previewCleanupActiveFile",
-          "group": "0_cleanup"
+          "group": "0_cleanup",
+          "when": "config.codeJanitor.features.cleanupActiveCode"
         },
         {
           "command": "codeJanitor.generateXmlDoc",
-          "group": "1_doc"
+          "group": "1_doc",
+          "when": "config.codeJanitor.features.addXmlDoc"
         },
         {
           "command": "codeJanitor.removeXmlDoc",
-          "group": "1_doc"
+          "group": "1_doc",
+          "when": "config.codeJanitor.features.removeXmlDoc"
         },
         {
           "command": "codeJanitor.fixNamespace",
@@ -366,11 +643,13 @@
         },
         {
           "command": "codeJanitor.removeRegions",
-          "group": "2_code"
+          "group": "2_code",
+          "when": "config.codeJanitor.features.regions"
         },
         {
           "command": "codeJanitor.formatComments",
-          "group": "2_code"
+          "group": "2_code",
+          "when": "config.codeJanitor.features.commentFormat"
         },
         {
           "command": "codeJanitor.splitTopLevelTypes",
@@ -378,23 +657,28 @@
         },
         {
           "command": "codeJanitor.aiExplain",
-          "group": "3_ai"
+          "group": "3_ai",
+          "when": "config.codeJanitor.features.aiExplain"
         },
         {
           "command": "codeJanitor.aiCodeReview",
-          "group": "3_ai"
+          "group": "3_ai",
+          "when": "config.codeJanitor.features.aiCodeReview"
         },
         {
           "command": "codeJanitor.aiRefactor",
-          "group": "3_ai"
+          "group": "3_ai",
+          "when": "config.codeJanitor.features.aiCleanRefactor"
         },
         {
           "command": "codeJanitor.cleanAndRefactor",
-          "group": "3_ai"
+          "group": "3_ai",
+          "when": "config.codeJanitor.features.aiCleanRefactor"
         },
         {
           "command": "codeJanitor.aiGenerateUnitTests",
-          "group": "3_ai"
+          "group": "3_ai",
+          "when": "config.codeJanitor.features.aiGenerateUnitTests"
         },
         {
           "command": "codeJanitor.aiCoverageReport",
@@ -405,39 +689,51 @@
           "group": "3_ai"
         },
         {
+          "command": "codeJanitor.aiGenerateTestsToTargetCoverage",
+          "group": "3_ai",
+          "when": "config.codeJanitor.features.aiTargetCoverage"
+        },
+        {
           "command": "codeJanitor.switchFile",
-          "group": "4_navigation"
+          "group": "4_navigation",
+          "when": "config.codeJanitor.features.switchFile"
         },
         {
           "command": "codeJanitor.findInExplorer",
-          "group": "4_navigation"
+          "group": "4_navigation",
+          "when": "config.codeJanitor.features.findInExplorer"
         },
         {
           "command": "codeJanitor.reorganizeActiveFile",
-          "group": "2_code"
+          "group": "2_code",
+          "when": "config.codeJanitor.features.reorganizeActiveCode"
         },
         {
           "command": "codeJanitor.insertRegion",
           "group": "2_code",
-          "when": "editorHasSelection"
+          "when": "(editorHasSelection) && config.codeJanitor.features.regions"
         },
         {
           "command": "codeJanitor.removeRegion",
-          "group": "2_code"
+          "group": "2_code",
+          "when": "config.codeJanitor.features.regions"
         }
       ],
       "codeJanitor.explorerSubmenu": [
         {
           "command": "codeJanitor.cleanupSelectedFiles",
-          "group": "0_cleanup"
+          "group": "0_cleanup",
+          "when": "config.codeJanitor.features.cleanupSelectedCode"
         },
         {
           "command": "codeJanitor.generateXmlDocSelectedFiles",
-          "group": "1_doc"
+          "group": "1_doc",
+          "when": "config.codeJanitor.features.addXmlDoc"
         },
         {
           "command": "codeJanitor.removeXmlDocSelectedFiles",
-          "group": "1_doc"
+          "group": "1_doc",
+          "when": "config.codeJanitor.features.removeXmlDoc"
         },
         {
           "command": "codeJanitor.fixNamespaceSelectedFiles",
@@ -445,11 +741,13 @@
         },
         {
           "command": "codeJanitor.removeRegionsSelectedFiles",
-          "group": "2_code"
+          "group": "2_code",
+          "when": "config.codeJanitor.features.regions"
         },
         {
           "command": "codeJanitor.formatCommentsSelectedFiles",
-          "group": "2_code"
+          "group": "2_code",
+          "when": "config.codeJanitor.features.commentFormat"
         },
         {
           "command": "codeJanitor.splitTopLevelTypesSelectedFiles",
@@ -465,27 +763,84 @@
         },
         {
           "command": "codeJanitor.previewCleanupSelectedFiles",
-          "group": "0_cleanup"
+          "group": "0_cleanup",
+          "when": "config.codeJanitor.features.cleanupSelectedCode"
         },
         {
           "command": "codeJanitor.collapseSelectedInExplorer",
           "group": "4_view",
-          "when": "explorerResourceIsFolder"
+          "when": "(explorerResourceIsFolder) && config.codeJanitor.features.collapseSelectedExplorer"
         },
         {
           "command": "codeJanitor.reorganizeSelectedFiles",
-          "group": "2_code"
+          "group": "2_code",
+          "when": "config.codeJanitor.features.reorganizeActiveCode"
         }
       ],
       "editor/title/context": [
         {
           "command": "codeJanitor.switchFile",
           "group": "1_codejanitor",
-          "when": "resourceScheme == file"
+          "when": "(resourceScheme == file) && config.codeJanitor.features.switchFile"
         },
         {
           "command": "codeJanitor.closeAllReadOnly",
-          "group": "1_codejanitor"
+          "group": "1_codejanitor",
+          "when": "config.codeJanitor.features.closeAllReadOnly"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "codeJanitor.spade.search",
+          "when": "view == codeJanitor.spade",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codeJanitor.spade.clearSearch",
+          "when": "view == codeJanitor.spade && codeJanitor.spade.searching",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codeJanitor.spade.refresh",
+          "when": "view == codeJanitor.spade",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codeJanitor.spade.sortByFile",
+          "when": "view == codeJanitor.spade",
+          "group": "sort@1"
+        },
+        {
+          "command": "codeJanitor.spade.sortByType",
+          "when": "view == codeJanitor.spade",
+          "group": "sort@2"
+        },
+        {
+          "command": "codeJanitor.spade.sortAlphabetically",
+          "when": "view == codeJanitor.spade",
+          "group": "sort@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "codeJanitor.spade.findReferences",
+          "when": "view == codeJanitor.spade && viewItem =~ /^(type|member)$/",
+          "group": "1_navigation"
+        },
+        {
+          "command": "codeJanitor.spade.insertRegion",
+          "when": "view == codeJanitor.spade && viewItem =~ /^(type|member)$/",
+          "group": "2_region"
+        },
+        {
+          "command": "codeJanitor.spade.removeRegion",
+          "when": "view == codeJanitor.spade && viewItem == region",
+          "group": "2_region"
+        },
+        {
+          "command": "codeJanitor.spade.deleteMember",
+          "when": "view == codeJanitor.spade && viewItem =~ /^(type|member|region)$/",
+          "group": "9_delete"
         }
       ]
     },
@@ -556,6 +911,17 @@
             "type": "string",
             "default": ".cpp .h||.c .h||.xaml .xaml.cs||.xml .xsd||.ascx .ascx.cs||.aspx .aspx.cs||.master .master.cs||.cshtml .cshtml.cs||.razor .razor.cs .razor.css||.cs .designer.cs||.ts .html .css",
             "markdownDescription": "Groups of related file endings for **Switch to Related File**: endings separated by spaces, groups by `||`. The command opens the first existing file with another ending of the group (endings listed after the current one are tried first)."
+          },
+          "codeJanitor.general.diagnosticsMode": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Write diagnostic messages to the **Code Janitor** output channel: why a file was skipped, what each cleanup step did, and the informational messages of batch commands. Errors and warnings are always written."
+          },
+          "codeJanitor.dotnetPath": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "markdownDescription": "The `dotnet` executable that runs the C# engine (the Roslyn server C# cleanup uses). Empty: `dotnet` on `PATH`, then the usual install folders. C# cleanup needs .NET 10 or newer; loading projects needs the .NET SDK."
           }
         }
       },
@@ -566,7 +932,107 @@
           "codeJanitor.cleanup.includeOtherFileTypes": {
             "type": "boolean",
             "default": false,
-            "description": "Also clean up files that are not C#. Only the layout rules run for them (BOM, tabs, trailing whitespace, blank lines, final newline)."
+            "markdownDescription": "Also clean up files that are not C#: the languages turned on under `codeJanitor.cleanup.fileTypes.*`. They get the cleanup steps that apply to their language (layout, file header, comment and markup rules), never the C# rules."
+          },
+          "codeJanitor.cleanup.fileTypes.vb": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up Visual Basic (`.vb`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.fsharp": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up F# (`.fs`, `.fsi`, `.fsx`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.cpp": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up C and C++ (`.c`, `.cpp`, `.h`, `.hpp`, ...) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.css": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up CSS (`.css`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.less": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up LESS (`.less`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.scss": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up SCSS (`.scss`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.javascript": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.typescript": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.json": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up JSON (`.json`, `.jsonc`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.html": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up HTML (`.html`, `.htm`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.xaml": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up XAML (`.xaml`, `.axaml`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.xml": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up XML (`.xml`, `.config`, `.csproj`, `.props`, `.targets`, `.resx`, ...) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.php": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up PHP (`.php`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.powershell": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up PowerShell (`.ps1`, `.psm1`, `.psd1`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.r": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up R (`.r`) files while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.fileTypes.everythingElse": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Clean up files of any other type (with the layout rules only) while `#codeJanitor.cleanup.includeOtherFileTypes#` is on."
+          },
+          "codeJanitor.cleanup.excludeT4GeneratedCode": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Never clean up a file generated by a T4 text template: a file next to a `.tt` template with the same name (`Model.tt` generates `Model.cs`)."
+          },
+          "codeJanitor.cleanup.performPartialCleanupOnExternal": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "always",
+              "never"
+            ],
+            "enumDescriptions": [
+              "Ask before cleaning up a file outside the workspace folders.",
+              "Clean up files outside the workspace folders without the steps that need the workspace (using directives, workspace renames, type splits).",
+              "Never clean up files outside the workspace folders."
+            ],
+            "default": "ask",
+            "markdownDescription": "What cleanup does with a file that is not in any workspace folder."
           }
         }
       },
@@ -588,6 +1054,19 @@
             "type": "boolean",
             "default": false,
             "markdownDescription": "Convert a single top-level block-scoped namespace to a file-scoped namespace: `namespace Demo { ... }` becomes `namespace Demo;`, removing one level of indentation. Only for a project known to use C# 10 or newer (otherwise the namespace stays block-scoped and the reason is reported); skipped when the file declares more than one or a nested namespace, has types outside the namespace, or a `#if`/`#region` block that straddles the braces. Using directives inside the namespace stay there."
+          },
+          "codeJanitor.cleanup.usingStatementsToReinsertWhenRemoved": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "markdownDescription": "Using directives that cleanup puts back when it removes them as unused (IDE0005), for example `using System.Linq;`."
+          },
+          "codeJanitor.cleanup.skipOrganizeUsingsDuringCleanupOnSave": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Cleanup on save does not sort or remove using directives (`#codeJanitor.cleanup.organizeUsings#` and IDE0005); the cleanup commands still do."
           }
         }
       },
@@ -605,10 +1084,180 @@
             "default": true,
             "description": "Insert blank line padding before/after declarations, regions and using blocks."
           },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeClasses": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before classes. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterClasses": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after classes. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeDelegates": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before delegates. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterDelegates": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after delegates. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeEnumerations": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before enumerations. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterEnumerations": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after enumerations. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeEvents": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before events. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterEvents": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after events. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeFieldsMultiLine": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before multi-line fields. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterFieldsMultiLine": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after multi-line fields. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeFieldsSingleLine": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Insert a blank line before single-line fields."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterFieldsSingleLine": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Insert a blank line after single-line fields."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeInterfaces": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before interfaces. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterInterfaces": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after interfaces. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeMethods": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before methods. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterMethods": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after methods. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeNamespaces": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before namespaces. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterNamespaces": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after namespaces. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforePropertiesMultiLine": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before multi-line properties. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterPropertiesMultiLine": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after multi-line properties. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforePropertiesSingleLine": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Insert a blank line before single-line properties."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterPropertiesSingleLine": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Insert a blank line after single-line properties."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeStructs": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before structs. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterStructs": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after structs. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeRegionTags": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before `#region` tags. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterRegionTags": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after `#region` tags. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeEndRegionTags": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before `#endregion` tags. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterEndRegionTags": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after `#endregion` tags. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeUsingStatementBlocks": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before blocks of using directives. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingAfterUsingStatementBlocks": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line after blocks of using directives. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeCaseStatements": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Insert a blank line before `case` and `default` labels that follow a statement. When not set, follows `#codeJanitor.cleanup.insertBlankLinePadding#`."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBeforeSingleLineComments": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Insert a blank line before a single-line comment that follows code."
+          },
+          "codeJanitor.cleanup.insertBlankLinePaddingBetweenPropertiesMultiLineAccessors": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Insert a blank line between the accessors of a multi-line property."
+          },
           "codeJanitor.cleanup.insertBlankLineBeforeReturnAndThrow": {
             "type": "boolean",
             "default": false,
             "description": "Insert a blank line before 'return' and 'throw' statements."
+          },
+          "codeJanitor.cleanup.insertBlankSpaceBeforeSelfClosingAngleBrackets": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Markup files (XML, XAML, HTML): `<br/>` becomes `<br />`."
           }
         }
       },
@@ -665,6 +1314,16 @@
             "type": "boolean",
             "default": true,
             "description": "Collapse two or more consecutive blank lines into one."
+          },
+          "codeJanitor.cleanup.removeBlankLinesBeforeClosingTags": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Markup files (XML, XAML, HTML): remove the blank lines before a closing tag."
+          },
+          "codeJanitor.cleanup.removeBlankSpacesBeforeClosingAngleBrackets": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Markup files (XML, XAML, HTML): `<a >` becomes `<a>` and `<a / >` keeps one space only before `/>`."
           }
         }
       },
@@ -680,12 +1339,12 @@
           "codeJanitor.cleanup.updateSingleLineMethods": {
             "type": "boolean",
             "default": true,
-            "markdownDescription": "Reformat single-line methods and properties onto multiple lines, so `void M() { }` becomes a normal braced body. Keeps declaration layout consistent across the file."
+            "markdownDescription": "Reformat single-line methods onto multiple lines, so `void M() { }` becomes a normal braced body. Keeps declaration layout consistent across the file."
           },
           "codeJanitor.cleanup.updateAccessorsToBothBeSingleLineOrMultiLine": {
             "type": "boolean",
             "default": false,
-            "markdownDescription": "Ensure both accessors of a property use the same layout: if one is multi-line, `get`/`set` are both expanded, otherwise both are collapsed onto one line."
+            "markdownDescription": "Make the accessors of a property or event use the same layout as the first accessor: expanded when the first is multi-line, collapsed onto one line when it is single-line."
           }
         }
       },
@@ -1414,6 +2073,96 @@
             "order": 1,
             "description": "Configured C# file header text. Leave empty to disable file header cleanup."
           },
+          "codeJanitor.cleanup.fileHeaderVB": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "Visual Basic file header text, written with the language's comment syntax (`'`). Leave empty to leave the header of Visual Basic files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderFSharp": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "F# file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of F# files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderCPlusPlus": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "C/C++ file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of C/C++ files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderCSS": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "CSS file header text, written with the language's comment syntax (`/* */`). Leave empty to leave the header of CSS files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderLESS": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "LESS file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of LESS files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderSCSS": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "SCSS file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of SCSS files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderJavaScript": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "JavaScript file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of JavaScript files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderTypeScript": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "TypeScript file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of TypeScript files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderJSON": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "JSON file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of JSON files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderHTML": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "HTML file header text, written with the language's comment syntax (`<!-- -->`). Leave empty to leave the header of HTML files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderXAML": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "XAML file header text, written with the language's comment syntax (`<!-- -->`). Leave empty to leave the header of XAML files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderXML": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "XML file header text, written with the language's comment syntax (`<!-- -->`). Leave empty to leave the header of XML files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderPHP": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "PHP file header text, written with the language's comment syntax (`//`). Leave empty to leave the header of PHP files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderPowerShell": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "PowerShell file header text, written with the language's comment syntax (`#`). Leave empty to leave the header of PowerShell files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
+          "codeJanitor.cleanup.fileHeaderR": {
+            "type": "string",
+            "default": "",
+            "order": 1,
+            "markdownDescription": "R file header text, written with the language's comment syntax (`#`). Leave empty to leave the header of R files alone. Placed and updated as `#codeJanitor.cleanup.fileHeaderPosition#` and `#codeJanitor.cleanup.fileHeaderUpdateMode#` say (below a shebang line, an XML declaration or a PHP opening tag)."
+          },
           "codeJanitor.cleanup.fileHeaderPosition": {
             "type": "string",
             "enum": [
@@ -1451,7 +2200,70 @@
           "codeJanitor.cleanup.formatComments": {
             "type": "boolean",
             "default": false,
-            "markdownDescription": "Normalize comment spacing and alignment, so `//comment` becomes `// comment` and comment blocks line up consistently."
+            "markdownDescription": "Format comments during cleanup: wrap them at `#codeJanitor.formatting.commentWrapColumn#`, normalize their spacing and lay out XML documentation as the `codeJanitor.formatting.comment*` settings say. The **Format Comments** command works whatever this says."
+          },
+          "codeJanitor.formatting.commentWrapColumn": {
+            "type": "number",
+            "default": 100,
+            "minimum": 20,
+            "markdownDescription": "The column comments are wrapped at."
+          },
+          "codeJanitor.formatting.commentSkipWrapOnLastWord": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Do not wrap a comment line when only its last word crosses the wrap column."
+          },
+          "codeJanitor.formatting.commentIgnoreLinesStartingWith": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "ReSharper disable ",
+              "ReSharper enable "
+            ],
+            "markdownDescription": "Comment lines starting with one of these (after the comment prefix) are never reformatted."
+          },
+          "codeJanitor.formatting.commentXmlAlignParamTags": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "XML documentation: align the text of consecutive `<param>` tags."
+          },
+          "codeJanitor.formatting.commentXmlKeepTagsTogether": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "XML documentation: keep a tag and its content together when wrapping."
+          },
+          "codeJanitor.formatting.commentXmlSpaceSingleTags": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "XML documentation: write self-closing tags with a space, `<see cref=\"X\" />`."
+          },
+          "codeJanitor.formatting.commentXmlSpaceTags": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "XML documentation: put a space between a tag and its content, `<c> x </c>`."
+          },
+          "codeJanitor.formatting.commentXmlSplitAllTags": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "XML documentation: put the content of every tag on its own lines."
+          },
+          "codeJanitor.formatting.commentXmlSplitSummaryTagToMultipleLines": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "XML documentation: put the content of `<summary>` on its own lines."
+          },
+          "codeJanitor.formatting.commentXmlTagsToLowerCase": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "XML documentation: write tag names in lower case."
+          },
+          "codeJanitor.formatting.commentXmlValueIndent": {
+            "type": "number",
+            "default": 0,
+            "minimum": 0,
+            "markdownDescription": "XML documentation: extra indentation, in spaces, of the content of a tag split on its own lines."
           }
         }
       },
@@ -1711,30 +2523,35 @@
               "Use a custom OpenAI/Claude-compatible HTTP endpoint (e.g. Ollama, LM Studio, Azure OpenAI, Anthropic-compatible proxy)."
             ],
             "default": "copilot",
+            "scope": "application",
             "order": 1,
             "description": "AI provider used for AI-assisted features (e.g. XML documentation generation)."
           },
           "codeJanitor.ai.copilotModel": {
             "type": "string",
             "default": "",
+            "scope": "application",
             "order": 2,
             "markdownDescription": "Copilot model to use, matched against the models your own GitHub Copilot subscription currently exposes (no fixed list is built in). Leave empty to use whichever model Copilot offers first. Run **Code Janitor: Use GitHub Copilot Model...** to pick one from your actual, live model list instead of typing a name here."
           },
           "codeJanitor.ai.customEndpointUrl": {
             "type": "string",
             "default": "",
+            "scope": "application",
             "order": 3,
             "markdownDescription": "Custom OpenAI/Claude-compatible chat completions endpoint URL, used when `#codeJanitor.ai.provider#` is `custom`."
           },
           "codeJanitor.ai.customModel": {
             "type": "string",
             "default": "",
+            "scope": "application",
             "order": 4,
             "description": "Model name sent to the custom endpoint."
           },
           "codeJanitor.ai.customApiKeyHeader": {
             "type": "string",
             "default": "Authorization",
+            "scope": "application",
             "order": 5,
             "markdownDescription": "HTTP header name used to send the custom endpoint API key. The key itself is stored in secret storage by the command **Code Janitor: Set Custom AI Endpoint API Key**, never in settings."
           },
@@ -1815,6 +2632,37 @@
             "default": "",
             "order": 9,
             "description": "Regular expression matched against 'Namespace.Type.Method'. Matching methods are skipped."
+          },
+          "codeJanitor.ai.xmlDoc.runDuringCleanup": {
+            "type": "boolean",
+            "default": false,
+            "scope": "application",
+            "markdownDescription": "Also generate missing XML documentation with AI during cleanup (not on save), within the budget below. Off by default: it sends code to the configured AI provider."
+          },
+          "codeJanitor.ai.xmlDoc.maxRequestsPerCleanup": {
+            "type": "number",
+            "default": 25,
+            "minimum": 1,
+            "markdownDescription": "The most AI requests one cleanup run makes for XML documentation; the members past it are left undocumented and reported."
+          },
+          "codeJanitor.ai.xmlDoc.maxEstimatedTokensPerCleanup": {
+            "type": "number",
+            "default": 8000,
+            "minimum": 1,
+            "markdownDescription": "The most tokens (estimated) one cleanup run spends on XML documentation."
+          },
+          "codeJanitor.ai.xmlDoc.globalTimeoutSeconds": {
+            "type": "number",
+            "default": 10,
+            "minimum": 1,
+            "markdownDescription": "The longest, in seconds, one cleanup run spends on XML documentation; the files not documented by then are left as cleaned."
+          },
+          "codeJanitor.ai.xmlDoc.maxParallelFiles": {
+            "type": "number",
+            "default": 4,
+            "minimum": 1,
+            "maximum": 16,
+            "markdownDescription": "How many files one cleanup run documents at the same time."
           }
         }
       },
@@ -1831,36 +2679,314 @@
             "type": "string",
             "default": "Moq",
             "description": "Mocking library the AI should use when generating unit tests (e.g. Moq, NSubstitute, FakeItEasy)."
+          },
+          "codeJanitor.ai.tests.targetCoveragePercentage": {
+            "type": "number",
+            "default": 90,
+            "minimum": 10,
+            "maximum": 100,
+            "markdownDescription": "The branch coverage **Generate Tests to Target Coverage (AI)** aims for."
+          },
+          "codeJanitor.ai.tests.maxCoverageIterations": {
+            "type": "number",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 10,
+            "markdownDescription": "How many rounds of test generation **Generate Tests to Target Coverage (AI)** makes at most before it stops short of the target."
           }
         }
+      },
+      {
+        "title": "Cleaning: External Tools",
+        "order": 10.5,
+        "properties": {
+          "codeJanitor.cleanup.runFormatDocument": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "After the cleanup of an open file, run the formatter VS Code has for its language (**Format Document**). For C# that is the formatter of the installed C# extension, not Code Janitor."
+          },
+          "codeJanitor.thirdParty.otherCleaningCommands": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "scope": "application",
+            "default": [],
+            "markdownDescription": "IDs of VS Code commands to run on an open file after its cleanup, in order, for example `xamlstyler.formatFile` or a command of another formatting extension. A command that fails is reported in the output channel and does not stop the cleanup."
+          }
+        }
+      },
+      {
+        "title": "Spade (Code Structure)",
+        "order": 16,
+        "properties": {
+          "codeJanitor.spade.primarySortOrder": {
+            "type": "string",
+            "enum": [
+              "file",
+              "type",
+              "alphabetical"
+            ],
+            "enumDescriptions": [
+              "In the order of the file.",
+              "By kind of member (fields, constructors, properties, methods, ...), as Reorganize orders them.",
+              "By name."
+            ],
+            "default": "file",
+            "markdownDescription": "How the Spade view orders the members of a type."
+          },
+          "codeJanitor.spade.secondarySortTypeByName": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "When sorting by type, order the members of the same kind by name."
+          },
+          "codeJanitor.spade.showItemComplexity": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Show the McCabe cyclomatic complexity of methods and properties."
+          },
+          "codeJanitor.spade.complexityWarningThreshold": {
+            "type": "number",
+            "default": 10,
+            "minimum": 1,
+            "markdownDescription": "Complexity from which a member is shown as a warning."
+          },
+          "codeJanitor.spade.complexityAlertThreshold": {
+            "type": "number",
+            "default": 15,
+            "minimum": 1,
+            "markdownDescription": "Complexity from which a member is shown as an alert."
+          },
+          "codeJanitor.spade.showItemMetadata": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Show the access level and modifiers (`static`, `async`, `abstract`, ...) of each member."
+          },
+          "codeJanitor.spade.showItemTypes": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Show the type of fields and properties and the return type of methods."
+          },
+          "codeJanitor.spade.showMethodParameters": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Show the parameters of methods, constructors and indexers."
+          },
+          "codeJanitor.spade.centerOnWhole": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Selecting a member reveals it in the center of the editor; otherwise the editor scrolls as little as possible."
+          },
+          "codeJanitor.spade.synchronizeOutlining": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Collapsing or expanding a type or region in the Spade view folds or unfolds it in the editor."
+          }
+        }
+      },
+      {
+        "title": "Navigation",
+        "order": 17,
+        "properties": {
+          "codeJanitor.collapsing.collapseExplorerWhenOpened": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Collapse every folder of the Explorer when a workspace is opened."
+          }
+        }
+      },
+      {
+        "title": "Features",
+        "order": 18,
+        "properties": {
+          "codeJanitor.features.cleanupActiveCode": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Cleanup Active File and its preview in the menus and the Command Palette."
+          },
+          "codeJanitor.features.cleanupSelectedCode": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Cleanup Selected Files and its preview in the menus and the Command Palette."
+          },
+          "codeJanitor.features.cleanupOpenCode": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Cleanup Open Files and its preview in the menus and the Command Palette."
+          },
+          "codeJanitor.features.cleanupAllCode": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Cleanup Workspace and its preview in the menus and the Command Palette."
+          },
+          "codeJanitor.features.cleanupChangedFiles": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Cleanup Changed Files (Git) and its preview in the menus and the Command Palette."
+          },
+          "codeJanitor.features.settingCleanupOnSave": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Toggle Cleanup on Save in the menus and the Command Palette."
+          },
+          "codeJanitor.features.closeAllReadOnly": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Close All Read-Only Editors in the menus and the Command Palette."
+          },
+          "codeJanitor.features.collapseAllExplorer": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Collapse Explorer in the menus and the Command Palette."
+          },
+          "codeJanitor.features.collapseSelectedExplorer": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Collapse Selected in Explorer in the menus and the Command Palette."
+          },
+          "codeJanitor.features.commentFormat": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Format Comments in the menus and the Command Palette."
+          },
+          "codeJanitor.features.findInExplorer": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Find in Explorer in the menus and the Command Palette."
+          },
+          "codeJanitor.features.joinLines": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Join Lines in the menus and the Command Palette."
+          },
+          "codeJanitor.features.readOnlyToggle": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Toggle Read-Only in the menus and the Command Palette."
+          },
+          "codeJanitor.features.regions": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Remove Regions, Insert Region and Remove Region in the menus and the Command Palette."
+          },
+          "codeJanitor.features.reorganizeActiveCode": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Reorganize in the menus and the Command Palette."
+          },
+          "codeJanitor.features.sortLines": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Sort Lines in the menus and the Command Palette."
+          },
+          "codeJanitor.features.spade": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer the Spade view (code structure) in the menus and the Command Palette."
+          },
+          "codeJanitor.features.switchFile": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Switch to Related File in the menus and the Command Palette."
+          },
+          "codeJanitor.features.addXmlDoc": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Generate XML Documentation (AI) in the menus and the Command Palette."
+          },
+          "codeJanitor.features.removeXmlDoc": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Remove XML Documentation in the menus and the Command Palette."
+          },
+          "codeJanitor.features.aiExplain": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Explain Code (AI) in the menus and the Command Palette."
+          },
+          "codeJanitor.features.aiGenerateUnitTests": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Generate Unit Tests (AI) in the menus and the Command Palette."
+          },
+          "codeJanitor.features.aiCleanRefactor": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Clean and Refactor (AI) in the menus and the Command Palette."
+          },
+          "codeJanitor.features.aiCodeReview": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Review Code (AI) in the menus and the Command Palette."
+          },
+          "codeJanitor.features.aiTargetCoverage": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Offer Generate Tests to Target Coverage (AI) in the menus and the Command Palette."
+          }
+        }
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "codeJanitor.spade",
+          "name": "Spade",
+          "icon": "$(symbol-structure)",
+          "contextualTitle": "Code Janitor",
+          "when": "config.codeJanitor.features.spade"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "codeJanitor.spade",
+        "contents": "Open a C# file to see its structure."
       }
     ]
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "node esbuild.js --production",
+    "build": "npm run build:server && node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "test": "vitest run",
     "pretest:e2e": "npm run build && tsc -p tsconfig.e2e.json",
     "test:e2e": "vscode-test",
-    "smoke-test": "node scripts/smoke-test.js",
     "generate:editorconfig": "vite-node scripts/generate-editorconfig.ts",
     "verify:compile": "vite-node scripts/compile-oracle.ts --",
     "test:testbed": "vitest run test/testbed.test.ts",
     "check": "vite-node scripts/check.ts --",
     "perf:corpus": "vite-node scripts/perf-corpus.ts --",
     "verify:bundle": "node scripts/verify-bundle.js",
-    "package": "npm run build && npx vsce package"
+    "package": "npm run build && vsce package",
+    "build:server": "dotnet publish server/src/CodeJanitor.Server/CodeJanitor.Server.csproj -c Release -o dist/server --nologo -v quiet",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,js,mjs,cjs}\" && dotnet format whitespace server/CodeJanitor.Server.slnx",
+    "format:check": "prettier --check \"**/*.{ts,js,mjs,cjs}\" && dotnet format whitespace server/CodeJanitor.Server.slnx --verify-no-changes",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.23.0",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.72.0",
     "vite-node": "^3.2.4",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "vscode-jsonrpc": "^8.2.1"
   }
 }

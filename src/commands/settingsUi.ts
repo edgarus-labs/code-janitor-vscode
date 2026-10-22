@@ -1,11 +1,11 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CODE_STYLE_GROUPS, CODE_STYLE_RULES, formatCodeStyleScopeSetting, formatCodeStyleSetting, parseCodeStyleSetting } from '../cleanup/codeStyleRules';
-import { editorConfigOverrideNotes } from '../cleanup/overrideNotes';
 import { readRepositoryPolicy } from '../cleanup/repositoryOverrides';
 import { CleanupSettings, createDefaultSettings } from '../cleanup/types';
 import { vscodeSettingOf } from './repositorySettings';
-import { readCleanupSettings } from './settings';
+import { engine, userEngineSettings } from '../engine/vscodeEngine';
+import { logInfo } from '../logging';
 
 /**
  * A simple settings panel, in the spirit of the source extension's Options window.
@@ -38,6 +38,10 @@ export interface SettingDescriptor {
   label: string;
   description: string;
   defaultValue: unknown;
+  /** For `number`: the manifest's bounds, and whether only whole numbers are valid. */
+  minimum?: number;
+  maximum?: number;
+  integer?: boolean;
   options?: { value: string; description?: string }[];
   /** For `codeStyleRules`: the catalog of rules, grouped by `group` in the order listed. */
   rules?: CodeStyleRuleDescriptor[];
@@ -58,6 +62,8 @@ interface RawSetting {
   enumDescriptions?: string[];
   order?: number;
   items?: { type?: string };
+  minimum?: number;
+  maximum?: number;
 }
 
 interface RawSection {
@@ -103,6 +109,9 @@ function describeSetting(key: string, raw: RawSetting): SettingDescriptor {
     label: humanize(key),
     description: plainText(raw.markdownDescription ?? raw.description ?? ''),
     defaultValue: raw.default,
+    ...(raw.minimum !== undefined && { minimum: raw.minimum }),
+    ...(raw.maximum !== undefined && { maximum: raw.maximum }),
+    ...(raw.type === 'integer' && { integer: true }),
     options: raw.enum?.map((value, index) => ({ value, description: raw.enumDescriptions?.[index] })),
   };
 }
@@ -161,6 +170,59 @@ function nonEmpty<T>(value: Record<string, T>): Record<string, T> | undefined {
   return Object.keys(value).length > 0 ? value : undefined;
 }
 
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The value of a number field's text, or undefined when it is empty or not a number (the setting then falls back to its default). */
+export function parseNumberInput(text: string): number | undefined {
+  const trimmed = text.trim();
+  if (trimmed === '') {
+    return undefined;
+  }
+
+  const parsed = Number(trimmed);
+
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/** The lines of a list field, each exactly as typed; only blank lines are dropped. */
+export function parseListInput(text: string): string[] {
+  return text.split(/\r?\n/).filter((line) => line.trim() !== '');
+}
+
+/** Why `value` cannot be stored for `setting` (undefined means "reset to the default" and is always valid); undefined when it can. */
+function invalidValueReason(setting: SettingDescriptor, value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  switch (setting.kind) {
+    case 'boolean':
+      return typeof value === 'boolean' ? undefined : `'${setting.key}' must be true or false.`;
+    case 'string':
+      return typeof value === 'string' ? undefined : `'${setting.key}' must be text.`;
+    case 'enum':
+      return typeof value === 'string' && setting.options?.some((option) => option.value === value)
+        ? undefined
+        : `'${setting.key}' must be one of its listed choices.`;
+    case 'stringArray':
+      return Array.isArray(value) && value.every((entry) => typeof entry === 'string') ? undefined : `'${setting.key}' must be a list of text lines.`;
+    case 'codeStyleRules':
+      return typeof value === 'object' && value !== null && !Array.isArray(value) ? undefined : `'${setting.key}' must be an object of rules.`;
+    case 'number':
+      if (typeof value !== 'number' || !Number.isFinite(value) || (setting.integer && !Number.isInteger(value))) {
+        return `'${setting.key}' must be ${setting.integer ? 'a whole' : 'a'} number.`;
+      }
+
+      if ((setting.minimum !== undefined && value < setting.minimum) || (setting.maximum !== undefined && value > setting.maximum)) {
+        return `'${setting.key}' must be between ${setting.minimum ?? 'any'} and ${setting.maximum ?? 'any'}.`;
+      }
+
+      return undefined;
+  }
+}
+
 /** What the workspace's `.editorconfig` and `.codejanitor` override, as the panel shows it (see `cleanup/overrideNotes.ts`). */
 export interface OverrideNotes {
   /** Note by setting id (`codeJanitor.cleanup.convertToVarWhenApparent`). */
@@ -171,10 +233,11 @@ export interface OverrideNotes {
 
 /**
  * The notes for the first workspace folder: a setting (or rule) its `.codejanitor` lists, or its
- * `.editorconfig` decides (which wins over both), shows `Overridden by <file>: <key> in <path>` and
- * is disabled: changing it has no effect on cleanup there. Nothing without a workspace.
+ * `.editorconfig` decides (which wins over both, as the C# engine reports it), shows
+ * `Overridden by <file>: <key> in <path>` and is disabled: changing it has no effect on cleanup there.
+ * Nothing without a workspace; only the `.codejanitor` notes when the engine is unavailable.
  */
-export function readOverrideNotes(): OverrideNotes {
+export async function readOverrideNotes(): Promise<OverrideNotes> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const notes: OverrideNotes = { notes: {}, ruleNotes: {} };
   if (!root) {
@@ -200,7 +263,14 @@ export function readOverrideNotes(): OverrideNotes {
 
   const ruleKeys = new Set(CODE_STYLE_RULES.map((rule) => rule.key));
   const decidedKeys = new Map<string, string>();
-  for (const [name, note] of editorConfigOverrideNotes(root, readCleanupSettings(root))) {
+  let engineNotes: Readonly<Record<string, string>> = {};
+  try {
+    engineNotes = (await engine().overrideNotes({ directory: root, settings: userEngineSettings() })).notes;
+  } catch (err) {
+    logInfo(`Settings panel: the .editorconfig notes are not shown (${errorText(err)}).`);
+  }
+
+  for (const [name, note] of Object.entries(engineNotes)) {
     if (ruleKeys.has(name)) {
       notes.ruleNotes[name] = note;
     } else {
@@ -237,9 +307,7 @@ function settingNotes(keyNotes: ReadonlyMap<string, string>): Record<string, str
 }
 
 export function registerSettingsUiCommand(context: vscode.ExtensionContext): void {
-  context.subscriptions.push(
-    vscode.commands.registerCommand('codeJanitor.openSettings', () => SettingsPanel.show(context))
-  );
+  context.subscriptions.push(vscode.commands.registerCommand('codeJanitor.openSettings', () => SettingsPanel.show(context)));
 }
 
 /** Test-only: resets the singleton so each test starts with a fresh panel. */
@@ -257,11 +325,14 @@ class SettingsPanel {
   private readonly disposables: vscode.Disposable[] = [];
 
   private scope: 'user' | 'workspace' = 'user';
+  private disposed = false;
+  private readonly settingsByKey: ReadonlyMap<string, SettingDescriptor>;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly sections: SettingSection[]
   ) {
+    this.settingsByKey = new Map(sections.flatMap((section) => section.settings).map((setting) => [setting.key, setting]));
     this.panel.webview.html = buildHtml(this.panel.webview);
 
     this.disposables.push(
@@ -297,14 +368,14 @@ class SettingsPanel {
   private handleMessage(message: { type?: string; key?: string; value?: unknown; scope?: string }): void {
     switch (message?.type) {
       case 'ready':
-        void this.panel.webview.postMessage({
+        void this.send(async () => ({
           type: 'init',
           sections: this.sections,
           values: this.readValues(),
-          ...readOverrideNotes(),
+          ...(await readOverrideNotes()),
           scope: this.scope,
           workspaceAvailable: (vscode.workspace.workspaceFolders?.length ?? 0) > 0,
-        });
+        }));
 
         return;
 
@@ -346,6 +417,15 @@ class SettingsPanel {
   }
 
   private async update(key: string, value: unknown): Promise<void> {
+    const setting = this.settingsByKey.get(key);
+    const problem = setting ? invalidValueReason(setting, value) : `'${key}' is not a Code Janitor setting.`;
+    if (problem) {
+      void vscode.window.showErrorMessage(`Code Janitor: ${problem}`);
+      this.postValues();
+
+      return;
+    }
+
     try {
       const config = vscode.workspace.getConfiguration();
       // Only valid rules are stored (an empty selection is the default, which is not written). VS Code
@@ -353,18 +433,34 @@ class SettingsPanel {
       // off with `null`; nothing lies below the User scope.
       const stored =
         key === CODE_STYLE_RULES_SETTING && value !== undefined
-          ? nonEmpty(formatCodeStyleScopeSetting(parseCodeStyleSetting(value), this.scope === 'workspace' ? Object.keys(parseCodeStyleSetting(config.inspect(key)?.globalValue)) : []))
+          ? nonEmpty(
+              formatCodeStyleScopeSetting(
+                parseCodeStyleSetting(value),
+                this.scope === 'workspace' ? Object.keys(parseCodeStyleSetting(config.inspect(key)?.globalValue)) : []
+              )
+            )
           : value;
       await config.update(key, stored, this.target);
     } catch (err) {
-      void vscode.window.showErrorMessage(`Code Janitor: ${(err as Error).message}`);
+      void vscode.window.showErrorMessage(`Code Janitor: ${errorText(err)}`);
     }
   }
 
-  /** Clearing a value makes the setting fall back to its default, which is what "reset" means. */
+  /** Clearing a value makes the setting fall back to its default, which is what "reset" means; only values set in the current scope are written. */
   private async resetAll(): Promise<void> {
-    for (const section of this.sections) {
-      for (const setting of section.settings) {
+    const choice = await vscode.window.showWarningMessage(
+      `Reset every Code Janitor setting in the ${this.scope === 'workspace' ? 'Workspace' : 'User'} settings to its default?`,
+      { modal: true },
+      'Reset'
+    );
+    if (choice !== 'Reset') {
+      return;
+    }
+
+    const config = vscode.workspace.getConfiguration();
+    for (const setting of this.settingsByKey.values()) {
+      const inspected = config.inspect(setting.key);
+      if ((this.scope === 'workspace' ? inspected?.workspaceValue : inspected?.globalValue) !== undefined) {
         await this.update(setting.key, undefined);
       }
     }
@@ -379,8 +475,7 @@ class SettingsPanel {
     for (const section of this.sections) {
       for (const setting of section.settings) {
         const inspected = config.inspect(setting.key);
-        const override =
-          this.scope === 'workspace' ? inspected?.workspaceValue : inspected?.globalValue;
+        const override = this.scope === 'workspace' ? inspected?.workspaceValue : inspected?.globalValue;
 
         if (setting.kind === 'codeStyleRules') {
           // VS Code merges the rules across scopes: Workspace scope shows the rules in effect there (the
@@ -398,10 +493,26 @@ class SettingsPanel {
   }
 
   private postValues(): void {
-    void this.panel.webview.postMessage({ type: 'values', values: this.readValues(), ...readOverrideNotes(), scope: this.scope });
+    void this.send(async () => ({ type: 'values', values: this.readValues(), ...(await readOverrideNotes()), scope: this.scope }));
+  }
+
+  /** Posts the message `build` makes unless the panel was closed meanwhile; a failure is reported instead of left unhandled. */
+  private async send(build: () => Promise<object>): Promise<void> {
+    try {
+      const message = await build();
+      if (!this.disposed) {
+        await this.panel.webview.postMessage(message);
+      }
+    } catch (err) {
+      logInfo(`Settings panel: ${errorText(err)}`);
+      if (!this.disposed) {
+        void vscode.window.showErrorMessage(`Code Janitor: the settings could not be loaded (${errorText(err)}).`);
+      }
+    }
   }
 
   private dispose(): void {
+    this.disposed = true;
     SettingsPanel.current = undefined;
 
     while (this.disposables.length > 0) {
@@ -515,7 +626,7 @@ function buildHtml(webview: vscode.Webview): string {
 <div class="layout">
   <nav id="toc" class="toc"></nav>
   <main>
-    <input id="search" class="search" type="search" placeholder="Search settings\u2026">
+    <input id="search" class="search" type="search" placeholder="Search settings\u2026" aria-label="Search settings">
     <div id="content"></div>
     <div id="empty" class="empty" hidden>&#128269; No settings match your search.</div>
   </main>
@@ -528,6 +639,8 @@ function buildHtml(webview: vscode.Webview): string {
   const searchBox = document.getElementById('search');
   const emptyState = document.getElementById('empty');
   const scopeSelect = document.getElementById('scope');
+  const parseNumberInput = ${parseNumberInput.toString()};
+  const parseListInput = ${parseListInput.toString()};
   let controls = {};
   let defaults = {};
   let cards = [];
@@ -553,7 +666,7 @@ function buildHtml(webview: vscode.Webview): string {
   }
 
   function sameAsDefault(key, value) {
-    return JSON.stringify(value) === JSON.stringify(defaults[key]);
+    return value === undefined || JSON.stringify(value) === JSON.stringify(defaults[key]);
   }
 
   function markModified(key) {
@@ -622,6 +735,7 @@ function buildHtml(webview: vscode.Webview): string {
 
     if (setting.kind === 'enum') {
       const select = document.createElement('select');
+      select.setAttribute('aria-label', setting.label);
       (setting.options || []).forEach(function (option) {
         const item = document.createElement('option');
         item.value = option.value;
@@ -639,32 +753,34 @@ function buildHtml(webview: vscode.Webview): string {
     } else if (setting.kind === 'number') {
       const input = document.createElement('input');
       input.type = 'number';
+      input.step = setting.integer ? '1' : 'any';
+      if (setting.minimum !== undefined) { input.min = String(setting.minimum); }
+      if (setting.maximum !== undefined) { input.max = String(setting.maximum); }
+      input.setAttribute('aria-label', setting.label);
       wrapper.appendChild(input);
       inputs.push(input);
       input.addEventListener('change', function () {
-        const parsed = Number(input.value);
-        send(setting.key, isNaN(parsed) ? setting.defaultValue : parsed);
+        send(setting.key, parseNumberInput(input.value));
         markModified(setting.key);
       });
-      read = function () { return Number(input.value); };
+      read = function () { return parseNumberInput(input.value); };
       write = function (value) { input.value = value == null ? '' : String(value); };
     } else if (setting.kind === 'stringArray') {
       const area = document.createElement('textarea');
       area.placeholder = 'One regular expression per line';
+      area.setAttribute('aria-label', setting.label);
       wrapper.appendChild(area);
       inputs.push(area);
       area.addEventListener('change', function () {
-        const lines = area.value.split(/\\r?\\n/).map(function (line) { return line.trim(); }).filter(Boolean);
-        send(setting.key, lines);
+        send(setting.key, parseListInput(area.value));
         markModified(setting.key);
       });
-      read = function () {
-        return area.value.split(/\\r?\\n/).map(function (line) { return line.trim(); }).filter(Boolean);
-      };
+      read = function () { return parseListInput(area.value); };
       write = function (value) { area.value = Array.isArray(value) ? value.join('\\n') : ''; };
     } else if (setting.kind === 'string') {
       const input = document.createElement('input');
       input.type = 'text';
+      input.setAttribute('aria-label', setting.label);
       wrapper.appendChild(input);
       inputs.push(input);
       input.addEventListener('change', function () {
@@ -731,6 +847,7 @@ function buildHtml(webview: vscode.Webview): string {
           valueInput.type = 'text';
           valueInput.placeholder = 'Comma-separated modifiers';
         }
+        valueInput.setAttribute('aria-label', rule.label + ' (' + rule.key + ')');
         valueInput.className = 'value';
         valueInput.title = rule.key;
         row.appendChild(valueInput);

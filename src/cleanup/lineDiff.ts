@@ -125,22 +125,3 @@ function hunksOf(matched: readonly [number, number][], n: number, m: number, shi
 
   return hunks;
 }
-
-/**
- * `before` with only the chosen hunks of its diff to `after` applied (`hunks` from
- * {@link diffLineHunks}`(before, after)`, in order).
- */
-export function applyLineHunks(before: string, after: string, hunks: readonly LineHunk[]): string {
-  const a = before.split('\n');
-  const b = after.split('\n');
-  const lines: string[] = [];
-  let next = 0;
-  for (const hunk of hunks) {
-    lines.push(...a.slice(next, hunk.beforeStart), ...b.slice(hunk.afterStart, hunk.afterEnd));
-    next = hunk.beforeEnd;
-  }
-
-  lines.push(...a.slice(next));
-
-  return lines.join('\n');
-}

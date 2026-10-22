@@ -1,11 +1,11 @@
 // Compile oracle: checks that cleanup never turns compiling C# into code the compiler rejects.
 // For each project: copy it to a temporary folder with the generated .editorconfig (every rule
-// cleanup applies set to warning), build it, run cleanup over its .cs files (one type per file
-// included), build again and fail on every new compiler error (CSxxxx, RZxxxx), and on a build that
-// fails after cleanup without one. When there are new errors, the rule responsible is found by
-// running cleanup again with one rule at a time.
+// cleanup applies set to warning), build it, run cleanup over its .cs files through the C# engine
+// (one type per file and renames included), build again and fail on every new compiler error
+// (CSxxxx, RZxxxx), and on a build that fails after cleanup without one. When there are new errors,
+// the rule responsible is found by running cleanup again with one rule at a time.
 //
-// Development-time only: the extension never runs .NET. Needs the .NET SDK on PATH.
+// Needs the .NET SDK on PATH; the engine is published from server/ when it is older than its sources.
 //
 // Usage: npm run verify:compile -- [<folder>[=<project file relative to the folder>] ...]
 //   ORACLE_KEEP=1 keeps the cleaned copy for inspection.
@@ -15,17 +15,13 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadEditorConfigProperties } from '../src/cleanup/editorconfig';
-import { planOneTypePerFile, readOneTypePerFileRules } from '../src/cleanup/oneTypePerFile';
-import { runCleanup } from '../src/cleanup/runCleanup';
-import { discoverDisqualifiedTypeNames } from '../src/cleanup/transformations/sealedClass';
 import { CleanupSettings, createDefaultSettings } from '../src/cleanup/types';
-import { editorConfigCatalog } from '../src/cleanup/editorConfigRegistry';
 import { CODE_STYLE_RULES } from '../src/cleanup/codeStyleRules';
+import { EngineClient } from '../src/engine/client';
+import { toEngineSettings } from '../src/engine/settings';
 import { BuildResult, CompilerError, cleanupBuildErrors, compilerErrors, editorConfigVariant, settingsVariant } from './compileOracle';
-import { renderEditorConfig } from './editorConfigTemplate';
-import { planWorkspaceRenames } from '../src/cleanup/naming/workspaceRenamer';
-import { discoverProjects } from '../src/cleanup/naming/workspaceScope';
+import { ENFORCED_DIAGNOSTIC_IDS, renderEditorConfig } from './editorConfigTemplate';
+import { startEngine } from './engineServer';
 
 const SKIPPED_FOLDERS = new Set(['bin', 'obj', '.git', '.vs', 'node_modules']);
 const BUILD_ARGUMENTS = [
@@ -93,79 +89,51 @@ function build(copy: string, project: string, restore: boolean): BuildResult {
   return { output, errors: compilerErrors(output, copy), ok: status === 0 };
 }
 
-/** Runs cleanup like the batch command: one type per file first, then the pipeline on every file. */
-function cleanUp(copy: string, projectDir: string, settings: CleanupSettings): CleanupOutcome {
-  const files = csharpFiles(projectDir);
-  const work: { file: string; input: string; original?: string }[] = [];
-  // Like the batch command, files one file of the batch creates are reserved for the others.
-  const planned = new Set<string>();
+/**
+ * Runs cleanup like Cleanup Workspace: every file of the project through the engine, one after the other,
+ * each read from disk when its turn comes and written with the other files its result changes or creates
+ * (one type per file, renames across the workspace).
+ */
+async function cleanUp(
+  engine: EngineClient,
+  copy: string,
+  projectDir: string,
+  settings: CleanupSettings,
+  journal: Map<string, string | undefined>
+): Promise<CleanupOutcome> {
+  const changed = new Set<string>();
   let unresolved = 0;
-  for (const file of files) {
-    const original = fs.readFileSync(file, 'utf8');
-    const rules = readOneTypePerFileRules(loadEditorConfigProperties(file));
-    const reserved = new Set(fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith('.cs')));
-    [...planned].filter((created) => path.dirname(created) === path.dirname(file)).forEach((created) => reserved.add(path.basename(created)));
-    const outcome = rules ? planOneTypePerFile(original, file, rules, reserved) : undefined;
-    unresolved += outcome?.issues.length ?? 0;
-    outcome?.plan.newFiles.forEach((created) => planned.add(created.filePath));
-    if (outcome?.plan.hasChanges) {
-      work.push({ file, input: outcome.plan.updatedSource, original });
-      work.push(...outcome.plan.newFiles.map((created) => ({ file: created.filePath, input: created.content })));
-    } else {
-      work.push({ file, input: original, original });
-    }
-  }
-
-  const disqualified = discoverDisqualifiedTypeNames(work.map((item) => item.input));
-  const changed: string[] = [];
-  for (const item of work) {
-    const output = runCleanup(item.input, item.file, settings, disqualified, (issue) => {
-      if (issue.kind === 'unresolved') {
-        unresolved++;
+  for (const file of csharpFiles(projectDir)) {
+    const text = fs.readFileSync(file, 'utf8');
+    const result = await engine.cleanup({ filePath: file, text, settings: toEngineSettings(settings) });
+    unresolved += result.unresolved.length;
+    for (const written of [...(result.text !== text ? [{ path: file, text: result.text }] : []), ...result.otherFiles, ...result.newFiles]) {
+      if (!journal.has(written.path)) {
+        journal.set(written.path, fs.existsSync(written.path) ? fs.readFileSync(written.path, 'utf8') : undefined);
       }
-    });
-    if (output !== item.original) {
-      fs.writeFileSync(item.file, output, 'utf8');
-      changed.push(path.relative(copy, item.file));
+
+      fs.writeFileSync(written.path, written.text, 'utf8');
+      engine.fileChanged(written.path);
+      changed.add(path.relative(copy, written.path));
     }
   }
 
-  // Like Cleanup Workspace with renamePublicSymbolsAcrossWorkspace, confirming the renames.
-  if (settings.renamePublicSymbolsAcrossWorkspace) {
-    const plan = planWorkspaceRenames({
-      projects: discoverProjects([copy]),
-      targets: csharpFiles(projectDir),
-      read: (file) => {
-        const bytes = fs.readFileSync(file);
-        try {
-          return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), utf8: true };
-        } catch {
-          return { text: new TextDecoder('utf-8').decode(bytes), utf8: false };
-        }
-      },
-    });
-    unresolved += plan.issues.length;
-    for (const [file, content] of plan.contents) {
-      fs.writeFileSync(file, content, 'utf8');
-      if (!changed.includes(path.relative(copy, file))) {
-        changed.push(path.relative(copy, file));
-      }
-    }
-  }
-
-  return { changed, unresolved };
+  return { changed: [...changed], unresolved };
 }
 
-/** Puts the copied tree back as it was before cleanup: original contents, created files removed. */
-function restore(projectDir: string, originals: ReadonlyMap<string, string>): void {
-  for (const file of csharpFiles(projectDir)) {
-    const original = originals.get(file);
+/** Puts every file cleanup wrote back as it was before: original contents, created files removed. */
+function restore(engine: EngineClient, journal: Map<string, string | undefined>): void {
+  for (const [file, original] of journal) {
     if (original === undefined) {
-      fs.rmSync(file);
-    } else if (fs.readFileSync(file, 'utf8') !== original) {
+      fs.rmSync(file, { force: true });
+    } else {
       fs.writeFileSync(file, original, 'utf8');
     }
+
+    engine.fileChanged(file);
   }
+
+  journal.clear();
 }
 
 function describe(errors: readonly CompilerError[], limit = 5): string {
@@ -175,9 +143,9 @@ function describe(errors: readonly CompilerError[], limit = 5): string {
     .join('\n');
 }
 
-/** The rules cleanup applies, each checked on its own: diagnostics of the registry, then each setting. */
+/** The rules cleanup applies, each checked on its own: the diagnostics the generated `.editorconfig` enforces, then each setting. */
 function candidates(settings: CleanupSettings): { label: string; editorConfig: string | undefined; setting: keyof CleanupSettings | undefined }[] {
-  const diagnostics = [...editorConfigCatalog().diagnostics].sort();
+  const diagnostics = [...ENFORCED_DIAGNOSTIC_IDS].sort();
   const booleanSettings = (Object.keys(settings) as (keyof CleanupSettings)[]).filter((key) => settings[key] === true);
 
   return [
@@ -191,17 +159,20 @@ function candidates(settings: CleanupSettings): { label: string; editorConfig: s
   ];
 }
 
-function checkTarget(target: Target, editorConfig: string): number {
+async function checkTarget(target: Target, editorConfig: string): Promise<number> {
   const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-compile-oracle-'));
+  let engine: EngineClient | undefined;
   try {
     fs.cpSync(target.folder, copy, { recursive: true, filter: (source) => !SKIPPED_FOLDERS.has(path.basename(source)) });
     removeNestedEditorConfigs(copy);
     const editorConfigPath = path.join(copy, '.editorconfig');
     fs.writeFileSync(editorConfigPath, editorConfig, 'utf8');
     const projectDir = path.dirname(path.join(copy, target.project));
-    const originals = new Map(csharpFiles(projectDir).map((file) => [file, fs.readFileSync(file, 'utf8')]));
+    const csharpCount = csharpFiles(projectDir).length;
+    /** The original text of every file cleanup wrote, anywhere in the copy (`undefined`: it did not exist), to put back. */
+    const journal = new Map<string, string | undefined>();
 
-    console.log(`\n=== ${target.folder} (${target.project}, ${originals.size} C# files)`);
+    console.log(`\n=== ${target.folder} (${target.project}, ${csharpCount} C# files)`);
     const baseline = build(copy, target.project, true);
     if (!baseline.ok && baseline.errors.length === 0) {
       console.log(`  NOT BUILDABLE before cleanup (no compiler errors, the build itself failed):\n${baseline.output.trim().split('\n').slice(-8).join('\n')}`);
@@ -211,7 +182,8 @@ function checkTarget(target: Target, editorConfig: string): number {
 
     console.log(`  before cleanup: ${baseline.errors.length} compiler error(s)`);
     const settings = { ...createDefaultSettings(), renamePublicSymbolsAcrossWorkspace: true };
-    const outcome = cleanUp(copy, projectDir, settings);
+    engine = startEngine([copy], (line) => process.env.ORACLE_LOG && console.log(`  ${line}`));
+    const outcome = await cleanUp(engine, copy, projectDir, settings, journal);
     const after = build(copy, target.project, false);
     const added = cleanupBuildErrors(baseline, after);
     console.log(`  cleanup changed ${outcome.changed.length} file(s), ${outcome.unresolved} violation(s) left unresolved`);
@@ -224,9 +196,10 @@ function checkTarget(target: Target, editorConfig: string): number {
     console.log('  finding the rules responsible (one rule at a time):');
     let blamed = 0;
     for (const candidate of candidates(settings)) {
-      restore(projectDir, originals);
+      restore(engine, journal);
       fs.writeFileSync(editorConfigPath, editorConfigVariant(editorConfig, candidate.editorConfig), 'utf8');
-      const run = cleanUp(copy, projectDir, settingsVariant(settings, candidate.setting));
+      engine.fileChanged(editorConfigPath);
+      const run = await cleanUp(engine, copy, projectDir, settingsVariant(settings, candidate.setting), journal);
       if (run.changed.length === 0) {
         continue;
       }
@@ -244,6 +217,7 @@ function checkTarget(target: Target, editorConfig: string): number {
 
     return added.length;
   } finally {
+    await engine?.shutdown();
     keepOrRemove(copy);
   }
 }
@@ -262,8 +236,9 @@ function keepOrRemove(copy: string): void {
  * the layer enabled with the value it proposes (as the `codeJanitor.cleanup.codeStyleRules` setting or
  * `.codejanitor` would), so the rules `.editorconfig` would enforce in the pass above are applied by the layer.
  */
-function checkCodeStyleLayer(target: Target): number {
+async function checkCodeStyleLayer(target: Target): Promise<number> {
   const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-compile-oracle-'));
+  const engine = startEngine([copy]);
   try {
     fs.cpSync(target.folder, copy, { recursive: true, filter: (source) => !SKIPPED_FOLDERS.has(path.basename(source)) });
     removeNestedEditorConfigs(copy);
@@ -279,7 +254,7 @@ function checkCodeStyleLayer(target: Target): number {
     }
 
     const settings = { ...createDefaultSettings(), codeStyleRules: Object.fromEntries(CODE_STYLE_RULES.map((rule) => [rule.key, rule.defaultValue])) };
-    const outcome = cleanUp(copy, projectDir, settings);
+    const outcome = await cleanUp(engine, copy, projectDir, settings, new Map());
     const after = build(copy, target.project, false);
     const added = cleanupBuildErrors(baseline, after);
     console.log(`  cleanup changed ${outcome.changed.length} file(s), ${outcome.unresolved} violation(s) left unresolved`);
@@ -290,6 +265,7 @@ function checkCodeStyleLayer(target: Target): number {
 
     return added.length;
   } finally {
+    await engine.shutdown();
     keepOrRemove(copy);
   }
 }
@@ -315,12 +291,19 @@ function targets(args: readonly string[]): Target[] {
     .map((entry) => targets([path.join(oracle, entry.name)])[0]);
 }
 
-const editorConfig = renderEditorConfig();
-let failures = 0;
-for (const target of targets(process.argv.slice(2))) {
-  failures += checkTarget(target, editorConfig);
-  failures += checkCodeStyleLayer(target);
+async function main(): Promise<void> {
+  const editorConfig = renderEditorConfig();
+  let failures = 0;
+  for (const target of targets(process.argv.slice(2))) {
+    failures += await checkTarget(target, editorConfig);
+    failures += await checkCodeStyleLayer(target);
+  }
+
+  console.log(failures === 0 ? '\nCompile oracle: no new compiler errors.' : `\nCompile oracle: ${failures} new compiler error(s) or failed build(s).`);
+  process.exitCode = failures === 0 ? 0 : 1;
 }
 
-console.log(failures === 0 ? '\nCompile oracle: no new compiler errors.' : `\nCompile oracle: ${failures} new compiler error(s) or failed build(s).`);
-process.exitCode = failures === 0 ? 0 : 1;
+main().catch((err: unknown) => {
+  console.error(err);
+  process.exitCode = 1;
+});
