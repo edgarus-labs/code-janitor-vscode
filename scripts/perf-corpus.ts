@@ -14,6 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createDefaultSettings } from '../src/cleanup/types';
+import { EngineClient } from '../src/engine/client';
 import { CleanupResult } from '../src/engine/protocol';
 import { toEngineSettings } from '../src/engine/settings';
 import { renderEditorConfig } from './editorConfigTemplate';
@@ -60,9 +61,11 @@ if (!corpusArgument) {
 
 async function main(corpus: string): Promise<void> {
   const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-perf-'));
-  // The copy holds the whole corpus: it is removed even when a cleanup fails.
-  const engine = startEngine([copy]);
+  // The copy holds the whole corpus: it is removed even when the engine does not start or a cleanup fails.
+  let engine: EngineClient | undefined;
   try {
+    const active = startEngine([copy]);
+    engine = active;
     copyTree(corpus, copy);
     fs.writeFileSync(path.join(copy, '.editorconfig'), renderEditorConfig(), 'utf8');
     const output = outputArgument ? path.resolve(outputArgument) : undefined;
@@ -73,7 +76,7 @@ async function main(corpus: string): Promise<void> {
     const ruleTotals = new Map<string, number>();
     const fileTotals: { file: string; ms: number }[] = [];
     let notIdempotent = 0;
-    const clean = (text: string, filePath: string): Promise<CleanupResult> => engine.cleanup({ filePath, text, settings });
+    const clean = (text: string, filePath: string): Promise<CleanupResult> => active.cleanup({ filePath, text, settings });
 
     // The first request loads the projects: it is timed apart.
     const loadStarted = performance.now();
@@ -105,7 +108,7 @@ async function main(corpus: string): Promise<void> {
         ];
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(`${target}.out`, first.text, 'utf8');
-        fs.writeFileSync(`${target}.issues`, issues.map((issue) => issue.replace(copy, '<corpus>')).join('\n'), 'utf8');
+        fs.writeFileSync(`${target}.issues`, issues.map((issue) => issue.replaceAll(copy, '<corpus>')).join('\n'), 'utf8');
         if (second !== first.text) {
           fs.writeFileSync(`${target}.second`, second, 'utf8');
         }
@@ -128,10 +131,11 @@ async function main(corpus: string): Promise<void> {
     ];
     console.log(lines.join('\n'));
     if (output) {
+      fs.mkdirSync(output, { recursive: true });
       fs.writeFileSync(path.join(output, 'timings.txt'), `${lines.join('\n')}\n`, 'utf8');
     }
   } finally {
-    await engine.shutdown();
+    await engine?.shutdown();
     fs.rmSync(copy, { recursive: true, force: true });
   }
 }
