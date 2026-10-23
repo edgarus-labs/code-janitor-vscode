@@ -19,7 +19,7 @@ export function nodeVersionProblem(version: string): string | undefined {
   const [major] = parsed;
   const lines = Object.keys(PATCHED_NODE).map(Number);
   if (major > Math.max(...lines)) {
-    return undefined;
+    return `Node.js ${version} is on a line this check does not know: add the first release of that line that carries the fix of CVE-2026-111497 to PATCHED_NODE.`;
   }
 
   const patched = PATCHED_NODE[major];
