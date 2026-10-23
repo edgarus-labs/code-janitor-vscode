@@ -200,6 +200,23 @@ describe('Spade view', () => {
     expect(engine.requests('query').length).toBe(before + 1);
   });
 
+  it('does not read the members of the C# editors followed while hidden, and reads the active one once shown', async () => {
+    view().visible = false;
+    const [other, third] = ['Other.cs', 'Third.cs'].map((name) => new TextDocument(Uri.file(`/w/${name}`), SOURCE, 'csharp'));
+    state.documents.push(other, third);
+    setActiveEditor(new TextEditor(other));
+
+    expect(view().description).toBe('Other.cs');
+    expect(provider().getChildren()).toEqual([]);
+    setActiveEditor(new TextEditor(third));
+    view().visible = true;
+    view().visibilityListeners.forEach((listener) => listener({ visible: true }));
+    await vi.waitFor(() => expect([view().description, provider().getChildren().length]).toEqual(['Third.cs', 1]));
+
+    const read = engine.requests('query').filter((params) => params.query === 'structure' && params.filePath !== '/w/Sample.cs');
+    expect(read.map((params) => params.filePath)).toEqual(['/w/Third.cs']);
+  });
+
   it('sorts alphabetically, by type and by file, saving the choice', async () => {
     await run('codeJanitor.spade.sortAlphabetically');
     expect(state.configurationUpdates).toContainEqual({ key: 'codeJanitor.spade.primarySortOrder', value: 'alphabetical', target: ConfigurationTarget.Global });
@@ -279,6 +296,36 @@ describe('Spade view', () => {
     expect(document.getText()).toBe(`${SOURCE}// {"line":10,"name":"Add"}\n// {"line":4,"name":"count"}\n`);
   });
 
+  it('refuses to delete, insert or remove a region, or move with a tree read from an older version of the file, and refreshes it', async () => {
+    currentStructure = structure(1, [{ name: 'Fields', startLine: 3, endLine: 5, children: [] }]);
+    await run('codeJanitor.spade.refresh');
+    state.modalChoice = 'Delete';
+    const transfer = new DataTransfer();
+    const controller = view().options.dragAndDropController!;
+    await controller.handleDrag!([node('N', 'Sample', 'Sample')], transfer, undefined);
+
+    for (const act of [
+      () => run('codeJanitor.spade.deleteMember', node('N', 'Sample', 'Fields', 'count')),
+      () => run('codeJanitor.spade.insertRegion', node('N', 'Sample', 'Add')),
+      () => run('codeJanitor.spade.removeRegion', node('N', 'Sample', 'Fields')),
+      () => controller.handleDrop!(node('N', 'Sample', 'Add'), transfer, undefined),
+    ]) {
+      // An edit (a line added above, an undo) the tree has not been refreshed for yet.
+      document.setText(`// a line above\n${document.getText()}`);
+      const edited = document.getText();
+      const queries = engine.requests('query').filter((params) => params.query === 'structure').length;
+      const warnings = state.warningMessages.length;
+      await act();
+
+      expect(state.warningMessages.slice(warnings)).toContain('Code Janitor: the file changed meanwhile; try again.');
+      await vi.waitFor(() => expect(engine.requests('query').filter((params) => params.query === 'structure').length).toBe(queries + 1));
+      expect(document.getText()).toBe(edited);
+    }
+
+    expect(engine.requests('command')).toEqual([]);
+    expect(engine.requests('query').filter((params) => params.query === 'memberLines')).toEqual([]);
+  });
+
   it('finds the references of a member at its name', async () => {
     await run('codeJanitor.spade.findReferences', node('N', 'Sample', 'Add'));
 
@@ -325,6 +372,7 @@ describe('Spade view', () => {
 
     expect(commandCalls('moveMember')[0].arguments).toEqual({ line: 4, name: 'count', targetLine: 10, targetName: 'Add', position: 'after' });
     expect(document.getText()).toBe(`${SOURCE}// moved\n`);
+    await run('codeJanitor.spade.refresh');
 
     commandResults.moveMember = () => {
       throw new Error("Moving 'count' would add the compiler error CS0103: nope");

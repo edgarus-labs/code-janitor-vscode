@@ -95,9 +95,10 @@ async function runBatch(
     }
 
     try {
+      const openVersions = openDocumentVersions();
       const result = await transform(file, token);
       outcome.unresolved += result.unresolved;
-      await applyFileOutcome(file, result);
+      await applyFileOutcome(file, result, openVersions);
       applied.push(file);
       outcome.changed += result.text !== file.content ? 1 : 0;
       outcome.created += result.newFiles.length;
@@ -547,10 +548,12 @@ export function runSplitTopLevelTypesOnUris(uris: vscode.Uri[], token?: vscode.C
  * Writes a file's outcome. A new text alone goes through {@link writeFileContent}. With other files
  * changed or created, one `WorkspaceEdit` creates the new files and edits every file, so one undo reverts
  * it all and the disk never holds a type twice; the files that were not open are then saved (the new
- * files of an open file stay unsaved with it). Throws when VS Code does not apply the edit, or a file
- * changed since its outcome was computed.
+ * files of an open file stay unsaved with it). Throws, changing nothing, when a new file already exists
+ * (VS Code keeps the part of an edit it applied before a creation that fails), when the file changed since
+ * its outcome was computed, or when another open file the outcome changes was edited since `openVersions`
+ * was taken (see {@link openDocumentVersions}); throws when VS Code does not apply the edit.
  */
-export async function applyFileOutcome(file: CollectedFile, outcome: FileOutcome): Promise<void> {
+export async function applyFileOutcome(file: CollectedFile, outcome: FileOutcome, openVersions: ReadonlyMap<string, number>): Promise<void> {
   if (outcome.otherFiles.length === 0 && outcome.newFiles.length === 0) {
     if (outcome.text !== file.content) {
       await writeFileContent(file, outcome.text);
@@ -559,12 +562,37 @@ export async function applyFileOutcome(file: CollectedFile, outcome: FileOutcome
     return;
   }
 
+  const existing = await firstExistingFile(outcome.newFiles);
+  if (existing !== undefined) {
+    throw new Error(`${path.basename(existing)} already exists; no file was changed and no new file was created`);
+  }
+
   const openBefore = new Set(vscode.workspace.textDocuments.filter((document) => !document.isClosed).map((document) => document.uri.toString()));
+  const closedTarget = file.isOpen ? undefined : await vscode.workspace.openTextDocument(file.uri);
+  const others: { readonly uri: vscode.Uri; readonly text: string; readonly document: vscode.TextDocument }[] = [];
+  for (const other of outcome.otherFiles) {
+    const uri = vscode.Uri.file(other.path);
+    others.push({ uri, text: other.text, document: await vscode.workspace.openTextDocument(uri) });
+  }
+
+  // VS Code loads a closed file with mixed line endings with the dominant one throughout.
+  if (closedTarget && closedTarget.getText() !== asDocumentText(editorText(file.content))) {
+    throw new Error('the file changed during cleanup; no file was changed');
+  }
+
+  const target = closedTarget ?? unchangedDocument(file, '; no file was changed');
+  for (const { uri, document } of others) {
+    const version = openVersions.get(document.uri.toString());
+    if (version === undefined ? document.isDirty : document.version !== version) {
+      throw new Error(`${path.basename(uri.fsPath)} was edited during cleanup; no file was changed`);
+    }
+  }
+
   const edit = new vscode.WorkspaceEdit();
   const saved: vscode.Uri[] = [];
   for (const newFile of outcome.newFiles) {
     const uri = vscode.Uri.file(newFile.path);
-    // Fails the whole edit when the file exists: a split never overwrites a file.
+    // Without options, creating a file that exists fails: a split never overwrites a file.
     edit.createFile(uri);
     edit.insert(uri, new vscode.Position(0, 0), editorText(newFile.text));
     if (!file.isOpen) {
@@ -572,25 +600,58 @@ export async function applyFileOutcome(file: CollectedFile, outcome: FileOutcome
     }
   }
 
-  const target = file.isOpen ? unchangedDocument(file, '; no file was changed') : await vscode.workspace.openTextDocument(file.uri);
-  if (target.getText() !== editorText(file.content)) {
-    throw new Error('the file changed during cleanup; no file was changed');
-  }
-
   edit.replace(file.uri, wholeDocument(target), editorText(outcome.text));
-  for (const other of outcome.otherFiles) {
-    const uri = vscode.Uri.file(other.path);
-    edit.replace(uri, wholeDocument(await vscode.workspace.openTextDocument(uri)), editorText(other.text));
+  for (const { uri, text, document } of others) {
+    edit.replace(uri, wholeDocument(document), editorText(text));
   }
 
   if (!(await vscode.workspace.applyEdit(edit))) {
     throw new Error('VS Code did not apply the edit; no file was changed and no new file was created');
   }
 
-  saved.push(...[file.uri, ...outcome.otherFiles.map((other) => vscode.Uri.file(other.path))].filter((uri) => !openBefore.has(uri.toString())));
+  saved.push(...[file.uri, ...others.map((other) => other.uri)].filter((uri) => !openBefore.has(uri.toString())));
   for (const uri of saved) {
     await vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString())?.save();
   }
+}
+
+/**
+ * The version of every open document, by uri, taken before an outcome is computed: {@link applyFileOutcome}
+ * then refuses to overwrite an open file edited since.
+ */
+export function openDocumentVersions(): ReadonlyMap<string, number> {
+  return new Map(vscode.workspace.textDocuments.filter((document) => !document.isClosed).map((document) => [document.uri.toString(), document.version]));
+}
+
+/** The path of the first of `files` that already exists; a failure other than a missing file is thrown. */
+export async function firstExistingFile(files: readonly DocumentText[]): Promise<string | undefined> {
+  for (const file of files) {
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(file.path));
+
+      return file.path;
+    } catch (err) {
+      if (!(err instanceof vscode.FileSystemError && err.code === 'FileNotFound')) {
+        throw err;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * `text` as VS Code's document of the file holds it: with mixed line endings, the dominant one
+ * throughout (as `PieceTreeTextBufferFactory` normalizes the end of lines when it loads a file).
+ */
+export function asDocumentText(text: string): string {
+  const crlf = text.match(/\r\n/g)?.length ?? 0;
+  const cr = text.match(/\r(?!\n)/g)?.length ?? 0;
+  const lf = text.match(/(?<!\r)\n/g)?.length ?? 0;
+  const eol = cr + crlf > (cr + lf + crlf) / 2 ? '\r\n' : '\n';
+  const mixed = eol === '\r\n' ? cr + lf > 0 : cr + crlf > 0;
+
+  return mixed ? text.replace(/\r\n|\r|\n/g, eol) : text;
 }
 
 /** The text an editor document holds for `text`: VS Code keeps a byte order mark as the encoding, never in the text. */

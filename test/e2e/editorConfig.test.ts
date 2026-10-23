@@ -89,6 +89,8 @@ suite('.editorconfig cleanup (real VS Code host)', () => {
     const filePath = path.join(folder, 'Saved.cs');
     fs.writeFileSync(filePath, 'namespace Demo;\n\ninternal class Saved\n{\n}\n', 'utf8');
     const editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(filePath));
+    // Cleanup on save gives the engine a deadline of about a second; a cleanup without one loads the project first.
+    await vscode.commands.executeCommand('codeJanitor.cleanupActiveFile');
 
     const unclean = UNCLEAN_COUNTER.replace('class Counter', 'class SavedCounter');
     await editor.edit((edit) =>

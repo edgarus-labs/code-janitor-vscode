@@ -5,7 +5,6 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.Diagnostics;
-using Microsoft.CodeAnalysis.Formatting;
 using Microsoft.CodeAnalysis.Text;
 
 namespace CodeJanitor.Engine.Diagnostics;
@@ -101,10 +100,11 @@ public sealed class DiagnosticCleanupEngine
             return CreateUnchangedResult(solution, analyzerFailures);
         }
 
-        var run = new CleanupRun(document.Id, options, analyzers, analyzerFailures, new Lazy<ILookup<string, CodeFixProvider>>(() => IndexByDiagnosticId(_catalog.GetProviders(project))), new Lazy<string?>(() => DescribeLoadFailures(_catalog.GetLoadFailures(project))));
+        var (providersByDiagnosticId, providerLoadFailures) = IndexProviders(project);
+        var run = new CleanupRun(document.Id, options, analyzers, analyzerFailures, providersByDiagnosticId, providerLoadFailures);
         var result = await run.ExecuteAsync(project.Solution, cancellationToken).ConfigureAwait(false);
 
-        return await RebaseAsync(result, solution, document.Id, options.SortUsingsAfterFixes, cancellationToken).ConfigureAwait(false);
+        return await RebaseAsync(result, solution, document.Id, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -128,7 +128,8 @@ public sealed class DiagnosticCleanupEngine
             return [];
         }
 
-        var run = new CleanupRun(document.Id, options, analyzers, analyzerFailures, new Lazy<ILookup<string, CodeFixProvider>>(() => IndexByDiagnosticId(_catalog.GetProviders(project))), new Lazy<string?>(() => DescribeLoadFailures(_catalog.GetLoadFailures(project))));
+        var (providersByDiagnosticId, providerLoadFailures) = IndexProviders(project);
+        var run = new CleanupRun(document.Id, options, analyzers, analyzerFailures, providersByDiagnosticId, providerLoadFailures);
 
         return await run.AnalyzeAsync(project.Solution, cancellationToken).ConfigureAwait(false);
     }
@@ -181,16 +182,13 @@ public sealed class DiagnosticCleanupEngine
 
     /// <summary>
     /// Moves the text changes of a run onto <paramref name="solution" />, so the result never carries the analyzer
-    /// configuration overrides. The using directives of the cleaned document, when it changed, are sorted in Roslyn's order
-    /// when <paramref name="sortUsings" /> is set. Each changed document keeps the line ending of its file (its
-    /// <c>end_of_line</c>, otherwise the one line ending its original text uses throughout), because a code fix may insert
-    /// line breaks of its own.
+    /// configuration overrides. Each changed document keeps the line ending of its file (its <c>end_of_line</c>, otherwise
+    /// the one line ending its original text uses throughout), because a code fix may insert line breaks of its own.
     /// </summary>
     private static async Task<DiagnosticCleanupResult> RebaseAsync(
         DiagnosticCleanupResult result,
         Solution solution,
         DocumentId cleanedDocumentId,
-        bool sortUsings,
         CancellationToken cancellationToken)
     {
         var changedSolution = solution;
@@ -209,12 +207,6 @@ public sealed class DiagnosticCleanupEngine
                 }
 
                 var text = await result.ChangedSolution.GetDocument(documentId)!.GetTextAsync(cancellationToken).ConfigureAwait(false);
-                if (documentId == cleanedDocumentId && sortUsings)
-                {
-                    var organized = await Formatter.OrganizeImportsAsync(changedSolution.WithDocumentText(documentId, text).GetDocument(documentId)!, cancellationToken).ConfigureAwait(false);
-                    text = await organized.GetTextAsync(cancellationToken).ConfigureAwait(false);
-                }
-
                 if (documentId == cleanedDocumentId)
                 {
                     text = WithoutBlankLinesAddedAtStart(originalText, text);
@@ -347,12 +339,48 @@ public sealed class DiagnosticCleanupEngine
     private static string DescribeAnalyzerFailure(DiagnosticAnalyzer analyzer, Exception exception) =>
         $"{analyzer.GetType().Name} failed and found nothing: {exception.GetType().Name}: {string.Join(" ", exception.Message.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None))}";
 
-    private static ILookup<string, CodeFixProvider> IndexByDiagnosticId(ImmutableArray<CodeFixProvider> providers) =>
-        providers
-            .SelectMany(provider => (provider.FixableDiagnosticIds.IsDefault ? ImmutableArray<string>.Empty : provider.FixableDiagnosticIds)
-                .Distinct(StringComparer.Ordinal)
-                .Select(id => new KeyValuePair<string, CodeFixProvider>(id, provider)))
-            .ToLookup(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
+    /// <summary>
+    /// The code fix providers of <paramref name="project" /> by fixable diagnostic id, and what kept providers out of that
+    /// index: the catalog's load failures and the providers whose <see cref="CodeFixProvider.FixableDiagnosticIds" /> threw.
+    /// </summary>
+    private (Lazy<ILookup<string, CodeFixProvider>> ProvidersByDiagnosticId, Lazy<string?> LoadFailures) IndexProviders(Project project)
+    {
+        var indexFailures = new List<string>();
+        var providersByDiagnosticId = new Lazy<ILookup<string, CodeFixProvider>>(() => IndexByDiagnosticId(_catalog.GetProviders(project), indexFailures));
+        var loadFailures = new Lazy<string?>(() =>
+        {
+            _ = providersByDiagnosticId.Value;
+
+            return DescribeLoadFailures([.. _catalog.GetLoadFailures(project), .. indexFailures]);
+        });
+
+        return (providersByDiagnosticId, loadFailures);
+    }
+
+    private static ILookup<string, CodeFixProvider> IndexByDiagnosticId(ImmutableArray<CodeFixProvider> providers, List<string> failures)
+    {
+        var entries = new List<KeyValuePair<string, CodeFixProvider>>();
+        foreach (var provider in providers)
+        {
+            ImmutableArray<string> ids;
+            try
+            {
+                ids = provider.FixableDiagnosticIds;
+            }
+            catch (Exception exception)
+            {
+                failures.Add($"{provider.GetType().Name} could not list its fixable diagnostics: {exception.GetType().Name}: {string.Join(" ", exception.Message.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None))}");
+                continue;
+            }
+
+            if (!ids.IsDefault)
+            {
+                entries.AddRange(ids.Distinct(StringComparer.Ordinal).Select(id => new KeyValuePair<string, CodeFixProvider>(id, provider)));
+            }
+        }
+
+        return entries.ToLookup(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
+    }
 
     /// <summary>
     /// State of one <see cref="CleanupAsync" /> call.

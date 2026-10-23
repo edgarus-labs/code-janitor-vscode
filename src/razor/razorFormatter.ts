@@ -694,7 +694,7 @@ function hasLineBreakInEmbeddedLiteral(markup: string): boolean {
 
 /**
  * True when a tag in `content` has a quoted attribute value spanning a line break: those lines are
- * part of the value. Razor expressions in a tag are skipped as `findTagEnd` does. A `<` in C# may
+ * part of the value. Razor comments and expressions in a tag are skipped as `findTagEnd` does. A `<` in C# may
  * read as a tag: that only ever reports a line break too many, and the block is then left as authored.
  */
 function hasLineBreakInAttributeValue(content: string): boolean {
@@ -708,7 +708,7 @@ function hasLineBreakInAttributeValue(content: string): boolean {
     for (; i < content.length && (quote || content[i] !== '>'); i++) {
       const c = content[i];
       if (c === '@') {
-        const after = skipExpression(content, i);
+        const after = content[i + 1] === '*' ? skipTransition(content, i) : skipExpression(content, i);
         if (after < 0) {
           return true;
         }

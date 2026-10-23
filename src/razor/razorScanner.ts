@@ -57,20 +57,20 @@ export function skipWhitespace(text: string, index: number): number {
 
 /** The index after the string literal starting at `index` (a `"`), or -1. */
 export function skipString(text: string, index: number): number {
+  const prefix = text.slice(Math.max(0, index - 2), index);
+  const verbatim = prefix.endsWith('@') || prefix === '$@' || prefix === '@$';
+  const interpolated = prefix.endsWith('$') || prefix === '$@' || prefix === '@$';
   let quotes = 0;
   while (text[index + quotes] === '"') {
     quotes++;
   }
 
-  if (quotes >= 3) {
+  if (quotes >= 3 && !verbatim) {
     const end = text.indexOf('"'.repeat(quotes), index + quotes);
 
     return end < 0 ? -1 : end + quotes;
   }
 
-  const prefix = text.slice(Math.max(0, index - 2), index);
-  const verbatim = prefix.endsWith('@') || prefix === '$@' || prefix === '@$';
-  const interpolated = prefix.endsWith('$') || prefix === '$@' || prefix === '@$';
   for (let i = index + 1; i < text.length; i++) {
     const c = text[i];
     if (verbatim) {
@@ -208,15 +208,15 @@ export function findClosingBracket(text: string, open: number): number {
 
 /**
  * The index of the `>` ending the tag that starts at `start` (a `<`), or -1. Quoted attribute
- * values and Razor expressions (`@Assets["app.css"]`, `@(a > b)`) are skipped, so their quotes and
- * `>` never end the tag.
+ * values, Razor comments and Razor expressions (`@Assets["app.css"]`, `@(a > b)`) are skipped, so
+ * their quotes and `>` never end the tag.
  */
 export function findTagEnd(text: string, start: number): number {
   let quote = '';
   for (let i = start + 1; i < text.length; i++) {
     const c = text[i];
     if (c === '@') {
-      const after = skipExpression(text, i);
+      const after = text[i + 1] === '*' ? skipTransition(text, i) : skipExpression(text, i);
       if (after < 0) {
         return -1;
       }

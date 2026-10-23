@@ -103,7 +103,7 @@ internal static class CodeComment
             }
 
             var original = source[lines[start].Start..lines[end].End];
-            var formatted = FormatBlock(original, regex, options, NewLineOf(source, lines, start));
+            var formatted = FormatBlock(original, Enumerable.Range(start, end - start + 1).Select(Text), regex, options, NewLineOf(source, lines, start));
             if (!string.Equals(formatted, original, StringComparison.Ordinal))
             {
                 output.Append(source, Offset(copied), lines[start].Start - Offset(copied));
@@ -166,10 +166,10 @@ internal static class CodeComment
         }
     }
 
-    private static string FormatBlock(string originalText, Regex regex, FormatterOptions formatterOptions, string newLine)
+    private static string FormatBlock(string originalText, IEnumerable<string> lineTexts, Regex regex, FormatterOptions formatterOptions, string newLine)
     {
-        var matches = regex.Matches(originalText).Where(m => m.Success).ToArray();
-        if (matches.Length == 0)
+        var matches = lineTexts.Select(text => regex.Match(text)).ToArray();
+        if (matches.Length == 0 || matches.Any(m => !m.Success))
         {
             return originalText;
         }
@@ -182,7 +182,7 @@ internal static class CodeComment
         };
 
         ICommentLine? line = null;
-        var commentText = string.Join(newLine, matches.Select(m => m.Groups["line"].Value));
+        var commentText = string.Join('\n', matches.Select(m => m.Groups["line"].Value));
         var hidden = false;
         if (commentText.Contains('<', StringComparison.Ordinal))
         {

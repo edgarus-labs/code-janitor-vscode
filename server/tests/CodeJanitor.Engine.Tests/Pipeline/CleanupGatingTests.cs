@@ -126,6 +126,22 @@ public sealed class CleanupGatingTests
         Assert.Contains($"AddFile: not applied, {why} does not change or create other files.", outcome.Issues);
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task AFileCompiledBySeveralProjects_IsCleanedUp_OnSaveAndInAPartialCleanup(bool onSave, bool partial)
+    {
+        var document = CreateDocument("class C\n{\n    void M(bool b)\n    {\n        if (b) return;\n    }\n}\n", "root = true\n[*.cs]\ncsharp_prefer_braces = true:warning\ndotnet_diagnostic.IDE0011.severity = warning\n", flavors: 2);
+
+        var outcome = await new CleanupEngine([new RoslynRulesStep()]).CleanupAsync(document, Request(onSave: onSave, partial: partial), CancellationToken.None);
+
+        Assert.DoesNotContain(outcome.Issues, issue => issue.Contains("not applied", StringComparison.Ordinal));
+        foreach (var documentId in outcome.Solution.GetDocumentIdsWithFilePath(document.FilePath))
+        {
+            Assert.DoesNotContain("if (b) return;", (await outcome.Solution.GetDocument(documentId)!.GetTextAsync()).ToString(), StringComparison.Ordinal);
+        }
+    }
+
     private static CleanupEngine UsingsEngine() => new([new RoslynRulesStep(), new OrganizeUsingsStep()]);
 
     private static CleanupRequest UsingsRequest(bool skipOnSave, bool onSave, bool partial = false) => Request(
@@ -146,25 +162,32 @@ public sealed class CleanupGatingTests
         return new CleanupRequest(user, [], null, OnSave: onSave, Partial: partial);
     }
 
-    private static Document CreateDocument(string text, string? editorConfig = null)
+    private static Document CreateDocument(string text, string? editorConfig = null, int flavors = 1)
     {
         var directory = Path.Combine(Root, Guid.NewGuid().ToString("N"));
-        var projectId = ProjectId.CreateNewId();
         var filePath = Path.Combine(directory, "Sample.cs");
-        var solution = new AdhocWorkspace(HostAnalyzers.HostServices).CurrentSolution.AddProject(ProjectInfo.Create(
-            projectId,
-            VersionStamp.Create(),
-            "Sample",
-            "Sample",
-            LanguageNames.CSharp,
-            filePath: Path.Combine(directory, "Sample.csproj"),
-            compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary),
-            metadataReferences: [MetadataReference.CreateFromFile(typeof(object).Assembly.Location), MetadataReference.CreateFromFile(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "System.Runtime.dll"))]));
-        solution = solution.AddAnalyzerConfigDocument(DocumentId.CreateNewId(projectId), ".editorconfig", SourceText.From(editorConfig ?? "root = true\n"), filePath: Path.Combine(directory, ".editorconfig"));
-        var documentId = DocumentId.CreateNewId(projectId);
-        solution = solution.AddDocument(DocumentInfo.Create(documentId, "Sample.cs", loader: TextLoader.From(TextAndVersion.Create(SourceText.From(text), VersionStamp.Create(), filePath)), filePath: filePath));
+        var solution = new AdhocWorkspace(HostAnalyzers.HostServices).CurrentSolution;
+        DocumentId? documentId = null;
+        for (var flavor = 0; flavor < flavors; flavor++)
+        {
+            var projectId = ProjectId.CreateNewId();
+            var name = flavor == 0 ? "Sample" : $"Sample{flavor}";
+            solution = solution.AddProject(ProjectInfo.Create(
+                projectId,
+                VersionStamp.Create(),
+                name,
+                name,
+                LanguageNames.CSharp,
+                filePath: Path.Combine(directory, name + ".csproj"),
+                compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary),
+                metadataReferences: [MetadataReference.CreateFromFile(typeof(object).Assembly.Location), MetadataReference.CreateFromFile(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "System.Runtime.dll"))]));
+            solution = solution.AddAnalyzerConfigDocument(DocumentId.CreateNewId(projectId), ".editorconfig", SourceText.From(editorConfig ?? "root = true\n"), filePath: Path.Combine(directory, ".editorconfig"));
+            var flavorId = DocumentId.CreateNewId(projectId);
+            solution = solution.AddDocument(DocumentInfo.Create(flavorId, "Sample.cs", loader: TextLoader.From(TextAndVersion.Create(SourceText.From(text), VersionStamp.Create(), filePath)), filePath: filePath));
+            documentId ??= flavorId;
+        }
 
-        return solution.GetDocument(documentId)!;
+        return solution.GetDocument(documentId!)!;
     }
 
     private static async Task<string> TextAsync(CleanupOutcome outcome)

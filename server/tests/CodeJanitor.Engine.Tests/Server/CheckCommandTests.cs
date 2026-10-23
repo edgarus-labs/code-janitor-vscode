@@ -127,7 +127,7 @@ public sealed class CheckCommandTests : IDisposable
     public async Task Shows_paths_relative_to_the_root_when_the_root_is_reached_through_a_symbolic_link()
     {
         var link = Path.Combine(Path.GetTempPath(), "cj-link-" + Guid.NewGuid().ToString("N")[..12]);
-        Assert.True(TryCreateDirectoryLink(link, _tree.Root), "The test needs a symbolic link or, on Windows, a junction.");
+        Assert.True(ServerTestPaths.TryCreateDirectoryLink(link, _tree.Root), "The test needs a symbolic link or, on Windows, a junction.");
 
         try
         {
@@ -144,20 +144,31 @@ public sealed class CheckCommandTests : IDisposable
         }
     }
 
-    private static bool TryCreateDirectoryLink(string link, string target)
+    [Fact]
+    public async Task Does_not_follow_a_directory_link_inside_a_checked_folder()
     {
+        Directory.CreateDirectory(_tree.PathOf("other"));
+        string[] links = [_tree.PathOf("other/Linked"), _tree.PathOf("src/Loop")];
         try
         {
-            Directory.CreateSymbolicLink(link, target);
+            foreach (var link in links)
+            {
+                Assert.True(ServerTestPaths.TryCreateDirectoryLink(link, _tree.PathOf("src")), "The test needs a symbolic link or, on Windows, a junction.");
+            }
 
-            return true;
+            var exitCode = await RunAsync("--root", _tree.Root, _tree.Root);
+
+            Assert.Equal(string.Empty, _error.ToString());
+            Assert.Equal("Code Janitor check: 1 file(s) checked, all clean.\n", _output.ToString());
+            Assert.Equal(0, exitCode);
+            Assert.Equal(_tree.PathOf("src/Clean.cs"), Assert.Single(_engine.Calls).Document.FilePath);
         }
-        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException && OperatingSystem.IsWindows())
+        finally
         {
-            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", ["/c", "mklink", "/J", link, target]) { UseShellExecute = false, CreateNoWindow = true });
-            process!.WaitForExit();
-
-            return process.ExitCode == 0;
+            foreach (var link in links.Where(Directory.Exists))
+            {
+                Directory.Delete(link);
+            }
         }
     }
 
@@ -188,6 +199,20 @@ public sealed class CheckCommandTests : IDisposable
         Assert.Equal(2, exitCode);
         Assert.Matches("broken/A\\.cs: error: .*Broken\\.csproj", _output.ToString());
         Assert.Contains("failure(s): the check is incomplete.", _output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Passes_when_the_solution_also_lists_projects_that_are_not_csharp()
+    {
+        _tree.Write("vb/Lib.vbproj", ServerTestPaths.Project);
+        _tree.Write("docker/docker-compose.dcproj", "<Project ToolsVersion=\"15.0\" Sdk=\"Microsoft.Docker.Sdk\">\n</Project>\n");
+        _tree.Write("Demo.slnx", "<Solution>\n  <Project Path=\"src/Demo.csproj\" />\n  <Project Path=\"vb/Lib.vbproj\" />\n  <Project Path=\"docker/docker-compose.dcproj\" />\n</Solution>\n");
+
+        var exitCode = await RunAsync("--root", _tree.Root, _tree.PathOf("src/Clean.cs"));
+
+        Assert.Equal("Code Janitor check: 1 file(s) checked, all clean.\n", _output.ToString());
+        Assert.Equal(0, exitCode);
+        Assert.Equal(_tree.PathOf("src/Demo.csproj"), Assert.Single(_engine.Calls).Document.Project.FilePath);
     }
 
     [Fact]

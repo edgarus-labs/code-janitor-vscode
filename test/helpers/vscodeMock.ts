@@ -269,16 +269,23 @@ interface RecordedEdit {
   text: string;
 }
 
+type EditOperation =
+  | { readonly kind: 'text'; readonly key: string; readonly edit: RecordedEdit }
+  | { readonly kind: 'create'; readonly uri: Uri; readonly options: { overwrite?: boolean; ignoreIfExists?: boolean } };
+
 export class WorkspaceEdit {
   readonly edits = new Map<string, RecordedEdit[]>();
   /** Files the edit creates, in order, as `WorkspaceEdit.createFile` records them. */
   readonly createdFiles: { uri: Uri; options: { overwrite?: boolean; ignoreIfExists?: boolean } }[] = [];
+  /** Every text edit and file creation, in the order they were added. */
+  readonly operations: EditOperation[] = [];
 
   replace(uri: Uri, range: Range, text: string): void {
     const key = uri.toString();
     const list = this.edits.get(key) ?? [];
     list.push({ range, text });
     this.edits.set(key, list);
+    this.operations.push({ kind: 'text', key, edit: { range, text } });
   }
 
   insert(uri: Uri, position: Position, text: string): void {
@@ -287,6 +294,7 @@ export class WorkspaceEdit {
 
   createFile(uri: Uri, options: { overwrite?: boolean; ignoreIfExists?: boolean } = {}): void {
     this.createdFiles.push({ uri, options });
+    this.operations.push({ kind: 'create', uri, options });
   }
 
   get size(): number {
@@ -305,6 +313,39 @@ function applyRangeEdits(document: TextDocument, edits: readonly RecordedEdit[])
   }
 
   document.setText(content);
+}
+
+/** Applies text edits to the open document of `key`, or to a closed file: VS Code loads it and applies them, unsaved; the caller saves it. */
+function applyResourceEdits(key: string, edits: readonly RecordedEdit[]): void {
+  const document = state.documents.find((candidate) => candidate.uri.toString() === key);
+  if (document) {
+    applyRangeEdits(document, edits);
+
+    return;
+  }
+
+  const filePath = key.replace(/^file:\/\//, '');
+  const content = state.files.get(filePath);
+  if (content !== undefined) {
+    const loaded = new TextDocument(Uri.file(filePath), asLoadedText(content), 'csharp');
+    state.documents.push(loaded);
+    state.documentListeners.open.forEach((listener) => listener(loaded));
+    applyRangeEdits(loaded, edits);
+  }
+}
+
+/** As in VS Code: the error `workspace.fs` rejects with, its `code` naming the cause. */
+export class FileSystemError extends Error {
+  private constructor(
+    message: string,
+    readonly code: string
+  ) {
+    super(message);
+  }
+
+  static FileNotFound(uri: Uri): FileSystemError {
+    return new FileSystemError(`${uri.toString()} (FileNotFound)`, 'FileNotFound');
+  }
 }
 
 /**
@@ -734,13 +775,30 @@ export const workspace = {
       return Promise.resolve(false);
     }
 
-    // As in VS Code: creating a file that exists, without `overwrite` or `ignoreIfExists`, fails the whole edit.
-    if (edit.createdFiles.some(({ uri, options }) => state.files.has(uri.fsPath) && !options.overwrite && !options.ignoreIfExists)) {
-      return Promise.resolve(false);
-    }
+    // As in VS Code: consecutive text edits are applied as one group and file creations one by one, in the order
+    // they were added. Creating a file that exists, without `overwrite` or `ignoreIfExists`, fails the edit; the
+    // groups applied before it stay applied.
+    let texts = new Map<string, RecordedEdit[]>();
+    const applyTexts = () => {
+      for (const [key, edits] of texts) {
+        applyResourceEdits(key, edits);
+      }
 
-    // A created file is empty on disk; its text edits go to its document, unsaved, as in VS Code.
-    for (const { uri, options } of edit.createdFiles) {
+      texts = new Map();
+    };
+    for (const operation of edit.operations) {
+      if (operation.kind === 'text') {
+        texts.set(operation.key, [...(texts.get(operation.key) ?? []), operation.edit]);
+        continue;
+      }
+
+      applyTexts();
+      const { uri, options } = operation;
+      if (state.files.has(uri.fsPath) && !options.overwrite && !options.ignoreIfExists) {
+        return Promise.resolve(false);
+      }
+
+      // A created file is empty on disk; its text edits go to its document, unsaved, as in VS Code.
       if (!state.files.has(uri.fsPath) || options.overwrite) {
         state.files.set(uri.fsPath, '');
         state.documents = state.documents.filter((candidate) => candidate.uri.toString() !== uri.toString());
@@ -748,23 +806,7 @@ export const workspace = {
       }
     }
 
-    for (const [key, edits] of edit.edits) {
-      const document = state.documents.find((candidate) => candidate.uri.toString() === key);
-      if (document) {
-        applyRangeEdits(document, edits);
-        continue;
-      }
-
-      // A closed file: VS Code loads it and applies the edit, unsaved; the caller saves it.
-      const filePath = key.replace(/^file:\/\//, '');
-      const content = state.files.get(filePath);
-      if (content !== undefined) {
-        const loaded = new TextDocument(Uri.file(filePath), asLoadedText(content), 'csharp');
-        state.documents.push(loaded);
-        state.documentListeners.open.forEach((listener) => listener(loaded));
-        applyRangeEdits(loaded, edits);
-      }
-    }
+    applyTexts();
 
     return Promise.resolve(true);
   },
@@ -858,7 +900,9 @@ export const workspace = {
         return Promise.resolve({ type: FileType.Directory });
       }
 
-      return Promise.resolve({ type: FileType.File });
+      const exists = state.files.has(uri.fsPath) || state.documents.some((document) => !document.isClosed && document.uri.toString() === uri.toString());
+
+      return exists ? Promise.resolve({ type: FileType.File }) : Promise.reject(FileSystemError.FileNotFound(uri));
     },
 
     /** Lists the immediate children of `uri` derived from the flat `state.files` map. */

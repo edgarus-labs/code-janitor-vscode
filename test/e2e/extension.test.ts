@@ -17,6 +17,7 @@
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import * as vscode from 'vscode';
 
 const EXTENSION_ID = 'codejanitor.code-janitor';
@@ -47,6 +48,19 @@ function manifest(): PackageManifest {
 
 function declaredSettings(): [string, ConfigurationProperty][] {
   return manifest().contributes.configuration.flatMap((section) => Object.entries(section.properties));
+}
+
+/** The Workspace value of every declared setting, by its key below `codeJanitor.`. */
+function workspaceSettingValues(): Map<string, unknown> {
+  const config = vscode.workspace.getConfiguration('codeJanitor');
+
+  return new Map(
+    declaredSettings().map(([key]) => {
+      const shortKey = key.replace(/^codeJanitor\./, '');
+
+      return [shortKey, config.inspect(shortKey)?.workspaceValue];
+    })
+  );
 }
 
 async function openCSharpDocument(content: string): Promise<vscode.TextEditor> {
@@ -89,20 +103,31 @@ async function withPromptsAutoAnswered<T>(run: () => Promise<T>): Promise<T> {
 }
 
 suite('Code Janitor extension (real VS Code host)', () => {
-  // Export/Import Settings write `.codejanitor` and workspace settings into the fixture workspace.
+  // Export/Import Settings and Toggle Cleanup on Save write `.codejanitor` and workspace settings into the fixture workspace.
   let workspaceRoot: string;
   let workspaceSettings: string;
+  let workspaceValues: Map<string, unknown>;
 
   suiteSetup(async function () {
     this.timeout(30000);
     await extension().activate();
     workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     workspaceSettings = fs.readFileSync(path.join(workspaceRoot, '.vscode', 'settings.json'), 'utf8');
+    workspaceValues = workspaceSettingValues();
   });
 
   suiteTeardown(async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
     fs.rmSync(path.join(workspaceRoot, '.codejanitor'), { force: true });
+    // `update` resolves once the configuration holds the value, so the suites that run next see the original
+    // values; the file is then written back byte for byte.
+    const config = vscode.workspace.getConfiguration('codeJanitor');
+    for (const [key, value] of workspaceSettingValues()) {
+      if (!isDeepStrictEqual(value, workspaceValues.get(key))) {
+        await config.update(key, workspaceValues.get(key), vscode.ConfigurationTarget.Workspace);
+      }
+    }
+
     fs.writeFileSync(path.join(workspaceRoot, '.vscode', 'settings.json'), workspaceSettings, 'utf8');
   });
 

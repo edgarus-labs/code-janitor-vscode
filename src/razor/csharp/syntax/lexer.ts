@@ -397,7 +397,7 @@ function scanLiteral(source: string, start: number): { type: string; end: number
     return { type: 'interpolated_string_expression', end };
   }
 
-  const raw = source.startsWith('"""', i);
+  const raw = !verbatim && source.startsWith('"""', i);
 
   return { type: raw ? 'raw_string_literal' : verbatim ? 'verbatim_string_literal' : 'string_literal', end: withUtf8Suffix(source, end) };
 }

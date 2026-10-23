@@ -134,6 +134,29 @@ public class C
         Assert.AreEqual(expected, _converter.Apply(input));
     }
 
+    [Theory]
+    [InlineData("\\0{0}", "\\u0000{x}")]
+    [InlineData("\\x1b[31m{0}", "\\u001B[31m{x}")]
+    [InlineData("\\a\\b\\f\\v{0}", "\\u0007\\u0008\\u000C\\u000B{x}")]
+    [InlineData("\\u0085{0}", "\\u0085{x}")]
+    [InlineData("\\u200B\\u202E\\uFEFF{0}", "\\u200B\\u202E\\uFEFF{x}")]
+    [InlineData("\\u2028\\u2029{0}", "\\u2028\\u2029{x}")]
+    [InlineData("\\uD800{0}", "\\uD800{x}")]
+    [InlineData("{0}\\uDC00", "{x}\\uDC00")]
+    [InlineData("\\uDC00\\uD800{0}", "\\uDC00\\uD800{x}")]
+    [InlineData("\\uD83D\\uDE00 \\u00E9{0}", "\U0001F600 \u00E9{x}")]
+    public void NonPrintableCharacterInFormat_IsWrittenAsAnEscapeSequence(string format, string expected)
+    {
+        string input = "class C { string M(int x) => string.Format(\"" + format + "\", x); }";
+
+        Assert.AreEqual("class C { string M(int x) => $\"" + expected + "\"; }", _converter.Apply(input));
+    }
+
+    [Theory]
+    [InlineData("class C { string M(int a, int b) => string.Format(\"{0}{1}\", arg1: b, arg0: a); }")]
+    [InlineData("class C { string M(int x) => string.Format(format: \"{0}\", provider: System.Globalization.CultureInfo.InvariantCulture, arg0: x); }")]
+    public void FormatCallWithNamedArguments_IsUnchanged(string input) => Assert.AreEqual(input, _converter.Apply(input));
+
     [Fact]
     public void Apply_OutOfBoundsOrNoPlaceholder_Skipped()
     {

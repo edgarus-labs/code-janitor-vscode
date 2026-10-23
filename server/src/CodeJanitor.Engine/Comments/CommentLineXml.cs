@@ -142,6 +142,24 @@ internal sealed class CommentLineXml : CommentLine
         : node.ToString();
 
     /// <summary>
+    /// The XML of a node as it is written, with the text of its text nodes and those of its descendants as
+    /// <see cref="TextOf" /> writes it.
+    /// </summary>
+    private static string LiteralOf(XNode node)
+    {
+        if (node is not XElement { IsEmpty: false } element)
+        {
+            return TextOf(node);
+        }
+
+        var prefix = element.GetPrefixOfNamespace(element.Name.Namespace);
+        var name = string.IsNullOrEmpty(prefix) ? element.Name.LocalName : $"{prefix}:{element.Name.LocalName}";
+        var attributes = string.Concat(element.Attributes().Select(attribute => $" {attribute}"));
+
+        return $"<{name}{attributes}>{string.Concat(element.Nodes().Select(LiteralOf))}</{name}>";
+    }
+
+    /// <summary>
     /// Returns the tag converted to lowercase or uppercase using invariant culture based on tagCase, or the original tag if no case conversion is requested, with no side effects or exceptions.
     /// </summary>
     /// <param name="tag">The tag.</param>
@@ -194,11 +212,7 @@ internal sealed class CommentLineXml : CommentLine
         if (TagOptions.Literal)
         {
             // Read content literally and preserve all formatting.
-            using (var reader = xml.CreateReader())
-            {
-                reader.MoveToContent();
-                Content = reader.ReadInnerXml();
-            }
+            Content = string.Concat(xml.Nodes().Select(LiteralOf));
         }
         else
         {

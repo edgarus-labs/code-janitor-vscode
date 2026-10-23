@@ -717,6 +717,7 @@ describe('repository settings commands', () => {
 
     expect(state.configurationUpdates.map((update) => update.key).filter((key) => !declared.has(key))).toEqual([]);
     expect(state.configuration.get('codeJanitor.cleanup.insertBlankLinePadding')).toBe(false);
+    expect(state.configuration.get('codeJanitor.cleanup.insertBlankLinePaddingBeforeFieldsSingleLine')).toBe(false);
     expect(state.configuration.get('codeJanitor.cleanup.removeRegions')).toBe(false);
   });
 
@@ -830,6 +831,8 @@ describe('collectFiles', () => {
 
 describe('expandToCleanableFiles', () => {
   it('returns a single file unchanged', async () => {
+    state.files.set('/w/a.cs', UNCLEAN);
+
     const files = await expandToCleanableFiles(Uri.file('/w/a.cs'));
 
     expect(files.map((file) => file.fsPath)).toEqual(['/w/a.cs']);
@@ -1107,6 +1110,78 @@ describe('runCleanupOnUris', () => {
     expect(state.warningMessages.at(-1)).toContain('VS Code did not apply the edit; no file was changed and no new file was created');
   });
 
+  it('creates no file of a split whose later new file already exists', async () => {
+    useFakeEngine({
+      cleanup: () =>
+        cleanupResult('internal class Foo\n{\n}\n', {
+          newFiles: [
+            { path: '/w/Bar.cs', text: 'internal class Bar\n{\n}\n' },
+            { path: '/w/Baz.cs', text: 'internal class Baz\n{\n}\n' },
+          ],
+        }),
+    });
+    const source = 'internal class Foo\n{\n}\n\ninternal class Bar\n{\n}\n\ninternal class Baz\n{\n}\n';
+    state.files.set('/w/Foo.cs', source);
+    state.files.set('/w/Baz.cs', 'internal class Kept { }\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Foo.cs')]);
+
+    expect(result).toEqual({ changed: 0, failed: 1, unresolved: 0, created: 0 });
+    expect(state.files.has('/w/Bar.cs')).toBe(false);
+    expect(state.documents.map((document) => document.uri.fsPath)).not.toContain('/w/Bar.cs');
+    expect([state.files.get('/w/Foo.cs'), state.files.get('/w/Baz.cs')]).toEqual([source, 'internal class Kept { }\n']);
+    expect(state.warningMessages.at(-1)).toBe('Code Janitor: /w/Foo.cs - Baz.cs already exists; no file was changed and no new file was created');
+  });
+
+  it('changes no file when another open file the result changes is edited during the cleanup', async () => {
+    const use = new TextDocument(Uri.file('/w/Use.cs'), 'internal class Use : Old { }\n', 'csharp');
+    state.documents.push(use);
+    const typed = 'internal class Use : Old { int typed; }\n';
+    useFakeEngine({
+      cleanup: () => {
+        // The user types in the other file while the engine renames across the workspace.
+        use.setText(typed);
+        use.isDirty = true;
+
+        return cleanupResult('internal class Renamed { }\n', { otherFiles: [{ path: '/w/Use.cs', text: 'internal class Use : Renamed { }\n' }] });
+      },
+    });
+    state.files.set('/w/A.cs', 'internal class Old { }\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/A.cs')], { renameAcrossWorkspace: true });
+
+    expect(result).toEqual({ changed: 0, failed: 1, unresolved: 0, created: 0 });
+    expect(use.getText()).toBe(typed);
+    expect(state.files.get('/w/A.cs')).toBe('internal class Old { }\n');
+    expect(state.warningMessages.at(-1)).toBe('Code Janitor: /w/A.cs - Use.cs was edited during cleanup; no file was changed');
+  });
+
+  it('changes another open file whose unsaved text the result was computed from', async () => {
+    const use = new TextDocument(Uri.file('/w/Use.cs'), 'internal class Use : Old { int unsaved; }\n', 'csharp');
+    use.isDirty = true;
+    state.documents.push(use);
+    useFakeEngine({
+      cleanup: () =>
+        cleanupResult('internal class Renamed { }\n', { otherFiles: [{ path: '/w/Use.cs', text: 'internal class Use : Renamed { int unsaved; }\n' }] }),
+    });
+    state.files.set('/w/A.cs', 'internal class Old { }\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/A.cs')], { renameAcrossWorkspace: true });
+
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 0 });
+    expect(use.getText()).toBe('internal class Use : Renamed { int unsaved; }\n');
+  });
+
+  it('splits a closed file with mixed line endings', async () => {
+    useFakeEngine({ cleanup: () => cleanupResult('internal class Foo\n{\n}\n', { newFiles: [{ path: '/w/Bar.cs', text: 'internal class Bar\n{\n}\n' }] }) });
+    state.files.set('/w/Foo.cs', 'internal class Foo\r\n{\r\n}\n\ninternal class Bar\n{\n}\n');
+
+    const result = await runCleanupOnUris(createContext(), [Uri.file('/w/Foo.cs')]);
+
+    expect(result).toEqual({ changed: 1, failed: 0, unresolved: 0, created: 1 });
+    expect([state.files.get('/w/Foo.cs'), state.files.get('/w/Bar.cs')]).toEqual(['internal class Foo\n{\n}\n', 'internal class Bar\n{\n}\n']);
+  });
+
   it('counts an open file whose edit VS Code rejects as failed, not changed', async () => {
     const document = new TextDocument(Uri.file('/w/C.cs'), UNCLEAN, 'csharp');
     state.documents.push(document);
@@ -1329,6 +1404,23 @@ describe('cleanup commands', () => {
 
     expect(state.informationMessages).toContain('Code Janitor: file is already clean (no changes).');
     expect(state.openedDocuments).toHaveLength(0);
+  });
+
+  it('previews an active file outside the workspace folders partially, and not at all when performPartialCleanupOnExternal is never', async () => {
+    state.workspaceFolders = [{ uri: Uri.file('/w'), name: 'w' }];
+    const document = new TextDocument(Uri.file('/ext/A.cs'), UNCLEAN, 'csharp');
+    state.documents.push(document);
+    window.activeTextEditor = new TextEditor(document);
+    registerCleanupCommands(createContext());
+
+    await run('codeJanitor.previewCleanupActiveFile');
+    state.configuration.set('codeJanitor.cleanup.performPartialCleanupOnExternal', 'never');
+    await run('codeJanitor.previewCleanupActiveFile');
+
+    expect(engine.requests('cleanup').map((params) => params.partial)).toEqual([true]);
+    expect(state.informationMessages.at(-1)).toBe(
+      'Code Janitor: /ext/A.cs skipped: it is not in a workspace folder (codeJanitor.cleanup.performPartialCleanupOnExternal is never).'
+    );
   });
 
   it('cleans every open file', async () => {

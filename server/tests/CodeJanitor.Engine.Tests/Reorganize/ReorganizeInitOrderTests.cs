@@ -246,6 +246,37 @@ public sealed class ReorganizeInitOrderTests
     }
 
     [Fact]
+    public void KeepsAnInstanceInitializerReadingAPrimaryConstructorParameterAfterOneThatChangesIt()
+    {
+        // `x++` changes x: moving _a above _z makes _a read x before the increment.
+        var source = "class C(int x)\n{\n    private int _z = x++;\n    private int _a = x;\n}\n";
+
+        Assert.Equal(new[] { "_z", "_a" }, Members(Run(source)));
+    }
+
+    [Fact]
+    public void KeepsAnInstanceInitializerReadingProcessStateAfterOneThatRunsCodeWhichMayChangeIt()
+    {
+        // Set changes the environment variable and the current directory the later initializers read.
+        var call = "class C\n{\n    private bool _z = Set();\n    private string _a = Environment.GetEnvironmentVariable(\"MODE\");\n    static bool Set() { Environment.SetEnvironmentVariable(\"MODE\", \"on\"); return true; }\n}\n";
+        var property = "class C\n{\n    private bool _z = Set();\n    private string _a = Environment.CurrentDirectory;\n    static bool Set() { Environment.CurrentDirectory = \"/\"; return true; }\n}\n";
+
+        Assert.Equal(new[] { "_z", "_a", "Set" }, Members(Run(call)));
+        Assert.Equal(new[] { "_z", "_a", "Set" }, Members(Run(property)));
+    }
+
+    [Fact]
+    public void KeepsAnInstanceInitializerReadingAStaticFieldOfALibraryAfterOneThatRunsCodeWhichMayChangeIt()
+    {
+        var library = Library("public static class Holder { public static int Value; }");
+        var (tree, model) = Compile("class C\n{\n    private bool _z = Set();\n    private int _a = Holder.Value;\n    static bool Set() { Holder.Value = 1; return true; }\n}\n", references: [library]);
+
+        var result = Reorganizer.Reorganize(tree, model, new ReorganizeSettings(), ReorganizeCleanup.WithoutPadding);
+
+        Assert.Equal(new[] { "_z", "_a", "Set" }, Members(result.Output));
+    }
+
+    [Fact]
     public void FollowsAReadThroughTheGenericTypeNameAndTreatsAnotherGenericTypeAsRunningCode()
     {
         // B = C<T>.Z + 1 reads Z; G<int>.V may run G's static constructor, which may read Z.

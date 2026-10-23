@@ -38,7 +38,8 @@ namespace CodeJanitor.Engine.Steps.Transformations;
 /// </list>
 /// A file compiled by several projects or target frameworks is analyzed in each of them, and a class is sealed only
 /// when it is safe in every one. Classes outside the solution (other repositories, published packages) cannot be
-/// seen: sealing a public class remains an API change, which is why the cleanup setting is an explicit opt-in.
+/// seen: sealing a public class remains an API change, which is why the cleanup setting is an explicit opt-in and an
+/// enforced CA1852 alone leaves public classes unsealed.
 /// The scans that cover the whole solution are cached by what they read, not by solution snapshot: the conversion
 /// sites of a project by its first syntax tree and the version of the project and of the projects it references,
 /// whether a file has inactive code by its syntax tree. A syntax tree is shared by every snapshot in which its
@@ -65,7 +66,7 @@ internal sealed class ClassSealingConverter
     /// <param name="documents">The documents of one file, one per project flavor compiling it, all with the same text.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The text of the file with the safe classes sealed, or its unchanged text when none is.</returns>
-    public Task<string> SealWhenSafeAsync(IReadOnlyList<Document> documents, CancellationToken cancellationToken) => SealWhenSafeAsync(documents, Array.Empty<string>(), cancellationToken);
+    public Task<string> SealWhenSafeAsync(IReadOnlyList<Document> documents, CancellationToken cancellationToken) => SealWhenSafeAsync(documents, Array.Empty<string>(), false, cancellationToken);
 
     /// <summary>
     /// Seals the classes of the file that are safe to seal in every document of <paramref name="documents" />, given
@@ -77,11 +78,16 @@ internal sealed class ClassSealingConverter
     /// projects): the classes of these projects, and of the projects they depend on, can be used by code that is not
     /// analyzed.
     /// </param>
+    /// <param name="keepExternallyVisibleClasses">
+    /// Whether the classes visible outside their assembly (<c>public</c>) are left unsealed, as CA1852 reports only the
+    /// others.
+    /// </param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The text of the file with the safe classes sealed, or its unchanged text when none is.</returns>
     public async Task<string> SealWhenSafeAsync(
         IReadOnlyList<Document> documents,
         IReadOnlyCollection<string> projectsReferencedOutsideWorkspace,
+        bool keepExternallyVisibleClasses,
         CancellationToken cancellationToken)
     {
         if (documents is null || documents.Count == 0)
@@ -100,7 +106,7 @@ internal sealed class ClassSealingConverter
                 break;
             }
 
-            var safeInDocument = await GetSafeToSealAsync(document, referencedOutside, cancellationToken).ConfigureAwait(false);
+            var safeInDocument = await GetSafeToSealAsync(document, referencedOutside, keepExternallyVisibleClasses, cancellationToken).ConfigureAwait(false);
             candidates.RemoveAll(position => !safeInDocument.Contains(position));
         }
 
@@ -116,10 +122,11 @@ internal sealed class ClassSealingConverter
 
     /// <summary>
     /// Gets the start positions of the candidate declarations of <paramref name="document" /> that are safe to seal
-    /// in its project. None is when a project that can use the classes is written in another language, is referenced by
-    /// a project outside the workspace (<paramref name="referencedOutside" />) or contains inactive code.
+    /// in its project, the classes visible outside the assembly excepted with <paramref name="keepExternallyVisibleClasses" />.
+    /// None is when a project that can use the classes is written in another language, is referenced by a project outside
+    /// the workspace (<paramref name="referencedOutside" />) or contains inactive code.
     /// </summary>
-    private async Task<HashSet<int>> GetSafeToSealAsync(Document document, HashSet<string> referencedOutside, CancellationToken cancellationToken)
+    private async Task<HashSet<int>> GetSafeToSealAsync(Document document, HashSet<string> referencedOutside, bool keepExternallyVisibleClasses, CancellationToken cancellationToken)
     {
         var solution = document.Project.Solution;
         var dependents = solution.GetProjectDependencyGraph().GetProjectsThatTransitivelyDependOnThisProject(document.Project.Id);
@@ -144,6 +151,7 @@ internal sealed class ClassSealingConverter
         foreach (var declaration in GetCandidates(root))
         {
             if (semanticModel.GetDeclaredSymbol(declaration, cancellationToken) is INamedTypeSymbol type &&
+                !(keepExternallyVisibleClasses && type.DeclaredAccessibility == Accessibility.Public) &&
                 IsDeclaredForSealing(type) &&
                 !await IsInheritedOrConstrainedAsync(type, solution, cancellationToken).ConfigureAwait(false))
             {

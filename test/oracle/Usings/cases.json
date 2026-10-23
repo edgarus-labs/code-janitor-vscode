@@ -8,7 +8,7 @@
       ]
     },
     "Outward/OutShadow.cs": {
-      "skipped": "'Foo'",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutAliases.cs": {
@@ -20,7 +20,7 @@
       ]
     },
     "Outward/OutExtensionShadow.cs": {
-      "skipped": "extension method 'Shout'",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutExtensionSafe.cs": {
@@ -29,11 +29,13 @@
       ]
     },
     "Outward/OutExtensionMerge.cs": {
-      "skipped": "extension method 'Where'",
+      "moved": [
+        "using System.Linq;\nusing Company.App.Extra;\n\nnamespace Company.App"
+      ],
       "control": true
     },
     "Outward/OutSameNamedSkip.cs": {
-      "skipped": "'T' ambiguous",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutSameNamedOk.cs": {
@@ -43,22 +45,28 @@
       ]
     },
     "Outward/OutBclCollision.cs": {
-      "skipped": "'Timer' ambiguous",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutIf.cs": {
       "skipped": "preprocessor directives"
     },
     "Outward/OutRegion.cs": {
-      "skipped": "preprocessor directives"
+      "moved": [
+        "#region Usings\nusing System;\nusing Company.App.Services;\n",
+        "#endregion\n\nnamespace Company.App"
+      ]
     },
     "Outward/OutHeaderAndComments.cs": {
       "moved": [
-        "// Second header line\n\n// Services of the app\nusing Company.App.Services; // the services\n/* shared */ using Company.Shared;\n\nnamespace Company.App"
+        "// Second header line\n\n// Services of the app\nusing Company.App.Services; // the services\n/* shared */\nusing Company.Shared;\n\nnamespace Company.App"
       ]
     },
     "Outward/OutNullableInterleaved.cs": {
-      "skipped": "preprocessor directives"
+      "moved": [
+        "using System;\nusing Company.App.Services;\n",
+        "#nullable enable\nnamespace Company.App"
+      ]
     },
     "Outward/OutFileScoped.cs": {
       "moved": [
@@ -76,7 +84,8 @@
       ]
     },
     "Outward/OutExternInside.cs": {
-      "skipped": "extern alias 'V1'"
+      "skipped": "the fix would add a compiler error",
+      "control": true
     },
     "Outward/OutTupleAlias.cs": {
       "moved": [
@@ -99,18 +108,20 @@
       ]
     },
     "Outward/OutAliasVisible.cs": {
-      "skipped": "alias 'Timer'",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutStaticPair.cs": {
-      "skipped": "cannot be compared"
+      "moved": [
+        "using static System.Console;\nusing static System.Math;\n\nnamespace Company.App"
+      ]
     },
     "Outward/OutAliasImport.cs": {
-      "skipped": "what 'X' refers to",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Inward/InAliasQualifier.cs": {
-      "skipped": "finds 'Txt' through",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutGenericArity.cs": {
@@ -119,7 +130,7 @@
       ]
     },
     "Outward/OutConditionalNamespace.cs": {
-      "skipped": "'Archive' is declared in Company.App only under a preprocessor condition"
+      "skipped": "'Archive' is declared under a preprocessor condition"
     }
   },
   "inward": {
@@ -142,11 +153,11 @@
       ]
     },
     "Inward/InRebind.cs": {
-      "skipped": "'Foo'",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Inward/InExtension.cs": {
-      "skipped": "extension method 'Shout'",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Inward/InExtensionSafe.cs": {
@@ -159,19 +170,16 @@
         "namespace Company.App.Views;\n\nusing System.Text;\nusing Company.App.Services;\n\ninternal class InFileScoped"
       ]
     },
-    "Inward/InExternAlias.cs": {
-      "moved": [
-        "extern alias V1;\n\nnamespace Company.App\n{\n    using System;\n    using V1::Ext;"
-      ]
-    },
+    "Inward/InExternAlias.cs": {},
     "Inward/InHeaderAndComments.cs": {
       "moved": [
-        "// Second header line\n\nnamespace Company.App\n{\n    using System; // for Action\n    // The services\n    using Company.App.Services;"
+        "// Second header line\n\nnamespace Company.App\n{\n    using System; // for Action\n",
+        "// The services\n    using Company.App.Services;"
       ]
     },
     "Inward/InExistingUsings.cs": {
       "moved": [
-        "namespace Company.App\n{\n    using System;\n    using System.Text;\n    using Services;"
+        "namespace Company.App\n{\n    using System;\n    using System.Text;\n    using Company.App.Services;"
       ]
     },
     "Inward/InIf.cs": {
@@ -181,39 +189,52 @@
       "skipped": "preprocessor directives"
     },
     "Inward/InHiddenBinding.cs": {
-      "skipped": "finds 'Math' through 'using System;'",
+      "moved": [
+        "namespace Company.App\n{\n    using System;\n",
+        "    using static System.Math;"
+      ],
       "control": true
     },
     "Inward/InHiddenGenericArity.cs": {
-      "skipped": "finds 'Helpers' through 'using Vendor;'",
+      "moved": [
+        "namespace Company.App\n{\n    using Vendor;\n",
+        "    using static Vendor.Helpers;"
+      ],
       "control": true
     },
     "Inward/InHiddenNestedType.cs": {
-      "skipped": "finds 'Inner' through 'using static Company.App.Models.Holder;'",
+      "moved": [
+        "namespace Company.App\n{\n    using static Company.App.Models.Holder;\n",
+        "    using Held = Models.Holder.Inner;"
+      ],
       "control": true
     },
     "Inward/InAliasConflict.cs": {
-      "skipped": "alias 'Widget'",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Inward/InAssemblyAttribute.cs": {},
     "Inward/InNoNamespace.cs": {},
-    "Inward/InTwoNamespaces.cs": {},
+    "Inward/InTwoNamespaces.cs": {
+      "skipped": "no automatic fix applies here"
+    },
     "Inward/InTypeOutside.cs": {},
     "Inward/InNestedCapture.cs": {
-      "skipped": "what 'Gauge' refers to",
+      "skipped": "no automatic fix applies here",
       "control": true
     },
     "Inward/InAliasQualifier.cs": {
-      "skipped": "finds 'Txt' through",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutBclCollision.cs": {
-      "skipped": "'Timer' ambiguous",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "Outward/OutExtensionMerge.cs": {
-      "skipped": "extension method 'Where'"
+      "moved": [
+        "namespace Company.App\n{\n    using System.Collections.Generic;\n    using System.Linq;\n    using Company.App.Extra;"
+      ]
     },
     "Outward/OutRegion.cs": {
       "skipped": "preprocessor directives"
@@ -223,16 +244,18 @@
     },
     "Outward/OutDuplicates.cs": {
       "moved": [
-        "namespace Company.App\n{\n    using System;\n    using System.Text; // needed for StringBuilder\n    using Services;"
+        "namespace Company.App\n{\n    using System;\n    using System.Text; // needed for StringBuilder\n    using Company.App.Services;"
       ]
     },
     "Outward/OutExternAlias.cs": {},
     "Outward/OutAliasVisible.cs": {},
     "Outward/OutStaticPair.cs": {
-      "skipped": "cannot be compared"
+      "moved": [
+        "namespace Company.App\n{\n    using static System.Console;\n    using static System.Math;"
+      ]
     },
     "Outward/OutAliasImport.cs": {
-      "skipped": "what 'X' refers to",
+      "skipped": "the fix would add a compiler error",
       "control": true
     }
   }

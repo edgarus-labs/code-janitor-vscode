@@ -178,7 +178,7 @@ public sealed class RepositoryPolicy
         JsonNode? file;
         try
         {
-            file = JsonNode.Parse(text, documentOptions: new JsonDocumentOptions { AllowTrailingCommas = false });
+            file = JsonNode.Parse(text, documentOptions: new JsonDocumentOptions { AllowTrailingCommas = false, AllowDuplicateProperties = false });
         }
         catch (JsonException exception)
         {
@@ -207,7 +207,7 @@ public sealed class RepositoryPolicy
         var defaults = CleanupSettingsDefaults.Create();
         var readers = defaults
             .Select(entry => entry.Key)
-            .Where(key => key is not "codeStyleRules" and not "reorganize")
+            .Where(key => key is not "codeStyleRules" and not "reorganize" and not "commentFormat")
             .Select(key => (Name: key, Key: key))
             .Concat(KeyAliases.Select(alias => (Name: alias.Key, Key: alias.Value)));
 
@@ -311,7 +311,7 @@ public sealed class RepositoryPolicy
         return expected switch
         {
             JsonValueKind.True or JsonValueKind.False => actual is JsonValueKind.True or JsonValueKind.False,
-            JsonValueKind.Object => actual == JsonValueKind.Object,
+            JsonValueKind.Array => actual == JsonValueKind.Array && value.AsArray().All(entry => entry?.GetValueKind() == JsonValueKind.String),
             _ => actual == expected,
         };
     }

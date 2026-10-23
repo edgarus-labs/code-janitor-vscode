@@ -5,11 +5,10 @@
 
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-const SETTINGS = ['cleanup.includeOtherFileTypes', 'cleanup.fileTypes.xml', 'cleanup.performPartialCleanupOnExternal', 'formatting.commentWrapColumn'];
+const SETTINGS = ['cleanup.includeOtherFileTypes', 'cleanup.fileTypes.xml', 'formatting.commentWrapColumn'];
 
 async function setting(key: string, value: unknown): Promise<void> {
   await vscode.workspace.getConfiguration('codeJanitor').update(key, value, vscode.ConfigurationTarget.Global);
@@ -23,10 +22,11 @@ suite('Cleanup of the other languages (real VS Code host)', () => {
     await vscode.extensions.getExtension('codejanitor.code-janitor')?.activate();
   });
 
-  setup(async () => {
-    folder = fs.mkdtempSync(path.join(os.tmpdir(), 'code-janitor-e2e-languages-'));
-    // The files are outside the workspace folders: clean them without asking.
-    await setting('cleanup.performPartialCleanupOnExternal', 'always');
+  setup(() => {
+    // In the fixture workspace, whose `root = true` .editorconfig keeps the .editorconfig files above it out.
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace, 'The e2e host must open the fixture workspace.');
+    folder = fs.mkdtempSync(path.join(workspace.uri.fsPath, 'e2e-languages-'));
   });
 
   teardown(async () => {

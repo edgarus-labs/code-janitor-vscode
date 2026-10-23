@@ -1,4 +1,5 @@
 using CodeJanitor.Engine.Reorganize;
+using CodeJanitor.Engine.Tests.Steps.Support;
 using Xunit;
 using static CodeJanitor.Engine.Tests.Reorganize.ReorganizeHarness;
 
@@ -462,6 +463,21 @@ public sealed class ReorganizeTests
 
         Assert.Equal(source, await ApplyStepAsync(step, source, ask));
         Assert.NotEqual(source, await ApplyStepAsync(step, source, yes));
+    }
+
+    [Fact]
+    public async Task ReportsInACleanupTheTypesItLeavesAloneAndAFileItDoesNotReorganize()
+    {
+        var engine = new CleanupEngine([new ReorganizeStep()]);
+        var request = new CodeJanitor.Engine.Contracts.CleanupRequest(new System.Text.Json.Nodes.JsonObject { ["reorganize"] = new System.Text.Json.Nodes.JsonObject { ["runAtStartOfCleanup"] = true } }, [], null);
+
+        var shared = await engine.CleanupAsync(StepHarness.EngineDocument("class C { void B() { } int A; }\n"), request, CancellationToken.None);
+        var conditional = await engine.CleanupAsync(StepHarness.EngineDocument("class C\n{\n    void B() { }\n#if X\n    int _a;\n#endif\n}\n"), request, CancellationToken.None);
+
+        Assert.Contains("Reorganize members: C (line 1): skipped because of more than one member on a line", shared.Issues);
+        Assert.Contains(
+            "Reorganize members: not applied, the file has preprocessor conditionals (#if, #pragma); set codeJanitor.reorganize.performWhenPreprocessorConditionals to \"yes\" to reorganize such files in a cleanup",
+            conditional.Issues);
     }
 
     private static async Task<string> ApplyStepAsync(ReorganizeStep step, string source, CodeJanitor.Engine.Contracts.IEffectiveSettings settings)

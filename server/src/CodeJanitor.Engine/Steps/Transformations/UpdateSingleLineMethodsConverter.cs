@@ -86,7 +86,7 @@ internal sealed class UpdateSingleLineMethodsConverter : ISourceTransformation
                 return visited;
             }
 
-            // Check if it's a single-line method (return statement or throw)
+            // Check if the body has statements and its braces are on one line
             if (!IsSingleLineMethodBody(node.Body))
             {
                 return visited;

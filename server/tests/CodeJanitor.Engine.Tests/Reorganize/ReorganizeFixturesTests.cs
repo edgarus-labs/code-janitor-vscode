@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using CodeJanitor.Engine.Reorganize;
+using CodeJanitor.Engine.Tests.Testbed;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Xunit;
@@ -16,7 +17,7 @@ public sealed class ReorganizeFixturesTests
     public static string RepositoryRoot([CallerFilePath] string path = "") =>
         Path.GetFullPath(Path.Combine(Path.GetDirectoryName(path)!, "..", "..", "..", ".."));
 
-    private static string Read(string name, [CallerFilePath] string path = "") => File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!, "Fixtures", name));
+    private static string Read(string name, [CallerFilePath] string path = "") => TestbedScenarios.ReadText(Path.Combine(Path.GetDirectoryName(path)!, "Fixtures", name));
 
     private static ReorganizeResult RunFixture(string name)
     {
@@ -83,7 +84,7 @@ public sealed class ReorganizeFixturesTests
     {
         var result = RunFixture("Bom.cs");
 
-        Assert.StartsWith("\uFEFF// header\n\nusing System;", result.Output);
+        Assert.StartsWith("\uFEFF// header\n\nusing System;", result.Output, StringComparison.Ordinal);
         Assert.Contains("public int Alpha;\n        public void Zulu() { }", result.Output);
     }
 

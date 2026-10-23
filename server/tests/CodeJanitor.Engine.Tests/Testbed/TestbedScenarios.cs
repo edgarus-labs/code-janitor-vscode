@@ -504,7 +504,7 @@ public static class TestbedScenarios
         var runtimeDirectory = RuntimeEnvironment.GetRuntimeDirectory();
         var dotnetRoot = Path.GetFullPath(Path.Combine(runtimeDirectory, "..", "..", ".."));
         var sdk = Directory.Exists(Path.Combine(dotnetRoot, "sdk"))
-            ? Directory.GetDirectories(Path.Combine(dotnetRoot, "sdk")).OrderByDescending(path => path, StringComparer.Ordinal).FirstOrDefault()
+            ? NewestSdk(Directory.GetDirectories(Path.Combine(dotnetRoot, "sdk")))
             : null;
         var analyzers = sdk is null ? null : Path.Combine(sdk, "Sdks", "Microsoft.NET.Sdk", "analyzers");
         if (analyzers is null || !Directory.Exists(analyzers))
@@ -520,6 +520,16 @@ public static class TestbedScenarios
             .Select(path => (AnalyzerReference)new AnalyzerFileReference(path, LoadFromLoader.Instance))
             .ToImmutableArray();
     });
+
+    /// <summary>The SDK folder with the highest version number, a release before a preview of the same number.</summary>
+    internal static string? NewestSdk(IEnumerable<string> directories) => directories
+        .Select(folder => (Folder: folder, Name: Path.GetFileName(folder)))
+        .Select(sdk => (sdk.Folder, Release: !sdk.Name.Contains('-', StringComparison.Ordinal), Version: Version.TryParse(sdk.Name.Split('-')[0], out var version) ? version : null))
+        .Where(sdk => sdk.Version is not null)
+        .OrderByDescending(sdk => sdk.Version)
+        .ThenByDescending(sdk => sdk.Release)
+        .Select(sdk => sdk.Folder)
+        .FirstOrDefault();
 
     private sealed class LoadFromLoader : IAnalyzerAssemblyLoader
     {

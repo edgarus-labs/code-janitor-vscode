@@ -114,6 +114,56 @@ public sealed class RepositoryPolicyTests : IDisposable
     }
 
     [Fact]
+    public void Parse_AcceptsOnlyScalarAndStringListValues_TheObjectValuedSettingsAndWrongListShapesAreIgnored()
+    {
+        var policy = RepositoryPolicy.Parse("""{ "cleanup": { "commentFormat": { "wrapColumn": 10 }, "usingStatementsToReinsertWhenRemoved": { "a": 1 }, "removeRegions": false } }""");
+
+        Assert.Equal(["removeRegions"], policy.Overrides.Select(entry => entry.Key));
+        Assert.Empty(RepositoryPolicy.Parse("""{ "cleanup": { "usingStatementsToReinsertWhenRemoved": ["using System;", 1] } }""").Overrides);
+        Assert.Equal(["using System;"], RepositoryPolicy.Parse("""{ "cleanup": { "usingStatementsToReinsertWhenRemoved": ["using System;"] } }""").Overrides["usingStatementsToReinsertWhenRemoved"]!.AsArray().Select(entry => entry!.GetValue<string>()));
+    }
+
+    [Fact]
+    public void ApplyTo_KeepsTheUserCommentFormat_WhenThePolicyListsOne()
+    {
+        var user = CleanupSettingsDefaults.Create();
+        user["commentFormat"] = new JsonObject { ["wrapColumn"] = 120, ["xmlAlignParamTags"] = false };
+
+        var settings = RepositoryPolicy.Parse("""{ "cleanup": { "commentFormat": { "wrapColumn": 80 } } }""").ApplyTo(user);
+
+        Assert.True(JsonNode.DeepEquals(user["commentFormat"], settings["commentFormat"]));
+    }
+
+    [Theory]
+    [InlineData("""{ "cleanup": { "removeRegions": false, "removeRegions": true } }""")]
+    [InlineData("""{ "cleanup": { "removeRegions": false }, "cleanup": { "removeRegions": true } }""")]
+    [InlineData("""{ "cleanup": { "codeStyle": { "csharp_prefer_braces": "true", "csharp_prefer_braces": "false" } } }""")]
+    public void Parse_DuplicateKeys_AreReportedAsInvalid(string text)
+    {
+        string? reported = null;
+
+        var policy = RepositoryPolicy.Parse(text, onInvalid: message => reported = message);
+
+        Assert.Same(RepositoryPolicy.None, policy);
+        Assert.NotNull(reported);
+    }
+
+    [Fact]
+    public void ForDirectory_DuplicateKeys_AreReportedAsAnIssue_AndDoNotFallBackToAParentPolicy()
+    {
+        File.WriteAllText(Path.Combine(_tempDirectory, ".codejanitor"), """{ "cleanup": { "organizeUsings": true } }""");
+        var inner = Directory.CreateDirectory(Path.Combine(_tempDirectory, "inner"));
+        var path = Path.Combine(inner.FullName, ".codejanitor");
+        File.WriteAllText(path, """{ "cleanup": { "removeRegions": false, "removeRegions": true } }""");
+
+        var policy = RepositoryPolicy.ForDirectory(inner.FullName);
+
+        Assert.Contains(".codejanitor is not valid JSON and is ignored", Assert.Single(policy.Issues), StringComparison.Ordinal);
+        Assert.Empty(policy.Overrides);
+        Assert.Equal(path, policy.ConfigPath);
+    }
+
+    [Fact]
     public void ApplyTo_ListedKeysWin_AndTheCodeStyleSectionEditsTheUserRules()
     {
         var user = CleanupSettingsDefaults.Create();

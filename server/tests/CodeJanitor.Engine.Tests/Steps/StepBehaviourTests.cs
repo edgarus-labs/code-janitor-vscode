@@ -3,6 +3,7 @@ using CodeJanitor.Engine.Contracts;
 using CodeJanitor.Engine.Steps;
 using CodeJanitor.Engine.Tests.Steps.Support;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Xunit;
 
 namespace CodeJanitor.Engine.Tests.Steps;
@@ -122,6 +123,41 @@ public sealed class StepBehaviourTests
     }
 
     [Fact]
+    public async Task SealClasses_AnEnforcedCA1852Alone_SealsOnlyTheClassesNotVisibleOutsideTheAssembly()
+    {
+        const string Source = "public class Animal { }\ninternal class Plant { }\nclass Stone { }\n";
+        var ca1852 = EditorConfig(("dotnet_diagnostic.ca1852.severity", "warning"));
+
+        Assert.Equal("public class Animal { }\ninternal sealed class Plant { }\nsealed class Stone { }\n", await StepHarness.CleanAsync(Source, On(), ca1852));
+        Assert.Equal("public sealed class Animal { }\ninternal sealed class Plant { }\nsealed class Stone { }\n", await StepHarness.CleanAsync(Source, On("sealClassesWhenSafe"), ca1852));
+        Assert.Equal("public sealed class Animal { }\ninternal sealed class Plant { }\nsealed class Stone { }\n", await StepHarness.CleanAsync(Source, On("sealClassesWhenSafe")));
+    }
+
+    [Fact]
+    public async Task PatternMatchingNullChecks_BeforeCSharp9_ReportsTheInequalitiesLeftUnchanged()
+    {
+        const string Source = "class C { bool M(object o) => o != null; }\n";
+        var document = StepHarness.Document(Source);
+        document = document.Project.WithParseOptions(new CSharpParseOptions(LanguageVersion.CSharp8)).GetDocument(document.Id)!;
+
+        var outcome = await new CleanupEngine([new PatternMatchingNullChecksStep()]).CleanupAsync(document, new CleanupRequest(On("convertToPatternMatchingNullChecks"), [], null), CancellationToken.None);
+
+        Assert.Equal(Source, await StepHarness.TextOfAsync(outcome.Solution.GetDocument(document.Id)!));
+        Assert.Contains(outcome.Issues, issue => issue.StartsWith("'!= null' checks were left unchanged: 'is not null' patterns need C# 9", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PatternMatchingNullChecks_FromCSharp9_ReportsNothing()
+    {
+        var document = StepHarness.Document("class C { bool M(object o) => o != null; }\n");
+
+        var outcome = await new CleanupEngine([new PatternMatchingNullChecksStep()]).CleanupAsync(document, new CleanupRequest(On("convertToPatternMatchingNullChecks"), [], null), CancellationToken.None);
+
+        Assert.Equal("class C { bool M(object o) => o is not null; }\n", await StepHarness.TextOfAsync(outcome.Solution.GetDocument(document.Id)!));
+        Assert.Empty(outcome.Issues);
+    }
+
+    [Fact]
     public async Task EndOfLine_ConvertsEveryLineBreak()
     {
         Assert.Equal("class C\n{\n}\n", await StepHarness.CleanAsync("class C\r\n{\r}\r\n", On(), EditorConfig(("end_of_line", "lf"))));
@@ -134,6 +170,26 @@ public sealed class StepBehaviourTests
         var output = await StepHarness.CleanAsync("class C { string M(int a) => string.Format(\"{{0}} {0}\", a); }\n", On("convertStringFormatToInterpolation"));
 
         Assert.Equal("class C { string M(int a) => $\"{{0}} {a}\"; }\n", output);
+    }
+
+    [Theory]
+    [InlineData("System.Diagnostics.Debug.Assert(ok, string.Format(\"{0}\", Compute()))")]
+    [InlineData("System.Diagnostics.Debug.WriteLineIf(ok, string.Format(\"{0}\", Compute()))")]
+    [InlineData("System.Diagnostics.Debug.Assert(ok, (string.Format(\"{0}\", Compute())))")]
+    [InlineData("new System.Text.StringBuilder().Append(string.Format(\"{0}\", Compute()))")]
+    public async Task StringFormat_PassedWhereAnInterpolatedStringHandlerOverloadExists_IsUnchanged(string call)
+    {
+        var source = $"class C {{ void M(bool ok) => {call}; string Compute() => \"\"; }}\n";
+
+        Assert.Equal(source, await StepHarness.CleanAsync(source, On("convertStringFormatToInterpolation")));
+    }
+
+    [Fact]
+    public async Task StringFormat_PassedWhereNoInterpolatedStringHandlerOverloadExists_IsConverted()
+    {
+        var output = await StepHarness.CleanAsync("class C { void M() => System.Console.WriteLine(string.Format(\"{0}\", Compute())); string Compute() => \"\"; }\n", On("convertStringFormatToInterpolation"));
+
+        Assert.Equal("class C { void M() => System.Console.WriteLine($\"{Compute()}\"); string Compute() => \"\"; }\n", output);
     }
 
     [Theory]

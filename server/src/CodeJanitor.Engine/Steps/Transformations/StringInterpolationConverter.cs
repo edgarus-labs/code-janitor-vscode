@@ -75,7 +75,54 @@ internal sealed class StringInterpolationConverter : ISourceTransformation
         }
 
         /// <summary>
-        /// This CSharpSyntaxRewriter override transforms valid `string.Format` invocations with string-literal format strings and in-range placeholder indices into equivalent interpolated strings, returning the original node unchanged when the call is not a string-format invocation, has fewer than two arguments, uses a non-literal format string, or contains out-of-range placeholders.
+        /// Whether the call, possibly parenthesized or concatenated, is an argument of a method, constructor or indexer
+        /// with an overload taking an interpolated string handler (<c>Debug.Assert</c>, <c>Debug.WriteLineIf</c>,
+        /// <c>StringBuilder.Append</c>, ...): an interpolated string binds to that overload, whose handler decides whether
+        /// and when the holes are evaluated.
+        /// </summary>
+        private bool CanBindToInterpolatedStringHandler(InvocationExpressionSyntax call)
+        {
+            if (model is null)
+            {
+                return false;
+            }
+
+            SyntaxNode expression = call;
+            while (expression.Parent is ParenthesizedExpressionSyntax || expression.Parent.IsKind(SyntaxKind.AddExpression))
+            {
+                expression = expression.Parent;
+            }
+
+            if (expression.Parent is not ArgumentSyntax { Parent: BaseArgumentListSyntax { Parent: { } target } })
+            {
+                return false;
+            }
+
+            IEnumerable<ISymbol> overloads;
+            if (target is InvocationExpressionSyntax invocation)
+            {
+                overloads = model.GetMemberGroup(invocation.Expression);
+            }
+            else
+            {
+                var info = model.GetSymbolInfo(target);
+                overloads = (info.Symbol is null ? info.CandidateSymbols : [info.Symbol])
+                    .SelectMany(symbol => symbol.ContainingType?.GetMembers(symbol.Name) ?? []);
+            }
+
+            return overloads.Any(overload => overload switch
+            {
+                IMethodSymbol method => method.Parameters.Any(parameter => IsInterpolatedStringHandler(parameter.Type)),
+                IPropertySymbol property => property.Parameters.Any(parameter => IsInterpolatedStringHandler(parameter.Type)),
+                _ => false,
+            });
+        }
+
+        private static bool IsInterpolatedStringHandler(ITypeSymbol type) => type.GetAttributes()
+            .Any(attribute => attribute.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.InterpolatedStringHandlerAttribute");
+
+        /// <summary>
+        /// This CSharpSyntaxRewriter override transforms valid `string.Format` invocations with string-literal format strings and in-range placeholder indices into equivalent interpolated strings, returning the original node unchanged when the call is not a string-format invocation, has fewer than two arguments, has a named argument (which binds by name, not by the position a placeholder index refers to), is an argument where an interpolated string would bind to an interpolated string handler, uses a non-literal format string, or contains out-of-range placeholders.
         /// </summary>
         /// <param name="node">The node.</param>
         /// <returns>A SyntaxNode value produced by this method.</returns>
@@ -101,6 +148,16 @@ internal sealed class StringInterpolationConverter : ISourceTransformation
 
             var arguments = visited.ArgumentList.Arguments;
             if (arguments.Count < 2)
+            {
+                return visited;
+            }
+
+            if (arguments.Any(argument => argument.NameColon is not null))
+            {
+                return visited;
+            }
+
+            if (CanBindToInterpolatedStringHandler(node))
             {
                 return visited;
             }
@@ -551,15 +608,61 @@ internal sealed class StringInterpolationConverter : ISourceTransformation
         }
 
         /// <summary>
-        /// Escapes a string for use in an interpolated string by replacing backslashes, double quotes, carriage returns, newlines, and tabs with their escaped backslash representations.
+        /// Escapes a string for use in an interpolated string: backslashes, double quotes, carriage returns, line feeds and
+        /// tabs get their escape sequence, and the other characters that would not show as themselves in the file (control
+        /// and format characters, line and paragraph separators, unassigned code points, surrogates not part of a pair)
+        /// are written as <c>\uXXXX</c>.
         /// </summary>
         /// <param name="text">The text.</param>
-        /// <returns>A string value produced by this method.</returns>
-        private static string EscapeForInterpolatedString(string text) => text
-                .Replace("\\", "\\\\")
-                .Replace("\"", "\\\"")
-                .Replace("\r", "\\r")
-                .Replace("\n", "\\n")
-                .Replace("\t", "\\t");
+        /// <returns>The text as it is written between the quotes of an interpolated string.</returns>
+        private static string EscapeForInterpolatedString(string text)
+        {
+            var builder = new System.Text.StringBuilder(text.Length);
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                switch (c)
+                {
+                    case '\\':
+                        builder.Append("\\\\");
+                        continue;
+                    case '"':
+                        builder.Append("\\\"");
+                        continue;
+                    case '\r':
+                        builder.Append("\\r");
+                        continue;
+                    case '\n':
+                        builder.Append("\\n");
+                        continue;
+                    case '\t':
+                        builder.Append("\\t");
+                        continue;
+                }
+
+                if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+                {
+                    builder.Append(c).Append(text[i + 1]);
+                    i++;
+                }
+                else if (IsInvisible(c))
+                {
+                    builder.Append("\\u").Append(((int)c).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                else
+                {
+                    builder.Append(c);
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool IsInvisible(char c) => char.GetUnicodeCategory(c) is System.Globalization.UnicodeCategory.Control
+            or System.Globalization.UnicodeCategory.Format
+            or System.Globalization.UnicodeCategory.LineSeparator
+            or System.Globalization.UnicodeCategory.ParagraphSeparator
+            or System.Globalization.UnicodeCategory.OtherNotAssigned
+            or System.Globalization.UnicodeCategory.Surrogate;
     }
 }

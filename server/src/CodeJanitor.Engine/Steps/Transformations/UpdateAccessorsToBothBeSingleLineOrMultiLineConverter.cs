@@ -144,8 +144,7 @@ internal sealed class UpdateAccessorsToBothBeSingleLineOrMultiLineConverter : IS
                 return prop;
             }
 
-            // Make both accessors the same format
-            // Choose to make them both multi-line (preserves code style)
+            // Make every accessor match the format of the first one
             var newAccessors = new SyntaxList<AccessorDeclarationSyntax>();
 
             foreach (var accessor in prop.AccessorList.Accessors)
@@ -206,10 +205,11 @@ internal sealed class UpdateAccessorsToBothBeSingleLineOrMultiLineConverter : IS
         }
 
         /// <summary>
-        /// We need to analyze the method. It checks if an accessor is single-line. If body null (expression-bodied) returns true. Else splits body text by newline and returns true if lines length &lt;=2. That means body with braces on separate lines but no content (or content on same line?) Actually split by &apos;\n&apos;, if body has opening and closing brace on separate lines, the string would be &quot;{\n}&quot; giving two lines after split: &quot;{&quot; and &quot;}&quot;? Let&apos;s see: &quot;{\n}&quot;.Split(&apos;\n&apos;) gives [&quot;{&quot;, &quot;}&quot;] length 2, so returns true. So it treats a body spanning exactly two lines (opening and closing brace) as single-line. Also if body has content on same line as braces maybe length 1. Side effects: none, just uses ToFullString which includes trivia? ToFullString returns full string including leading/trailing trivia? Actually for a node, ToFullString includes all trivia. Split by &apos;\n&apos; counts lines. Potential issue: if there are many lines but only two newline characters? Actually split includes trailing empty string if string ends with newline. For &quot;{\r\n}&quot; split on &apos;\n&apos; gives [&quot;{\r&quot;, &quot;}&quot;] length.
+        /// Determines whether the accessor counts as single-line: it has no block body, or the full text of its body,
+        /// trivia included, holds at most one line feed (such as the one ending the closing brace's line).
         /// </summary>
         /// <param name="accessor">The accessor.</param>
-        /// <returns>A bool value produced by this method.</returns>
+        /// <returns><see langword="true" /> when the accessor counts as single-line.</returns>
         private bool IsSingleLine(AccessorDeclarationSyntax accessor)
         {
             if (accessor.Body is null)
@@ -217,7 +217,7 @@ internal sealed class UpdateAccessorsToBothBeSingleLineOrMultiLineConverter : IS
                 return true; // Expression-bodied accessors are considered single-line
             }
 
-            // Check if body spans only 2 lines (opening and closing brace)
+            // At most one line feed in the body's text, trivia included
             var bodyText = accessor.Body.ToFullString();
             var lines = bodyText.Split('\n');
 

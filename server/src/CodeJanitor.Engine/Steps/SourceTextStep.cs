@@ -32,6 +32,17 @@ public abstract class SourceTextStep : ICleanupStep
         var text = await document.GetTextAsync(cancellationToken).ConfigureAwait(false);
         var source = text.ToString();
         var result = await TransformAsync(source, document, settings, cancellationToken).ConfigureAwait(false);
+
+        return await WithResultAsync(document, text, source, result, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The solution with the <paramref name="text" /> of the document (<paramref name="source" /> as a string) replaced by
+    /// <paramref name="result" />; the document's solution when the text is unchanged or, with
+    /// <see cref="RejectsNewCompilerErrors" />, when the result adds compiler errors.
+    /// </summary>
+    protected async Task<Solution> WithResultAsync(Document document, SourceText text, string source, string result, CancellationToken cancellationToken)
+    {
         if (string.Equals(result, source, StringComparison.Ordinal))
         {
             return document.Project.Solution;

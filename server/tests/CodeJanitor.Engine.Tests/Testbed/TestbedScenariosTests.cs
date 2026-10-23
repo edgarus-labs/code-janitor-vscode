@@ -50,6 +50,21 @@ public sealed class TestbedScenariosTests
         Assert.Contains(document.Project.AnalyzerConfigDocuments, config => config.FilePath!.Replace('\\', '/').EndsWith("EditorConfigVarPreference/.editorconfig", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void TheNewestSdkIsTheOneWithTheHighestVersionNumber()
+    {
+        string[] directories =
+        [
+            Path.Combine("sdk", "9.0.300"),
+            Path.Combine("sdk", "NuGetFallbackFolder"),
+            Path.Combine("sdk", "10.0.100-rc.2.25502.107"),
+            Path.Combine("sdk", "10.0.100"),
+            Path.Combine("sdk", "10.0.99"),
+        ];
+
+        Assert.Equal(Path.Combine("sdk", "10.0.100"), TestbedScenarios.NewestSdk(directories));
+    }
+
     [Theory]
     [InlineData("""{"t":"contains","s":"b"}""", null)]
     [InlineData("""{"t":"absent","s":"b"}""", "expected the output NOT to contain \"b\"")]

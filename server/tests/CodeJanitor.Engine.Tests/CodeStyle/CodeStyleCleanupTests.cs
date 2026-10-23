@@ -10,6 +10,8 @@ using System.Text.Json.Nodes;
 using CodeJanitor.Engine.Settings;
 using CodeJanitor.Engine.CodeStyle;
 using CodeJanitor.Engine.Diagnostics;
+using CodeJanitor.Engine.Contracts;
+using CodeJanitor.Engine.Pipeline;
 using CodeJanitor.Engine.Tests.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -464,6 +466,52 @@ public sealed class CodeStyleCleanupTests : IDisposable
         Assert.Equal(expected, await CleanupAsync(input, editorConfig: null, otherDocument: "namespace Company.App.Services { public class Svc { } }\n"));
     }
 
+    private const string DuplicateBody = "    class C\n    {\n        StringBuilder Build() => null;\n\n        Action Get() => null;\n    }\n}\n";
+
+    [Theory]
+    [InlineData(null, "using System;\nusing System.Text;\n\nnamespace Conventions\n{\n    using System.Text; // needed for StringBuilder\n\n", "using System;\nusing System.Text; // needed for StringBuilder\n\nnamespace Conventions\n{\n")]
+    [InlineData(null, "using System;\nusing System.Text; // outer\n\nnamespace Conventions\n{\n    using System.Text; // inner\n\n", "using System;\n// inner\nusing System.Text; // outer\n\nnamespace Conventions\n{\n")]
+    [InlineData("csharp_using_directive_placement = inside_namespace:warning", "using System;\nusing System.Text;\n\nnamespace Conventions\n{\n    using System.Text; // needed for StringBuilder\n\n", "namespace Conventions\n{\n    using System;\n    using System.Text; // needed for StringBuilder\n\n")]
+    [InlineData("csharp_using_directive_placement = inside_namespace:warning", "using System;\nusing System.Text;\n\nnamespace Conventions\n{\n    using System.Text;\n\n", "namespace Conventions\n{\n    using System;\n    using System.Text;\n\n")]
+    [InlineData("csharp_using_directive_placement = inside_namespace:warning", "using System;\nusing System.Text;\n\nnamespace Conventions\n{\n    // Builds text.\n    using System.Text;\n\n", "namespace Conventions\n{\n    using System;\n    // Builds text.\n    using System.Text;\n\n")]
+    [InlineData("csharp_using_directive_placement = inside_namespace:warning", "using System;\nusing System.Text; // outer\n\nnamespace Conventions\n{\n    using System.Text; // inner\n\n", "namespace Conventions\n{\n    using System;\n    // inner\n    using System.Text; // outer\n\n")]
+    public async Task MoveUsings_DirectiveThatTheTargetAlreadyHas_IsMergedWithoutLosingItsComments(string editorConfig, string head, string expectedHead)
+    {
+        _user["moveUsingsOutsideNamespace"] = editorConfig is null;
+
+        string output = await CleanupAsync(head + DuplicateBody, editorConfig);
+
+        Assert.Equal(expectedHead + DuplicateBody, output);
+    }
+
+    [Theory]
+    [InlineData(true, "namespace Company.App\n{\n    using Archive;\n\n    class C\n    {\n        Entry Get() => null;\n    }\n}\n")]
+    [InlineData(false, "using Archive;\n\nnamespace Company.App\n{\n    class C\n    {\n        Entry Get() => null;\n    }\n}\n")]
+    public async Task MoveUsings_NamespaceDeclaredOnlyUnderAPreprocessorCondition_IsNotMovedBecauseAnotherConfigurationWouldBindItDifferently(bool outward, string input)
+    {
+        _user["moveUsingsOutsideNamespace"] = outward;
+        const string conditional = "namespace Archive { public class Entry { } }\n\nnamespace Company.App\n{\n#if LEGACY\n    namespace Archive\n    {\n        public class Entry { }\n    }\n#endif\n}\n";
+
+        (string output, IReadOnlyList<UnresolvedDiagnostic> unresolved) = await CleanupWithReportAsync(input, outward ? null : "csharp_using_directive_placement = inside_namespace:warning", otherDocument: conditional);
+
+        Assert.Equal(input, output);
+        UnresolvedDiagnostic placement = Assert.Single(unresolved, item => item.Id == "IDE0065");
+        Assert.Contains("'Archive'", placement.Reason);
+        Assert.Contains("preprocessor", placement.Reason);
+    }
+
+    [Fact]
+    public async Task MoveUsings_NamespaceDeclaredUnconditionally_IsStillMovedInAFileWithConditionals()
+    {
+        _user["moveUsingsOutsideNamespace"] = true;
+        const string other = "namespace Company.App\n{\n    namespace Archive { public class Entry { } }\n}\n\n#if LEGACY\nnamespace Legacy { }\n#endif\n";
+
+        (string output, IReadOnlyList<UnresolvedDiagnostic> unresolved) = await CleanupWithReportAsync("namespace Company.App\n{\n    using Archive;\n\n    class C\n    {\n        Entry Get() => null;\n    }\n}\n", null, otherDocument: other);
+
+        Assert.Equal("using Company.App.Archive;\n\nnamespace Company.App\n{\n    class C\n    {\n        Entry Get() => null;\n    }\n}\n", output);
+        Assert.DoesNotContain(unresolved, item => item.Id == "IDE0065");
+    }
+
     [Fact]
     public async Task CodeFix_InAFileWithMixedLineEndings_LeavesTheLineEndingsAsTheFixWroteThem()
     {
@@ -564,7 +612,10 @@ public sealed class CodeStyleCleanupTests : IDisposable
         RemoveAndSortUsings,
     }
 
-    private async Task<string> CleanupAsync(string input, string editorConfig, LanguageVersion languageVersion = LanguageVersion.Default, string otherDocument = null, Sorting usingDirectiveSorting = Sorting.None)
+    private async Task<string> CleanupAsync(string input, string editorConfig, LanguageVersion languageVersion = LanguageVersion.Default, string otherDocument = null, Sorting usingDirectiveSorting = Sorting.None) =>
+        (await CleanupWithReportAsync(input, editorConfig, languageVersion, otherDocument, usingDirectiveSorting)).Text;
+
+    private async Task<(string Text, IReadOnlyList<UnresolvedDiagnostic> Unresolved)> CleanupWithReportAsync(string input, string editorConfig, LanguageVersion languageVersion = LanguageVersion.Default, string otherDocument = null, Sorting usingDirectiveSorting = Sorting.None)
     {
         string text = "root = true\n\n[*]\nend_of_line = lf\n\n[*.cs]\n" + (editorConfig is null ? string.Empty : editorConfig + "\n");
         File.WriteAllText(Path.Combine(_directory, ".editorconfig"), text);
@@ -581,13 +632,14 @@ public sealed class CodeStyleCleanupTests : IDisposable
         _user["organizeUsings"] = usingDirectiveSorting == Sorting.RemoveAndSortUsings;
         EffectiveSettings settings = await EffectiveSettings.ForDocumentAsync(document, _user, CancellationToken.None);
 
-        Solution cleaned = await new RoslynRulesStep().ApplyAsync(document, settings, CancellationToken.None);
+        StepRun run = await new RoslynRulesStep().RunAsync(document, settings, StepRunOptions.All, CancellationToken.None);
+        Solution cleaned = run.Solution;
         if (usingDirectiveSorting == Sorting.RemoveAndSortUsings)
         {
             cleaned = await new OrganizeUsingsStep().ApplyAsync(cleaned.GetDocument(documentId), settings, CancellationToken.None);
         }
 
-        return await DiagnosticCleanupTestWorkspace.GetTextAsync(cleaned, documentId);
+        return (await DiagnosticCleanupTestWorkspace.GetTextAsync(cleaned, documentId), run.Unresolved);
     }
 
     private void SetUser(string settingName, bool value)

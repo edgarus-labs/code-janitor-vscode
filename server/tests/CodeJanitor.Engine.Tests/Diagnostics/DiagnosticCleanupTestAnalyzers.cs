@@ -566,6 +566,19 @@ internal sealed class UndeclaredIdsCodeFixProvider : CodeFixProvider
 }
 
 /// <summary>
+/// A provider whose <see cref="CodeFixProvider.FixableDiagnosticIds" /> throws, as one built against another Roslyn does.
+/// </summary>
+internal sealed class ThrowingIdsCodeFixProvider : CodeFixProvider
+{
+    public override ImmutableArray<string> FixableDiagnosticIds => throw new MissingMethodException("FixableDiagnosticIds");
+
+    public override FixAllProvider GetFixAllProvider() => null;
+
+    public override Task RegisterCodeFixesAsync(CodeFixContext context)
+        => throw new InvalidOperationException("A provider without fixable ids must never be asked for fixes.");
+}
+
+/// <summary>
 /// Renames the field (<c>legacy</c> to <c>probed</c>) and exposes a fix-all provider that only records which
 /// diagnostics the fix-all context hands out for every document and project, then declines.
 /// </summary>

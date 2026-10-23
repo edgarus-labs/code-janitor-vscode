@@ -54,4 +54,22 @@ internal static class ServerTestPaths
 
     /// <summary>The built server next to the test assembly.</summary>
     public static string ServerAssembly() => Path.Combine(AppContext.BaseDirectory, "CodeJanitor.Server.dll");
+
+    /// <summary>Creates a symbolic link to a directory or, on Windows without the privilege, a junction; false when neither can be created.</summary>
+    public static bool TryCreateDirectoryLink(string link, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+
+            return true;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException && OperatingSystem.IsWindows())
+        {
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", ["/c", "mklink", "/J", link, target]) { UseShellExecute = false, CreateNoWindow = true });
+            process!.WaitForExit();
+
+            return process.ExitCode == 0;
+        }
+    }
 }

@@ -234,6 +234,11 @@ public sealed partial class RoslynRulesStep : IRuleReportingStep, IAnalyzingStep
             solution = result.ChangedSolution;
         }
 
+        if (counts.ContainsKey(UsingPlacementRule))
+        {
+            solution = await UsingPlacement.MergeDuplicatesAsync(document, solution, cancellationToken).ConfigureAwait(false);
+        }
+
         if (originalUsings.Count > 0 && counts.ContainsKey(UnnecessaryUsingsRule))
         {
             solution = await ReinsertUsingsAsync(solution, document.Id, originalUsings, cancellationToken).ConfigureAwait(false);
@@ -298,9 +303,11 @@ public sealed partial class RoslynRulesStep : IRuleReportingStep, IAnalyzingStep
                     return Task.FromResult<string?>(PopulateSwitchDetail);
                 }
 
-                if (diagnostic.Id == UsingPlacementRule && HasDirectivesAroundUsings(diagnostic))
+                if (diagnostic.Id == UsingPlacementRule)
                 {
-                    return Task.FromResult<string?>(UsingPlacementDetail);
+                    return HasDirectivesAroundUsings(diagnostic)
+                        ? Task.FromResult<string?>(UsingPlacementDetail)
+                        : UsingPlacement.WhyNotMovedAsync(document, diagnostic, cancellationToken);
                 }
 
                 if (diagnostic.Id != NamingRule)

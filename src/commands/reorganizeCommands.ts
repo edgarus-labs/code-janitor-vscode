@@ -4,7 +4,16 @@ import { insertRegionAroundLines } from '../text/regionEdits';
 import { PreprocessorPolicy } from '../cleanup/reorganizeSettings';
 import { documentParams, engine, reportEngineUnavailable } from '../engine/vscodeEngine';
 import { logError, logInfo } from '../logging';
-import { CollectedFile, applyFileOutcome, collectFiles, expandToCSharpFiles, isCSharp, isPathCleanable, runEngineCommand } from './cleanupCore';
+import {
+  CollectedFile,
+  applyFileOutcome,
+  collectFiles,
+  expandToCSharpFiles,
+  isCSharp,
+  isPathCleanable,
+  openDocumentVersions,
+  runEngineCommand,
+} from './cleanupCore';
 import { replaceChangedPart, selectedLines } from './editorText';
 import { readReorganizeSettings } from './reorganizeSettings';
 import { readCleanupSettingsForUri } from './settings';
@@ -91,8 +100,9 @@ async function reorganizeFiles(files: readonly CollectedFile[]): Promise<Reorgan
     }
 
     try {
+      const openVersions = openDocumentVersions();
       const outcome = await runEngineCommand(file, 'reorganize', 'Reorganize', { performWhenPreprocessorConditionals: permitted });
-      await applyFileOutcome(file, outcome);
+      await applyFileOutcome(file, outcome, openVersions);
       outcomes.push({ file, report, reorganized: true, changed: outcome.text !== file.content });
     } catch (err) {
       outcomes.push(failed(err));
@@ -245,6 +255,7 @@ async function removeRegion(): Promise<void> {
   const selected = editor.selection.isEmpty ? undefined : selectedLines(editor.selection);
   // The selection's regions, or only the region whose `#region` or `#endregion` is under the cursor (not the regions nested in it).
   const lines = selected ? { startLine: selected.firstLine, endLine: selected.lastLine } : { line: editor.selection.active.line };
+  const openVersions = openDocumentVersions();
   try {
     const outcome = await runEngineCommand(file, 'removeRegions', 'Remove Region', lines);
     if (outcome.text === file.content) {
@@ -255,7 +266,7 @@ async function removeRegion(): Promise<void> {
       return;
     }
 
-    await applyFileOutcome(file, outcome);
+    await applyFileOutcome(file, outcome, openVersions);
   } catch (err) {
     if (!reportEngineUnavailable(err)) {
       logError(`Remove Region of ${file.uri.fsPath}`, err);

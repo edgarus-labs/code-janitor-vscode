@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { EngineCommand } from '../engine/protocol';
 import { reportEngineUnavailable } from '../engine/vscodeEngine';
 import { logError } from '../logging';
-import { CollectedFile, FileOutcome, applyFileOutcome, canFormatComments, formatCommentsOf, runEngineCommand } from './cleanupCore';
+import { CollectedFile, FileOutcome, applyFileOutcome, canFormatComments, formatCommentsOf, openDocumentVersions, runEngineCommand } from './cleanupCore';
 import { sortLinesInEditor } from './editorText';
 
 /**
@@ -127,6 +127,7 @@ async function formatCommentsCommand(): Promise<void> {
 /** Runs `transform` on the editor's document and applies its outcome (other files included) as one edit. */
 async function runOnEditor(editor: vscode.TextEditor, label: string, transform: (file: CollectedFile) => Promise<FileOutcome>): Promise<void> {
   const file = { uri: editor.document.uri, content: editor.document.getText(), isOpen: true };
+  const openVersions = openDocumentVersions();
   try {
     const outcome = await transform(file);
     if (outcome.text === file.content && outcome.otherFiles.length === 0 && outcome.newFiles.length === 0) {
@@ -135,7 +136,7 @@ async function runOnEditor(editor: vscode.TextEditor, label: string, transform: 
       return;
     }
 
-    await applyFileOutcome(file, outcome);
+    await applyFileOutcome(file, outcome, openVersions);
   } catch (err) {
     if (!reportEngineUnavailable(err)) {
       logError(`${label} of ${file.uri.fsPath}`, err);

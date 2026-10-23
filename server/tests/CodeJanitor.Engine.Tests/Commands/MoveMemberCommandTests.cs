@@ -96,6 +96,16 @@ public sealed class MoveMemberCommandTests
     }
 
     [Fact]
+    public async Task MovesAMemberWithTheWholeBlockCommentAboveIt()
+    {
+        const string Source = "class C\n{\n    void A() { }\n\n    /*\n    void Old() { }\n    */\n    void B() { }\n}\n";
+
+        var moved = await Move(Source, 7, "B", 2, "A", "before");
+
+        Assert.Equal("class C\n{\n    /*\n    void Old() { }\n    */\n    void B() { }\n\n    void A() { }\n}\n", moved);
+    }
+
+    [Fact]
     public async Task LeavesPreprocessorDirectivesInPlace()
     {
         const string Source = "class C\n{\n    void A() { }\n#if DEBUG\n#endif\n    void B() { }\n}\n";
@@ -189,6 +199,22 @@ public sealed class DeleteMemberCommandTests
     }
 
     [Fact]
+    public async Task DeletesAMemberWithTheWholeBlockCommentAboveIt()
+    {
+        const string Source = "class C\n{\n    void A() { }\n\n    /*\n    void Old() { }\n    */\n    void B() { }\n}\n";
+
+        Assert.Equal("class C\n{\n    void A() { }\n}\n", await Delete(Source, 7, "B"));
+    }
+
+    [Fact]
+    public async Task DeletesAMemberWithTheCommentsAboveABlockCommentAboveIt()
+    {
+        const string Source = "class C\n{\n    void A() { }\n\n    // B.\n    /* old:\n    void Old() { }\n    */\n    void B() { }\n}\n";
+
+        Assert.Equal("class C\n{\n    void A() { }\n}\n", await Delete(Source, 8, "B"));
+    }
+
+    [Fact]
     public async Task DeletesOneVariableOfAFieldDeclaringSeveral()
     {
         Assert.Equal("class C\n{\n    int a;\n}\n", await Delete("class C\n{\n    int a, b;\n}\n", 2, "b"));
@@ -204,6 +230,24 @@ public sealed class DeleteMemberCommandTests
     public async Task DeletesAMemberSharingItsLine()
     {
         Assert.Equal("class C { void B() { } }\n", await Delete("class C { void A() { } void B() { } }\n", 0, "A"));
+    }
+
+    [Fact]
+    public async Task DeletesAMemberSharingItsLine_KeepingTheDirectiveAboveIt()
+    {
+        const string Source = "class C\n{\n    #region R\n    public int A; public int B;\n    #endregion\n}\n";
+
+        var deleted = await Delete(Source, 3, "A");
+
+        Assert.Equal(["class C", "{", "#region R", "public int B;", "#endregion", "}"], deleted.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0));
+    }
+
+    [Fact]
+    public async Task DeletesOneVariableOfAField_KeepingTheDirectiveBeforeIt()
+    {
+        const string Source = "class C\n{\n    int a,\n    #region R\n    b;\n    #endregion\n}\n";
+
+        Assert.Equal("class C\n{\n    int a\n    #region R\n;\n    #endregion\n}\n", await Delete(Source, 2, "b"));
     }
 
     [Fact]
