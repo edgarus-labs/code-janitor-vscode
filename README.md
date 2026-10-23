@@ -26,11 +26,10 @@ Review the resulting diff and build your project, especially when enabling synta
 
 ## Installation
 
-Grab the `.vsix` for your platform from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases)
-(`code-janitor-<platform>-<version>.vsix`, for `win32-x64`, `win32-arm64`, `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`),
-then either:
+Grab the `.vsix` from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases)
+(`code-janitor-<version>.vsix`, one package for every platform), then either:
 
-- run `code --install-extension code-janitor-<platform>-<version>.vsix`, or
+- run `code --install-extension code-janitor-<version>.vsix`, or
 - in VS Code, open the Extensions view, click the `...` menu, and choose **Install from VSIX...**.
 
 ## How to use it
