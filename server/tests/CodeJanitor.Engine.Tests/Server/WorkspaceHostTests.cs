@@ -78,6 +78,32 @@ public sealed class WorkspaceHostTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task Without_a_solution_the_projects_are_looked_for_without_following_directory_links()
+    {
+        using var tree = new TempTree();
+        tree.Write("Lib/Lib.csproj", ServerTestPaths.Project);
+        var file = tree.Write("Lib/Helper.cs", "namespace Lib;\n\npublic class Helper\n{\n}\n");
+        tree.Write("App/App.csproj", ServerTestPaths.Project.Replace("</Project>", "  <ItemGroup>\n    <ProjectReference Include=\"../Lib/Lib.csproj\" />\n  </ItemGroup>\n</Project>"));
+        var link = tree.PathOf("Mirror");
+        Assert.True(ServerTestPaths.TryCreateDirectoryLink(link, tree.PathOf("App")), "The test needs a symbolic link or, on Windows, a junction.");
+        try
+        {
+            using var host = new WorkspaceHost(_ => { });
+            host.Initialize([tree.Root]);
+
+            var opened = await host.OpenAsync(file, null, null, default);
+
+            Assert.Equal(
+                [tree.PathOf("App/App.csproj"), tree.PathOf("Lib/Lib.csproj")],
+                opened.Document.Project.Solution.Projects.Select(project => project.FilePath).Order(StringComparer.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(link);
+        }
+    }
+
+    [Fact]
     public async Task Overlays_the_request_text_and_unsaved_documents_for_that_request_only()
     {
         using var tree = new TempTree();
@@ -163,6 +189,26 @@ public sealed class WorkspaceHostTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task A_new_editorconfig_in_a_folder_of_a_project_applies_to_the_files_under_it()
+    {
+        using var tree = new TempTree();
+        tree.Write("App/App.csproj", ServerTestPaths.Project);
+        var file = tree.Write("App/Sub/X.cs", "internal class X\n{\n}\n");
+        using var host = new WorkspaceHost(_ => { });
+        host.Initialize([tree.Root]);
+        await host.OpenAsync(file, null, null, default);
+
+        var editorConfig = tree.Write("App/Sub/.editorconfig", "[*.cs]\nindent_size = 2\n");
+        host.FileChanged(editorConfig);
+        var after = await host.OpenAsync(file, null, null, default);
+
+        Assert.Contains(editorConfig, after.Document.Project.AnalyzerConfigDocuments.Select(document => document.FilePath));
+        var options = after.Document.Project.AnalyzerOptions.AnalyzerConfigOptionsProvider.GetOptions(await after.Document.GetSyntaxTreeAsync() ?? throw new InvalidOperationException());
+        Assert.True(options.TryGetValue("indent_size", out var indentSize));
+        Assert.Equal("2", indentSize);
+    }
+
+    [Fact]
     public async Task A_loose_file_is_cleaned_in_a_fallback_project_with_the_runtime_references_and_its_editorconfig()
     {
         using var tree = new TempTree();
@@ -218,6 +264,25 @@ public sealed class WorkspaceHostTests(ITestOutputHelper output)
         Assert.Null(opened.Document.Project.FilePath);
         Assert.Contains(opened.Failures, failure => failure.Contains("App.csproj", StringComparison.Ordinal));
         Assert.DoesNotContain(opened.Issues, issue => issue.Contains("App.csproj", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_file_its_project_does_not_compile_is_not_looked_up_again_once_its_load_finished()
+    {
+        using var tree = new TempTree();
+        tree.Write("App/App.csproj", ServerTestPaths.Project.Replace("</Project>", "  <ItemGroup>\n    <Compile Remove=\"Fixtures/**\" />\n  </ItemGroup>\n</Project>"));
+        var file = tree.Write("App/Fixtures/F.cs", "internal class F\n{\n}\n");
+        var log = new List<string>();
+        using var host = new WorkspaceHost(message => { lock (log) { log.Add(message); } });
+        host.Initialize([tree.Root]);
+        var first = await host.OpenAsync(file, null, null, default);
+
+        tree.Write("All.slnx", "<Solution>\n  <Project Path=\"App/App.csproj\" />\n</Solution>\n");
+        var second = await host.OpenAsync(file, null, null, default);
+
+        Assert.Null(first.Document.Project.FilePath);
+        Assert.Null(second.Document.Project.FilePath);
+        Assert.Equal([$"Loaded {tree.PathOf("App/App.csproj")}"], log.Where(message => message.StartsWith("Loaded ", StringComparison.Ordinal)).Select(message => message[..message.LastIndexOf(" in ", StringComparison.Ordinal)]));
     }
 
     [Theory]

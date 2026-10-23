@@ -166,7 +166,7 @@ internal sealed partial class WorkspaceHost : IDisposable
             case ".editorconfig" or ".globalconfig":
                 if (!workspace.Solution.Projects.SelectMany(project => project.AnalyzerConfigDocuments).Any(document => PathComparer.Instance.Equals(document.FilePath, path))
                     && File.Exists(path)
-                    && workspace.Solution.Projects.Any(project => project.FilePath is { } projectPath && PathComparer.IsUnder(projectPath, Path.GetDirectoryName(path)!)))
+                    && workspace.Solution.Projects.Any(project => project.FilePath is { } projectPath && AppliesTo(path, projectPath)))
                 {
                     Reset(workspace);
                 }
@@ -178,6 +178,30 @@ internal sealed partial class WorkspaceHost : IDisposable
 
                 break;
         }
+    }
+
+    /// <summary>
+    /// Whether a new analyzer config file applies to the project of <paramref name="projectPath"/>: it lies in the project's
+    /// folder or above, or it is an <c>.editorconfig</c> in a folder inside the project's (the SDK passes the
+    /// <c>.editorconfig</c> of every folder above each compiled file) other than <c>bin</c> or <c>obj</c>.
+    /// </summary>
+    private static bool AppliesTo(string configPath, string projectPath)
+    {
+        var configFolder = Path.GetDirectoryName(configPath)!;
+        var projectFolder = Path.GetDirectoryName(projectPath)!;
+        if (PathComparer.IsUnder(projectFolder, configFolder))
+        {
+            return true;
+        }
+
+        if (!Path.GetFileName(configPath).Equals(".editorconfig", StringComparison.OrdinalIgnoreCase) || !PathComparer.IsUnder(configFolder, projectFolder))
+        {
+            return false;
+        }
+
+        var firstFolder = Path.GetRelativePath(projectFolder, configFolder).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)[0];
+
+        return !firstFolder.Equals("bin", StringComparison.OrdinalIgnoreCase) && !firstFolder.Equals("obj", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -319,6 +343,13 @@ internal sealed partial class WorkspaceHost : IDisposable
 
                 return loaded;
             }
+
+            if (workspace.LooseFiles.Contains(filePath))
+            {
+                failures.AddRange(workspace.TakeFailures());
+
+                return null;
+            }
         }
 
         target ??= LoadTarget.Find(filePath);
@@ -338,7 +369,13 @@ internal sealed partial class WorkspaceHost : IDisposable
             failures.AddRange(workspace.TakeFailures());
             if (!workspace.Stale)
             {
-                return Resolve(workspace.Solution, filePath);
+                var resolved = Resolve(workspace.Solution, filePath);
+                if (resolved is null)
+                {
+                    workspace.LooseFiles.Add(filePath);
+                }
+
+                return resolved;
             }
         }
 
@@ -374,6 +411,7 @@ internal sealed partial class WorkspaceHost : IDisposable
             {
                 if (target.IsSolution && workspace.Workspace.CurrentSolution.ProjectIds.Count == 0)
                 {
+                    workspace.SkipProjects(LoadTarget.ListedNonCSharpProjects(target.Path));
                     await workspace.Workspace.OpenSolutionAsync(target.Path).ConfigureAwait(false);
                 }
                 else
@@ -491,6 +529,7 @@ internal sealed partial class WorkspaceHost : IDisposable
     private sealed class LoadedWorkspace
     {
         private readonly List<string> _failures = [];
+        private readonly HashSet<string> _skippedProjects = new(PathComparer.Instance);
 
         public LoadedWorkspace(string root, MSBuildWorkspace workspace)
         {
@@ -499,7 +538,7 @@ internal sealed partial class WorkspaceHost : IDisposable
             Solution = workspace.CurrentSolution;
             workspace.RegisterWorkspaceFailedHandler(args =>
             {
-                if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
+                if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure && !NamesSkippedProject(args.Diagnostic.Message))
                 {
                     AddFailure(args.Diagnostic.Message);
                 }
@@ -519,6 +558,9 @@ internal sealed partial class WorkspaceHost : IDisposable
 
         public HashSet<string> ChangedFiles { get; } = new(PathComparer.Instance);
 
+        /// <summary>The files no project of the loaded solution compiles once their load finished; guarded by the host's lock.</summary>
+        public HashSet<string> LooseFiles { get; } = new(PathComparer.Instance);
+
         public bool Stale { get; set; }
 
         public void AddFailure(string failure)
@@ -526,6 +568,18 @@ internal sealed partial class WorkspaceHost : IDisposable
             lock (_failures)
             {
                 _failures.Add(failure);
+            }
+        }
+
+        /// <summary>
+        /// Projects of the solution the server does not clean (not C#): what the workspace reports about them, such as
+        /// skipping a project of a language it has no services for, is not a failure of the loading.
+        /// </summary>
+        public void SkipProjects(IEnumerable<string> projects)
+        {
+            lock (_failures)
+            {
+                _skippedProjects.UnionWith(projects);
             }
         }
 
@@ -537,6 +591,14 @@ internal sealed partial class WorkspaceHost : IDisposable
                 _failures.Clear();
 
                 return taken;
+            }
+        }
+
+        private bool NamesSkippedProject(string message)
+        {
+            lock (_failures)
+            {
+                return _skippedProjects.Any(project => message.Contains(project, PathComparer.Comparison));
             }
         }
     }
@@ -616,7 +678,7 @@ internal sealed partial class WorkspaceHost : IDisposable
                 foreach (var child in children)
                 {
                     var name = System.IO.Path.GetFileName(child);
-                    if (!name.StartsWith('.') && name is not ("bin" or "obj" or "node_modules"))
+                    if (!name.StartsWith('.') && name is not ("bin" or "obj" or "node_modules") && new DirectoryInfo(child).LinkTarget is null)
                     {
                         pending.Push(child);
                     }
@@ -657,7 +719,15 @@ internal sealed partial class WorkspaceHost : IDisposable
         }
 
         /// <summary>True when the <c>.sln</c> or <c>.slnx</c> file lists one of <paramref name="projects"/>.</summary>
-        private static bool Lists(string solution, IReadOnlyList<string> projects)
+        private static bool Lists(string solution, IReadOnlyList<string> projects) =>
+            ListedProjects(solution).Any(listed => projects.Contains(listed, PathComparer.Instance));
+
+        /// <summary>The projects the <c>.sln</c> or <c>.slnx</c> file lists that are not C# projects (<c>.vbproj</c>, <c>.dcproj</c>, <c>.sqlproj</c>…).</summary>
+        public static IReadOnlyList<string> ListedNonCSharpProjects(string solution) =>
+            [.. ListedProjects(solution).Where(project => !project.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))];
+
+        /// <summary>The full paths of the project files the <c>.sln</c> or <c>.slnx</c> file lists; none when it cannot be read.</summary>
+        private static IEnumerable<string> ListedProjects(string solution)
         {
             string text;
             try
@@ -666,17 +736,16 @@ internal sealed partial class WorkspaceHost : IDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                return false;
+                return [];
             }
 
             var directory = System.IO.Path.GetDirectoryName(solution)!;
 
             return ProjectPath().Matches(text)
-                .Select(match => System.IO.Path.GetFullPath(System.IO.Path.Combine(directory, match.Groups[1].Value.Replace('\\', System.IO.Path.DirectorySeparatorChar).Replace('/', System.IO.Path.DirectorySeparatorChar))))
-                .Any(listed => projects.Contains(listed, PathComparer.Instance));
+                .Select(match => System.IO.Path.GetFullPath(System.IO.Path.Combine(directory, match.Groups[1].Value.Replace('\\', System.IO.Path.DirectorySeparatorChar).Replace('/', System.IO.Path.DirectorySeparatorChar))));
         }
 
-        [GeneratedRegex("\"([^\"]+\\.csproj)\"", RegexOptions.IgnoreCase)]
+        [GeneratedRegex("\"([^\"]+\\.[A-Za-z0-9]*proj)\"", RegexOptions.IgnoreCase)]
         private static partial Regex ProjectPath();
 
         [GeneratedRegex("<ProjectReference\\s+Include\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase)]

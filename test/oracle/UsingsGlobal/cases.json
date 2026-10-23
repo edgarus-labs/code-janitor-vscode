@@ -1,7 +1,7 @@
 {
   "outward": {
     "OutGlobalCollision.cs": {
-      "skipped": "'T' ambiguous",
+      "skipped": "the fix would add a compiler error",
       "control": true
     },
     "OutGlobalSafe.cs": {
@@ -10,14 +10,15 @@
       ]
     },
     "OutGlobalAlias.cs": {
-      "skipped": "alias 'Shorthand'",
+      "skipped": "the fix would add a compiler error",
       "control": true
     }
   },
   "inward": {
     "InGlobalKept.cs": {
       "moved": [
-        "global using System.Collections.Generic;\n\nnamespace Company.App\n{\n    using System;\n    using Company.App.Services;"
+        "global using System.Collections.Generic;\n\nnamespace Company.App\n{\n",
+        "    using System;\n    using Company.App.Services;\n\n    internal class InGlobalKept"
       ]
     },
     "InGlobalCollision.cs": {

@@ -1498,6 +1498,31 @@ public sealed class DiagnosticCleanupEngineTests
     }
 
     [Fact]
+    public async Task CleanupAsync_ProviderWhoseFixableIdsThrow_IsSkippedAndOtherProvidersStillFix()
+    {
+        using DiagnosticCleanupTestWorkspace workspace = CreateLegacySettingsWorkspace("CJT0077", out DocumentId documentId);
+        CodeFixProviderCatalog catalog = new CodeFixProviderCatalog(new CodeFixProvider[] { new ThrowingIdsCodeFixProvider(), new RenameLegacyFieldCodeFixProvider("CJT0077") });
+
+        DiagnosticCleanupResult result = await CleanupAsync(workspace.CreateSolution(), documentId, 50, catalog, DiagnosticCleanupCategory.AnalyzerFixes);
+
+        Assert.Equal(LegacySettingsClass().Replace("legacyValue", "renamedValue"), await DiagnosticCleanupTestWorkspace.GetTextAsync(result.ChangedSolution, documentId));
+        Assert.Equal("RenameLegacyFieldCodeFixProvider", result.AppliedFixes.Single().ProviderName);
+    }
+
+    [Fact]
+    public async Task CleanupAsync_ProviderWhoseFixableIdsThrow_IsNamedByADiagnosticWithoutAFix()
+    {
+        using DiagnosticCleanupTestWorkspace workspace = CreateLegacySettingsWorkspace("CJT0078", out DocumentId documentId);
+
+        DiagnosticCleanupResult result = await CleanupAsync(workspace.CreateSolution(), documentId, new ThrowingIdsCodeFixProvider());
+
+        UnresolvedRoslynDiagnostic unresolved = result.Unresolved.Single();
+        Assert.Equal(UnresolvedDiagnosticReason.NoCodeFixProvider, unresolved.Reason);
+        Assert.Contains("ThrowingIdsCodeFixProvider", unresolved.Detail);
+        Assert.Contains("MissingMethodException", unresolved.Detail);
+    }
+
+    [Fact]
     public async Task CleanupAsync_AnalyzerAlsoReportingACompilerCategoryRule_OnlyTheNonCompilerRuleIsActionable()
     {
         using DiagnosticCleanupTestWorkspace workspace = new DiagnosticCleanupTestWorkspace(new LegacyFieldAnalyzer(("CJT0066", "Performance"), ("CJT0067", "Compiler")));

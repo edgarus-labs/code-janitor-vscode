@@ -63,6 +63,27 @@ describe('lex', () => {
     expect(tokens.map((t) => t.type)).toEqual(['predefined_type', 'identifier', '=', 'verbatim_string_literal', ';', 'end']);
   });
 
+  it('tokenizes a verbatim string that starts with a doubled quote as verbatim, not raw', () => {
+    const source = 'string s = @"""x"" y"; $@"""{x}"""; int i;';
+    const { tokens } = lex(source);
+
+    expect(tokens.map((t) => t.type)).toEqual([
+      'predefined_type',
+      'identifier',
+      '=',
+      'verbatim_string_literal',
+      ';',
+      'interpolated_string_expression',
+      ';',
+      'predefined_type',
+      'identifier',
+      ';',
+      'end',
+    ]);
+    expect(source.slice(tokens[3].start, tokens[3].end)).toBe('@"""x"" y"');
+    expect(source.slice(tokens[5].start, tokens[5].end)).toBe('$@"""{x}"""');
+  });
+
   it('tokenizes raw strings', () => {
     const { tokens } = lex('string s = """raw""";');
 

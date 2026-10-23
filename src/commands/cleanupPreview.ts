@@ -5,7 +5,16 @@ import { countChangedRegions } from '../cleanup/lineDiff';
 import { DocumentText, RuleResult } from '../engine/protocol';
 import { reportEngineUnavailable } from '../engine/vscodeEngine';
 import { logError, logInfo } from '../logging';
-import { cleanupCSharpResult, engineOutcome, isCSharp, isPathCleanable } from './cleanupCore';
+import {
+  asDocumentText,
+  cleanupCSharpResult,
+  engineOutcome,
+  externalFileCleanup,
+  firstExistingFile,
+  isCSharp,
+  isOutsideWorkspaceFolders,
+  isPathCleanable,
+} from './cleanupCore';
 import { readCleanupSettingsForUri } from './settings';
 
 /**
@@ -320,24 +329,11 @@ async function readSource(uri: vscode.Uri, maxBytes: number): Promise<Source> {
 }
 
 /**
- * `text` as VS Code's document of the file holds it: with mixed line endings, the dominant one
- * throughout (as `PieceTreeTextBufferFactory` normalizes the end of lines when it loads a file).
- */
-function asDocumentText(text: string): string {
-  const crlf = text.match(/\r\n/g)?.length ?? 0;
-  const cr = text.match(/\r(?!\n)/g)?.length ?? 0;
-  const lf = text.match(/(?<!\r)\n/g)?.length ?? 0;
-  const eol = cr + crlf > (cr + lf + crlf) / 2 ? '\r\n' : '\n';
-  const mixed = eol === '\r\n' ? cr + lf > 0 : cr + crlf > 0;
-
-  return mixed ? text.replace(/\r\n|\r|\n/g, eol) : text;
-}
-
-/**
  * Builds the plan for `uris` - deduplicated, in the given order - without writing a file and
  * without AI: every C# file gets the cleanup result the ordinary cleanup of the same files would
- * give (without renames in other files), and every other file an explicit status saying why it is
- * not part of the preview.
+ * give (without renames in other files; partial for a file outside the workspace folders, skipped when
+ * `codeJanitor.cleanup.performPartialCleanupOnExternal` is `never`), and every other file an explicit
+ * status saying why it is not part of the preview.
  */
 export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], options: PlanOptions = {}): Promise<CleanupPreviewPlan> {
   const unique = [...new Map(uris.map((uri) => [uri.toString(), uri])).values()];
@@ -346,17 +342,21 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
     1024;
 
   const entries: { readonly uri: vscode.Uri; readonly label: string; readonly source?: Source; readonly file?: PreviewFile }[] = [];
-  const pending: { readonly uri: vscode.Uri; readonly label: string; readonly text: string }[] = [];
+  const pending: { readonly uri: vscode.Uri; readonly label: string; readonly text: string; readonly partial: boolean }[] = [];
   for (const uri of unique) {
     const label = previewLabel(uri);
+    const partial = isOutsideWorkspaceFolders(uri);
+    const skipBecause = partial ? (await externalFileCleanup(uri, false)).skipBecause : undefined;
     if (!isPathCleanable(uri)) {
       entries.push({ uri, label, file: PreviewFile.skipped(uri, label, 'excluded by the codeJanitor.cleanup.include / exclude settings') });
     } else if (!isCSharp(uri)) {
       entries.push({ uri, label, file: PreviewFile.skipped(uri, label, 'not a C# file (the preview covers C# text cleanup)') });
+    } else if (skipBecause) {
+      entries.push({ uri, label, file: PreviewFile.skipped(uri, label, skipBecause) });
     } else {
       const source = await readSource(uri, maxBytes);
       if ('text' in source) {
-        pending.push({ uri, label, text: source.text });
+        pending.push({ uri, label, text: source.text, partial });
         entries.push({ uri, label, source });
       } else {
         entries.push({
@@ -384,7 +384,7 @@ export async function buildCleanupPreviewPlan(uris: readonly vscode.Uri[], optio
       compute: async (original, excludedRules) => {
         const result = await cleanupCSharpResult(
           { uri: item.uri, content: original, isOpen: false },
-          { renameAcrossWorkspace: false, honorOnlyChangedLines, excludedRules }
+          { renameAcrossWorkspace: false, honorOnlyChangedLines, partial: item.partial, excludedRules }
         );
         // Only the complete first preview logs: the previews without some rules repeat its messages.
         if (excludedRules.length === 0) {
@@ -502,7 +502,7 @@ function addWhenUnchanged(file: PreviewFile, document: vscode.TextDocument | und
   return file.tryApply(current, (updated) => {
     for (const created of file.newFiles) {
       const uri = vscode.Uri.file(created.path);
-      // Fails the whole edit when the file exists: a split never overwrites a file.
+      // Without options, creating a file that exists fails: a split never overwrites a file.
       edit.createFile(uri);
       edit.insert(uri, new vscode.Position(0, 0), created.text.replace(/^\uFEFF/, ''));
     }
@@ -514,8 +514,10 @@ function addWhenUnchanged(file: PreviewFile, document: vscode.TextDocument | und
 /**
  * Applies the included files of the plan without saving anything. A file is applied only when its
  * document - the editor buffer, or the file opened from disk - still holds the text the plan was
- * made from; otherwise it is refused. All files go into one `WorkspaceEdit`, so one undo reverts the
- * operation; when VS Code rejects that edit, each file is checked again and applied on its own.
+ * made from; otherwise it is refused. A file one of whose new files already exists fails before the
+ * edit is built, as VS Code keeps the part of an edit it applied before a creation that fails. All
+ * files go into one `WorkspaceEdit`, so one undo reverts the operation; when VS Code rejects that
+ * edit, each file is checked again and applied on its own.
  */
 export async function applyCleanupPreviewPlan(plan: CleanupPreviewPlan): Promise<ApplyOutcome> {
   const targets = plan.selected;
@@ -529,14 +531,29 @@ export async function applyCleanupPreviewPlan(plan: CleanupPreviewPlan): Promise
 
   // All documents are opened first (asynchronously); their texts are compared as late as possible.
   const documents = new Map<PreviewFile, vscode.TextDocument | undefined>();
+  const existing = new Map<PreviewFile, string>();
   for (const file of targets) {
-    documents.set(file, await openTarget(file));
+    try {
+      const found = await firstExistingFile(file.newFiles);
+      if (found !== undefined) {
+        existing.set(file, `${path.basename(found)} already exists`);
+      }
+    } catch (err) {
+      existing.set(file, `its new files could not be checked (${(err as Error).message})`);
+    }
+
+    if (!existing.has(file)) {
+      documents.set(file, await openTarget(file));
+    }
   }
 
   const edit = new vscode.WorkspaceEdit();
   const planned: PreviewFile[] = [];
   for (const file of targets) {
-    if (addWhenUnchanged(file, documents.get(file), edit)) {
+    const blocked = existing.get(file);
+    if (blocked !== undefined) {
+      failed.push({ file, reason: blocked });
+    } else if (addWhenUnchanged(file, documents.get(file), edit)) {
       planned.push(file);
     } else {
       refuse(file);

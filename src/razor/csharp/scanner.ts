@@ -120,7 +120,7 @@ export function scanStringLiteral(source: string, start: number): number {
     quotes++;
   }
 
-  if (quotes >= 3) {
+  if (quotes >= 3 && !verbatim) {
     return scanRawStringLiteral(source, i, quotes);
   }
 

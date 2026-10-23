@@ -69,8 +69,9 @@ public sealed record InitInfo(
 /// Derives <see cref="InitInfo"/> from the semantic model: an initializer is opaque when it may run code of the
 /// program (a method, constructor, accessor, operator or conversion declared in source, a delegate, a static
 /// constructor of another type of the program) or has side effects; it reads the members of its own type it
-/// references. Without a semantic model (code in an inactive <c>#if</c> branch) every initializer that is not a
-/// literal, lambda or default counts as opaque.
+/// references, and reads state when it reads a primary constructor parameter or calls or reads a static member of a
+/// library (which may read process-wide state the program changes). Without a semantic model (code in an inactive
+/// <c>#if</c> branch) every initializer that is not a literal, lambda or default counts as opaque.
 /// </summary>
 internal sealed class InitializerAnalyzer
 {
@@ -226,7 +227,15 @@ internal sealed class InitializerAnalyzer
                 {
                     scan.Opaque = true;
                 }
+                else if (invocation.Instance is null)
+                {
+                    scan.ReadsState = true;
+                }
 
+                return;
+
+            case IParameterReferenceOperation:
+                scan.ReadsState = true;
                 return;
 
             case IObjectCreationOperation creation:
@@ -350,7 +359,6 @@ internal sealed class InitializerAnalyzer
             case IConditionalAccessOperation:
             case IConditionalAccessInstanceOperation:
             case IInstanceReferenceOperation:
-            case IParameterReferenceOperation:
             case ILocalReferenceOperation:
             case IIsTypeOperation:
             case IIsPatternOperation:
@@ -402,6 +410,10 @@ internal sealed class InitializerAnalyzer
             // Reading a static field of another type of the program runs its static constructor, which may read this type's statics.
             scan.Opaque = true;
         }
+        else if (field.IsStatic && !field.IsConst && !field.IsReadOnly)
+        {
+            scan.ReadsState = true;
+        }
     }
 
     private void ReadProperty(IPropertyReferenceOperation reference, Scan scan)
@@ -425,6 +437,10 @@ internal sealed class InitializerAnalyzer
         if (IsProgramCode(property) || IsForeign(property) || (reference.Instance is { } instance && IsProgramDependent(instance.Type)))
         {
             scan.Opaque = true;
+        }
+        else if (property.IsStatic)
+        {
+            scan.ReadsState = true;
         }
     }
 

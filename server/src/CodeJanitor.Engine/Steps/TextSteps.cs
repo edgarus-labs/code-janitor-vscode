@@ -85,7 +85,10 @@ public sealed class UpdateEndRegionDirectivesStep : SourceTextStep
     protected override string Transform(string source, Document document, IEffectiveSettings settings) => new UpdateEndRegionDirectivesConverter().Apply(source);
 }
 
-/// <summary>Writes the body of a method with a single statement on one line.</summary>
+/// <summary>
+/// Spreads a method body whose braces are on one line onto several lines: the opening brace, each statement and the
+/// closing brace on their own lines.
+/// </summary>
 public sealed class UpdateSingleLineMethodsStep : SourceTextStep
 {
     public override string Name => "Update single-line methods";

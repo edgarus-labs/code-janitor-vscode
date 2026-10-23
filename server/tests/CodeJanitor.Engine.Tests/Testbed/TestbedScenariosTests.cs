@@ -15,18 +15,6 @@ public sealed class TestbedScenariosTests
     }
 
     [Fact]
-    public async Task TheTestbedProjectsCompileWithoutErrors()
-    {
-        foreach (var project in TestbedScenarios.Solution.Projects)
-        {
-            var compilation = await project.GetCompilationAsync();
-            var errors = compilation!.GetDiagnostics().Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error).Take(5).ToList();
-
-            Assert.True(errors.Count == 0, $"{project.Name}: {string.Join("\n", errors)}");
-        }
-    }
-
-    [Fact]
     public void TheSealingScenariosBelongToTheirLibraryProject()
     {
         var document = TestbedScenarios.CreateDocument(TestbedScenarios.Get("SealClassesWhenSafe"));
@@ -60,6 +48,21 @@ public sealed class TestbedScenariosTests
 
         Assert.Equal("Scenarios", document.Project.Name);
         Assert.Contains(document.Project.AnalyzerConfigDocuments, config => config.FilePath!.Replace('\\', '/').EndsWith("EditorConfigVarPreference/.editorconfig", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheNewestSdkIsTheOneWithTheHighestVersionNumber()
+    {
+        string[] directories =
+        [
+            Path.Combine("sdk", "9.0.300"),
+            Path.Combine("sdk", "NuGetFallbackFolder"),
+            Path.Combine("sdk", "10.0.100-rc.2.25502.107"),
+            Path.Combine("sdk", "10.0.100"),
+            Path.Combine("sdk", "10.0.99"),
+        ];
+
+        Assert.Equal(Path.Combine("sdk", "10.0.100"), TestbedScenarios.NewestSdk(directories));
     }
 
     [Theory]

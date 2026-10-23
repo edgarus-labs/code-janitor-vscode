@@ -13,8 +13,13 @@ defaults:
     shell: bash
 
 jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   package:
     name: Test and package
+    needs: ci
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
@@ -23,26 +28,29 @@ jobs:
       CODE_JANITOR_REQUIRE_DOTNET: '1'
       CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: edgarus-labs/code-janitor-testbed
           ref: develop
           path: .testbed
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: |
             8.0.x
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - name: Check Node.js
+        run: npm run check:node
       - name: Typecheck
         run: npm run compile
       - name: Build the server
@@ -60,9 +68,16 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
       - name: Package the extension (.vsix)
         run: npx vsce package
+      - name: Verify packaged VSIX contents
+        run: |
+          npx vsce ls > vsix-files.txt
+          grep -q '^dist/server/CodeJanitor.Server.dll$' vsix-files.txt
+          grep -q '^dist/extension.js$' vsix-files.txt
+          ! grep -E '^(src|server|test|scripts|shared)/' vsix-files.txt
+          ! grep -E '^\.' vsix-files.txt
       - name: Verify bundle
         run: npm run verify:bundle
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vsix
           path: '*.vsix'
@@ -71,11 +86,12 @@ jobs:
   release:
     name: Create the GitHub Release
     needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vsix
       - name: Create GitHub Release

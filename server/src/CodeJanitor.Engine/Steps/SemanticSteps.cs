@@ -1,4 +1,8 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodeJanitor.Engine.Contracts;
+using CodeJanitor.Engine.Pipeline;
+using CodeJanitor.Engine.Settings;
 using CodeJanitor.Engine.Steps.Transformations;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
@@ -6,15 +10,19 @@ using Microsoft.CodeAnalysis.Text;
 namespace CodeJanitor.Engine.Steps;
 
 /// <summary>
-/// Seals the classes the solution proves safe to seal (CA1852 semantics); an enforced CA1852 turns the setting on.
+/// Seals the classes the solution proves safe to seal (CA1852 semantics). An enforced CA1852 turns the step on; when it
+/// alone does (the setting itself is off), only the classes not visible outside the assembly are sealed, as CA1852
+/// reports only those.
 /// </summary>
 public sealed class SealClassesStep : SourceTextStep
 {
+    private const string SettingKey = "sealClassesWhenSafe";
+
     private static readonly ClassSealingConverter Converter = new();
 
     public override string Name => "Seal classes when safe";
 
-    public override string? RuleId => "sealClassesWhenSafe";
+    public override string? RuleId => SettingKey;
 
     public override CleanupStage Stage => CleanupStage.Semantic;
 
@@ -23,11 +31,34 @@ public sealed class SealClassesStep : SourceTextStep
     protected override bool RejectsNewCompilerErrors => true;
 
     protected override async Task<string> TransformAsync(string source, Document document, IEffectiveSettings settings, CancellationToken cancellationToken) =>
-        await Converter.SealWhenSafeAsync(await SemanticDocuments.OfAsync(document, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        await Converter.SealWhenSafeAsync(
+            await SemanticDocuments.OfAsync(document, cancellationToken).ConfigureAwait(false),
+            [],
+            keepExternallyVisibleClasses: IsOnOnlyByEditorConfig(settings),
+            cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Whether <c>.editorconfig</c> (an enforced CA1852) decides the step is on while neither the repository policy nor the
+    /// user's setting turns it on.
+    /// </summary>
+    private static bool IsOnOnlyByEditorConfig(IEffectiveSettings settings)
+    {
+        if (settings is not EffectiveSettings effective || !effective.EditorConfigKeys.ContainsKey(SettingKey))
+        {
+            return false;
+        }
+
+        var own = effective.Policy.Overrides.TryGetPropertyValue(SettingKey, out var policy) ? policy : effective.UserSettings[SettingKey];
+
+        return own is not JsonValue value || value.GetValueKind() != JsonValueKind.True;
+    }
 }
 
-/// <summary>Converts the null checks proven safe to <c>is null</c> / <c>is not null</c>.</summary>
-public sealed class PatternMatchingNullChecksStep : SourceTextStep
+/// <summary>
+/// Converts the null checks proven safe to <c>is null</c> / <c>is not null</c>, and reports the <c>!= null</c> checks left
+/// unchanged because a project compiling the file uses a language version older than C# 9.
+/// </summary>
+public sealed class PatternMatchingNullChecksStep : SourceTextStep, IIssueReportingStep
 {
     public override string Name => "Convert to pattern-matching null checks";
 
@@ -39,8 +70,20 @@ public sealed class PatternMatchingNullChecksStep : SourceTextStep
 
     protected override bool RejectsNewCompilerErrors => true;
 
-    protected override async Task<string> TransformAsync(string source, Document document, IEffectiveSettings settings, CancellationToken cancellationToken) =>
-        await new NullCheckPatternMatchingConverter().ConvertAsync(await SemanticDocuments.OfAsync(document, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+    public async Task<(Solution Solution, IReadOnlyList<string> Issues)> ApplyWithIssuesAsync(Document document, IEffectiveSettings settings, CancellationToken cancellationToken)
+    {
+        var issues = new List<string>();
+        var text = await document.GetTextAsync(cancellationToken).ConfigureAwait(false);
+        var result = await ConvertAsync(document, issues.Add, cancellationToken).ConfigureAwait(false);
+
+        return (await WithResultAsync(document, text, text.ToString(), result, cancellationToken).ConfigureAwait(false), issues);
+    }
+
+    protected override Task<string> TransformAsync(string source, Document document, IEffectiveSettings settings, CancellationToken cancellationToken) =>
+        ConvertAsync(document, null, cancellationToken);
+
+    private static async Task<string> ConvertAsync(Document document, Action<string>? reportSkipped, CancellationToken cancellationToken) =>
+        await new NullCheckPatternMatchingConverter(reportSkipped).ConvertAsync(await SemanticDocuments.OfAsync(document, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
 }
 
 /// <summary>

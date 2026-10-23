@@ -4,7 +4,7 @@ import { REPOSITORY_CONFIG_NAMES } from '../cleanup/repositoryOverrides';
 import { EngineDiagnostic } from '../engine/protocol';
 import { documentParams, engine, reportEngineUnavailable } from '../engine/vscodeEngine';
 import { logError, logInfo } from '../logging';
-import { applyFileOutcome, engineOutcome, isPathCleanable } from './cleanupCore';
+import { applyFileOutcome, engineOutcome, isPathCleanable, openDocumentVersions } from './cleanupCore';
 
 /**
  * `.editorconfig` violations as diagnostics ("Code Janitor" in the Problems panel): what cleanup
@@ -234,6 +234,7 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider<vscode.Code
 
     const file = { uri, content: document.getText(), isOpen: true };
     let outcome;
+    const openVersions = openDocumentVersions();
     try {
       outcome = engineOutcome(uri, await engine().fixRule({ ...documentParams(uri, file.content), ruleId }), `Fix all ${ruleId}`);
     } catch (err) {
@@ -258,7 +259,7 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider<vscode.Code
     }
 
     try {
-      await applyFileOutcome(file, outcome);
+      await applyFileOutcome(file, outcome, openVersions);
     } catch (err) {
       void vscode.window.showWarningMessage(`Code Janitor: the fix of ${ruleId} was not applied to ${uri.fsPath} - ${(err as Error).message}`);
 

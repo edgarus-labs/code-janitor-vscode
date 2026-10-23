@@ -244,6 +244,11 @@ describe('formatRazor: content it must not touch', () => {
     expect(formatRazor(input)).toBe('@if (a)\n{\n    <div\n      id="x"\n      title="@(b ? "y" : "z")">\n    </div>\n}');
   });
 
+  it("still formats a block whose markup has a Razor comment with a quote or '>' in a tag", () => {
+    const input = '@if(a){\n<div @* it\'s > *@ class="a">\n</div>\n}';
+    expect(formatRazor(input)).toBe('@if (a)\n{\n    <div @* it\'s > *@ class="a">\n    </div>\n}');
+  });
+
   it('still formats a block whose markup holds Razor code without multi-line literals', () => {
     const input = '@if(a){\n<div>\n@{ var s = "x"; }\n<p title="@(b ? "y" : "z")">@s</p>\n</div>\n}';
     expect(formatRazor(input)).toBe('@if (a)\n{\n    <div>\n    @{ var s = "x"; }\n    <p title="@(b ? "y" : "z")">@s</p>\n    </div>\n}');

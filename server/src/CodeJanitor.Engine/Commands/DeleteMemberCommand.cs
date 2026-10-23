@@ -33,7 +33,7 @@ public sealed class DeleteMemberCommand : IDocumentCommand
         {
             var variable = field.Declaration.Variables.First(candidate => name is null || candidate.Identifier.ValueText == name);
 
-            return document.WithSyntaxRoot(root.RemoveNode(variable, SyntaxRemoveOptions.KeepNoTrivia)!).Project.Solution;
+            return document.WithSyntaxRoot(root.RemoveNode(variable, SyntaxRemoveOptions.KeepNoTrivia | SyntaxRemoveOptions.KeepUnbalancedDirectives)!).Project.Solution;
         }
 
         if (MemberBlocks.OwnedLines(member, text) is { } lines)
@@ -41,6 +41,6 @@ public sealed class DeleteMemberCommand : IDocumentCommand
             return await CommandArguments.WithTextAsync(document, new LineBlocks(text).Remove(lines.First, lines.Last), cancellationToken).ConfigureAwait(false);
         }
 
-        return document.WithSyntaxRoot(root.RemoveNode(member, SyntaxRemoveOptions.KeepNoTrivia)!).Project.Solution;
+        return document.WithSyntaxRoot(root.RemoveNode(member, SyntaxRemoveOptions.KeepNoTrivia | SyntaxRemoveOptions.KeepUnbalancedDirectives)!).Project.Solution;
     }
 }

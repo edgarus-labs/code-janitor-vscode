@@ -29,7 +29,7 @@ public static partial class Reorganizer
         var tree = await document.GetSyntaxTreeAsync(cancellationToken).ConfigureAwait(false);
         if (tree is null)
         {
-            return new ReorganizeResult(string.Empty, [], false);
+            return new ReorganizeResult((await document.GetTextAsync(cancellationToken).ConfigureAwait(false)).ToString(), [], false);
         }
 
         var text = await tree.GetTextAsync(cancellationToken).ConfigureAwait(false);

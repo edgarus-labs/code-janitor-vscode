@@ -57,19 +57,37 @@ internal static class MemberBlocks
         }
 
         var firstLine = first.LineNumber;
-        while (firstLine > 0 && text.Lines[firstLine - 1].Start >= node.FullSpan.Start && IsCommentLine(text.Lines[firstLine - 1].ToString()))
+        while (firstLine > 0 && text.Lines[firstLine - 1].Start >= node.FullSpan.Start && CommentStartLine(node, text, firstLine - 1) is { } commentLine)
         {
-            firstLine--;
+            firstLine = commentLine;
         }
 
         return (firstLine, last.LineNumber);
     }
 
-    private static bool IsCommentLine(string line)
+    /// <summary>
+    /// The line on which the comment that is the first non-blank text of <paramref name="line" /> starts (a block
+    /// comment may start lines above), or null when that text is not a comment.
+    /// </summary>
+    private static int? CommentStartLine(SyntaxNode node, SourceText text, int line)
     {
-        var trimmed = line.TrimStart();
+        var span = text.Lines[line];
+        var position = span.Start;
+        while (position < span.End && char.IsWhiteSpace(text[position]))
+        {
+            position++;
+        }
 
-        return trimmed.StartsWith("//", StringComparison.Ordinal) || trimmed.StartsWith("/*", StringComparison.Ordinal) || trimmed.StartsWith('*');
+        if (position == span.End)
+        {
+            return null;
+        }
+
+        var trivia = node.FindTrivia(position);
+
+        return trivia.Kind() is SyntaxKind.SingleLineCommentTrivia or SyntaxKind.MultiLineCommentTrivia or SyntaxKind.SingleLineDocumentationCommentTrivia or SyntaxKind.MultiLineDocumentationCommentTrivia
+            ? text.Lines.GetLineFromPosition(trivia.SpanStart).LineNumber
+            : null;
     }
 
     /// <summary>The <c>#region</c> directive on <paramref name="line" /> and the line of its <c>#endregion</c>, or null.</summary>

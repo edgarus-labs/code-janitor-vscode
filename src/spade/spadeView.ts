@@ -50,6 +50,8 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
   private readonly subscriptions: vscode.Disposable[] = [];
   private document: vscode.TextDocument | undefined;
   private structure: Structure | undefined;
+  /** The version of the followed document the structure was read from. */
+  private structureVersion: number | undefined;
   private failure: string | undefined;
   private roots: SpadeNode[] = [];
   private nodesById = new Map<string, SpadeNode>();
@@ -150,12 +152,14 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
     }
 
     try {
+      const version = document.version;
       const structure = await engine().query<Structure | null>({ ...documentParams(document.uri, document.getText()), query: 'structure' });
       if (sequence !== this.sequence) {
         return this.roots;
       }
 
       this.structure = structure ?? { items: [], regions: [] };
+      this.structureVersion = version;
       this.failure = undefined;
     } catch (err) {
       if (sequence !== this.sequence) {
@@ -163,6 +167,7 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
       }
 
       this.structure = undefined;
+      this.structureVersion = undefined;
       this.failure = err instanceof Error ? err.message : String(err);
       if (!reportEngineUnavailable(err)) {
         logError(`Spade: reading the members of ${document.uri.fsPath}`, err);
@@ -236,6 +241,10 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
 
     await this.guard('Delete', async () => {
       const version = document.version;
+      if (!this.isReadFrom(version)) {
+        return;
+      }
+
       let text = document.getText();
       for (const target of [...nodes].sort((a, b) => b.startLine - a.startLine)) {
         text = await engineText(document, 'deleteMember', text, target.item ? { line: target.startLine, name: target.name } : { line: target.startLine });
@@ -269,6 +278,10 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
 
     await this.guard('Insert Region', async () => {
       const version = document.version;
+      if (!this.isReadFrom(version)) {
+        return;
+      }
+
       const text = document.getText();
       const lines = await engine().query<{ startLine: number; endLine: number } | null>({
         ...documentParams(document.uri, text),
@@ -302,7 +315,9 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
 
     await this.guard('Remove Region', async () => {
       const version = document.version;
-      await applyText(document, version, await engineText(document, 'removeRegions', document.getText(), { line: node.startLine }));
+      if (this.isReadFrom(version)) {
+        await applyText(document, version, await engineText(document, 'removeRegions', document.getText(), { line: node.startLine }));
+      }
     });
   }
 
@@ -335,12 +350,17 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
     if (plan) {
       await this.guard('Move', async () => {
         const version = document.version;
-        await applyText(document, version, await engineText(document, 'moveMember', document.getText(), { ...plan }));
+        if (this.isReadFrom(version)) {
+          await applyText(document, version, await engineText(document, 'moveMember', document.getText(), { ...plan }));
+        }
       });
     }
   }
 
-  /** Follows a C# editor; another editor empties the view, no editor (focus in a panel) keeps it. */
+  /**
+   * Follows a C# editor; another editor empties the view, no editor (focus in a panel) keeps it. While the view is
+   * hidden (or `features.spade` hides it) the structure is read once it shows.
+   */
   private follow(editor: vscode.TextEditor | undefined, force = false): void {
     if (!editor && !force) {
       return;
@@ -352,6 +372,17 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
     }
 
     this.document = document;
+    this.structureVersion = undefined;
+    if (!this.view.visible) {
+      ++this.sequence;
+      this.structure = undefined;
+      this.failure = undefined;
+      this.stale = true;
+      this.render();
+
+      return;
+    }
+
     void this.refresh();
   }
 
@@ -364,6 +395,18 @@ class Spade implements vscode.TreeDataProvider<SpadeNode>, vscode.TreeDragAndDro
     }
 
     this.refreshTimer = setTimeout(() => void this.refresh(), REFRESH_DELAY_MS);
+  }
+
+  /** Whether the tree shows `version` of the followed document; otherwise warns and refreshes the tree. */
+  private isReadFrom(version: number): boolean {
+    if (version === this.structureVersion) {
+      return true;
+    }
+
+    void vscode.window.showWarningMessage('Code Janitor: the file changed meanwhile; try again.');
+    void this.refresh();
+
+    return false;
   }
 
   /** Selects the member under the cursor of the followed document. */

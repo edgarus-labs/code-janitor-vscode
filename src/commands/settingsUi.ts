@@ -249,10 +249,7 @@ export async function readOverrideNotes(): Promise<OverrideNotes> {
     const pinned = (key: string): string => `Overridden by ${path.basename(policy.configPath!)}: ${key} in ${policy.configPath}`;
     const pinnedKeys = new Map<string, string>();
     for (const key of Object.keys(policy.overrides) as (keyof CleanupSettings)[]) {
-      const setting = vscodeSettingOf(key);
-      if (setting !== undefined) {
-        pinnedKeys.set(key, pinned(setting));
-      }
+      pinnedKeys.set(key, pinned(vscodeSettingOf(key)));
     }
     Object.assign(notes.notes, settingNotes(pinnedKeys));
 
@@ -291,9 +288,7 @@ function settingNotes(keyNotes: ReadonlyMap<string, string>): Record<string, str
   const keysBySetting = new Map<string, string[]>();
   for (const key of Object.keys(createDefaultSettings()) as (keyof CleanupSettings)[]) {
     const setting = vscodeSettingOf(key);
-    if (setting !== undefined) {
-      keysBySetting.set(setting, [...(keysBySetting.get(setting) ?? []), key]);
-    }
+    keysBySetting.set(setting, [...(keysBySetting.get(setting) ?? []), key]);
   }
 
   const result: Record<string, string> = {};

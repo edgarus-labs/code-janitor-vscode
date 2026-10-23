@@ -66,6 +66,12 @@ describe('skipString', () => {
     expect(skipString(text, 2)).toBe(after(text, 'y"'));
   });
 
+  it('reads a verbatim string that starts with a doubled quote as verbatim, not raw', () => {
+    const text = '@"""x"" y" tail';
+
+    expect(skipString(text, 1)).toBe(after(text, 'y"'));
+  });
+
   it('reports an interpolation hole that never closes', () => {
     expect(skipString('$"{open', 1)).toBe(-1);
     expect(skipString('$@"{open', 2)).toBe(-1);
@@ -116,6 +122,15 @@ describe('findTagEnd', () => {
     const text = '<a href="@Assets["app.css"]" title=@(a > b)> tail';
 
     expect(findTagEnd(text, 0)).toBe(text.indexOf('> tail'));
+  });
+
+  it('skips Razor comments inside the tag', () => {
+    const quoted = '<div @* a "quote" or a > *@ class="a"> tail';
+    const apostrophe = '<div @* it\'s > *@ class="a"> tail';
+
+    expect(findTagEnd(quoted, 0)).toBe(quoted.indexOf('> tail'));
+    expect(findTagEnd(apostrophe, 0)).toBe(apostrophe.indexOf('> tail'));
+    expect(findTagEnd('<div @* never closed >', 0)).toBe(-1);
   });
 
   it('returns -1 when the tag or an expression is never closed', () => {

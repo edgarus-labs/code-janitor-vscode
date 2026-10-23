@@ -249,6 +249,26 @@ describe('multi-file cleanup preview: the plan', () => {
     ]);
   });
 
+  it('plans a file outside the workspace folders as a partial cleanup, and skips it when performPartialCleanupOnExternal is never', async () => {
+    const project = previewProject();
+    const external = path.join(tempDirectory(), 'External.cs');
+    state.files.set(external, project.originals.get(project.file('Program.cs'))!);
+
+    const plan = await buildCleanupPreviewPlan([project.uri('Program.cs'), Uri.file(external)]);
+    state.configuration.set('codeJanitor.cleanup.performPartialCleanupOnExternal', 'never');
+    const never = await buildCleanupPreviewPlan([Uri.file(external)]);
+
+    expect(engine.requests('cleanup').map((params) => [params.filePath, params.partial])).toEqual([
+      [project.file('Program.cs'), undefined],
+      [external, true],
+    ]);
+    expect(plan.files.map((file) => file.status)).toEqual(['changes', 'changes']);
+    expect([never.files[0].status, never.files[0].message]).toEqual([
+      'skipped',
+      'Skipped: it is not in a workspace folder (codeJanitor.cleanup.performPartialCleanupOnExternal is never)',
+    ]);
+  });
+
   it('reports the rules of each file as Changed, No change or Excluded, recalculated from the original text', async () => {
     const project = previewProject();
     const plan = await buildCleanupPreviewPlan([project.uri('Models/Order.cs')]);
@@ -562,6 +582,25 @@ describe('multi-file cleanup preview: applying', () => {
     expect(textOf(project.file('Program.cs'))).toContain('= new();');
     expect(textOf(project.file('Models/Order.cs'))).toBe(project.originals.get(project.file('Models/Order.cs')));
     expect(state.warningMessages.at(-1)).toContain('Models/Order.cs: VS Code did not apply the edit');
+  });
+
+  it('refuses a file whose new file already exists before the edit, applying the others as one edit', async () => {
+    const project = previewProject();
+    const root = tempDirectory();
+    const foo = path.join(root, 'Foo.cs');
+    const bar = path.join(root, 'Bar.cs');
+    const source = 'namespace Demo;\n\ninternal class Foo\n{\n}\n\ninternal class Bar\n{\n    int x;   \n}\n';
+    state.files.set(foo, source);
+    state.files.set(bar, 'internal class Kept { }\n');
+    const applyEdit = vi.spyOn(workspace, 'applyEdit');
+    user(accept);
+
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Program.cs'), Uri.file(foo)]);
+
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    expect(textOf(project.file('Program.cs'))).toContain('= new();');
+    expect([textOf(foo), textOf(bar)]).toEqual([source, 'internal class Kept { }\n']);
+    expect(state.warningMessages.at(-1)).toMatch(/applied to 1 file\(s\), not to 1\. .*Foo\.cs: Bar\.cs already exists\.$/);
   });
 
   it('checks each file again before the one-by-one apply, refusing one edited after VS Code rejected the combined edit', async () => {

@@ -57,27 +57,8 @@ const BOOLEAN_GROUPS: Record<string, string[]> = {
 
 const GROUPED_SETTING_KEYS = new Set(Object.values(BOOLEAN_GROUPS).flat());
 
-/**
- * Settings that exist only in `.codejanitor` (VS Code declares no setting for them): cleanup reads
- * them from the file, so import leaves them there instead of writing an unregistered setting.
- */
-const REPOSITORY_ONLY_SETTINGS: ReadonlySet<string> = new Set([
-  'insertBlankLinePaddingBeforeFieldsSingleLine',
-  'insertBlankLinePaddingAfterFieldsSingleLine',
-  'insertBlankLinePaddingBeforePropertiesSingleLine',
-  'insertBlankLinePaddingAfterPropertiesSingleLine',
-  'insertBlankLinePaddingBeforeSingleLineComments',
-]);
-
-/**
- * The VS Code setting (below `codeJanitor.cleanup.`) of a `.codejanitor` cleanup flag: the group
- * setting for a per-kind flag, undefined for the flags VS Code declares no setting for.
- */
-export function vscodeSettingOf(key: keyof CleanupSettings): string | undefined {
-  if (REPOSITORY_ONLY_SETTINGS.has(key)) {
-    return undefined;
-  }
-
+/** The VS Code setting (below `codeJanitor.cleanup.`) of a `.codejanitor` cleanup flag: the group setting for a per-kind flag. */
+export function vscodeSettingOf(key: keyof CleanupSettings): string {
   return Object.keys(BOOLEAN_GROUPS).find((alias) => BOOLEAN_GROUPS[alias].includes(key)) ?? IMPORTABLE_SETTINGS[key] ?? key;
 }
 
@@ -207,16 +188,10 @@ export async function importRepositorySettings(workspaceRoot?: string): Promise<
   const overrides = policy.overrides;
   const config = vscode.workspace.getConfiguration('codeJanitor');
   let imported = 0;
-  let repositoryOnly = 0;
 
   for (const [key, value] of Object.entries(overrides) as [keyof CleanupSettings, unknown][]) {
     // Grouped keys have no VS Code setting of their own; the group setting below imports them.
     if (GROUPED_SETTING_KEYS.has(key)) {
-      continue;
-    }
-
-    if (REPOSITORY_ONLY_SETTINGS.has(key)) {
-      repositoryOnly++;
       continue;
     }
 
@@ -260,6 +235,5 @@ export async function importRepositorySettings(workspaceRoot?: string): Promise<
     await config.update('cleanup.codeStyleRules', formatCodeStyleScopeSetting(rules, off), vscode.ConfigurationTarget.Workspace);
   }
 
-  const kept = repositoryOnly > 0 ? ` ${repositoryOnly} setting(s) have no VS Code setting and keep applying from ${REPOSITORY_CONFIG_FILE}.` : '';
-  void vscode.window.showInformationMessage(`Code Janitor: imported ${imported} repository setting(s) into workspace settings.${kept}`);
+  void vscode.window.showInformationMessage(`Code Janitor: imported ${imported} repository setting(s) into workspace settings.`);
 }

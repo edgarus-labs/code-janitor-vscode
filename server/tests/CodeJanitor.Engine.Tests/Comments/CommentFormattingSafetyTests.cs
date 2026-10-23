@@ -27,6 +27,30 @@ public sealed class CommentFormattingSafetyTests
     }
 
     [Fact]
+    public void LoneCarriageReturnInACommentBlock_KeepsEveryLine()
+    {
+        const string Source = "class C\n{\n    // aaa\r    // bbb\n    // ccc\n    void M() { }\n}\n";
+
+        var output = CodeComment.FormatComments(Source, Options());
+
+        Assert.Contains("aaa", output, StringComparison.Ordinal);
+        Assert.Contains("bbb", output, StringComparison.Ordinal);
+        Assert.Contains("ccc", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LoneCarriageReturnInACommentBlockOfAnotherLanguage_KeepsEveryLine()
+    {
+        const string Source = "# aaa\r# bbb\n# ccc\nx = 1\n";
+
+        var output = CommentTextFormatter.Format(Source, "#", null, null, null);
+
+        Assert.Contains("aaa", output, StringComparison.Ordinal);
+        Assert.Contains("bbb", output, StringComparison.Ordinal);
+        Assert.Contains("ccc", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CommentLineRegex_FailsFastOnALoneCarriageReturnAfterManyWords()
     {
         var line = "// " + string.Join(' ', Enumerable.Repeat("word", 60)) + "\r// next";
@@ -63,6 +87,27 @@ public sealed class CommentFormattingSafetyTests
 
         Assert.Contains("Returns a > b and x -> y.", output, StringComparison.Ordinal);
         Assert.DoesNotContain("&gt;", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void XmlCode_KeepsAGreaterThanSignAsWritten()
+    {
+        const string Source = "/// <example>\n/// <code>\n/// var positive = items.Where(x => x > 0);\n/// </code>\n/// </example>\n";
+
+        var output = CommentTextFormatter.Format(Source, "///", null, null, null);
+
+        Assert.Contains("var positive = items.Where(x => x > 0);", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("&gt;", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void XmlCode_KeepsAGreaterThanSignInANestedTagAsWritten()
+    {
+        const string Source = "/// <example>\n/// <code>\n/// if (a > b) <b>return x => x > 0;</b>\n/// </code>\n/// </example>\n";
+
+        var output = CommentTextFormatter.Format(Source, "///", null, null, null);
+
+        Assert.Contains("if (a > b) <b>return x => x > 0;</b>", output, StringComparison.Ordinal);
     }
 
     [Fact]

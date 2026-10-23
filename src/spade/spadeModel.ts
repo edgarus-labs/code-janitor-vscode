@@ -375,9 +375,11 @@ function metadataOf(item: StructureItem): string {
     .join(', ');
 }
 
-/** The innermost node whose lines hold `line`. */
+/** The innermost node whose lines hold `line`; pseudo-groups (lines of their first member only) are looked into, never returned. */
 export function spadeNodeAtLine(nodes: readonly SpadeNode[], line: number): SpadeNode | undefined {
-  const holder = nodes.find((node) => node.startLine <= line && line <= node.endLine);
+  const holder = nodes
+    .flatMap((node) => (node.contextValue === 'group' ? node.children : [node]))
+    .find((node) => node.startLine <= line && line <= node.endLine);
 
   return holder ? (spadeNodeAtLine(holder.children, line) ?? holder) : undefined;
 }

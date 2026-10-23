@@ -7,7 +7,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>Company.App</RootNamespace>
-    <NoWarn>$(NoWarn);CS0169;CS0414;CS8981;CS0105</NoWarn>
+    <NoWarn>$(NoWarn);CS0169;CS0414;CS8981</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

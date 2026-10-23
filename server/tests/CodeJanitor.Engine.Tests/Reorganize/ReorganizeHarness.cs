@@ -39,16 +39,30 @@ internal static class ReorganizeHarness
     public static string Lines(params string[] lines) => string.Join("\n", lines);
 
     /// <summary>The tree of <paramref name="source"/> in a compilation, with its semantic model.</summary>
-    public static (SyntaxTree Tree, SemanticModel Model) Compile(string source, CSharpParseOptions? options = null)
+    public static (SyntaxTree Tree, SemanticModel Model) Compile(string source, CSharpParseOptions? options = null, IEnumerable<MetadataReference>? references = null)
     {
         var tree = CSharpSyntaxTree.ParseText(SourceText.From(source), options ?? ParseOptions, path: "Test.cs");
         var compilation = CSharpCompilation.Create(
             "Test",
             [UsingsTree, tree],
-            References.Value,
+            References.Value.Concat(references ?? []),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Enable));
 
         return (tree, compilation.GetSemanticModel(tree));
+    }
+
+    /// <summary>A reference to a library compiled from <paramref name="source"/>.</summary>
+    public static MetadataReference Library(string source)
+    {
+        using var image = new MemoryStream();
+        var emitted = CSharpCompilation.Create(
+            "Library",
+            [CSharpSyntaxTree.ParseText(source, ParseOptions)],
+            References.Value,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)).Emit(image);
+        Assert.True(emitted.Success, string.Join("\n", emitted.Diagnostics));
+
+        return MetadataReference.CreateFromImage(image.ToArray());
     }
 
     /// <summary>Reorganizes a snippet; a leading byte order mark is kept, as a document's encoding keeps it.</summary>

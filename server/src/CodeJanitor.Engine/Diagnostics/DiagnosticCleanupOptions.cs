@@ -34,7 +34,6 @@ public sealed class DiagnosticCleanupOptions
     /// <param name="maxPasses">The maximum number of fixes applied (each followed by a re-analysis).</param>
     /// <param name="analyzerConfigOverrides">Entries (option name to value) applied to the cleaned document over its analyzer configuration.</param>
     /// <param name="diagnosticIds">The only diagnostic IDs that may be fixed, or null for every ID.</param>
-    /// <param name="sortUsingsAfterFixes">Whether the using directives of the cleaned document are sorted (Roslyn's order) when a fix changed it.</param>
     /// <param name="excludedDiagnosticIds">Diagnostic IDs never fixed nor reported (rules the preview left out).</param>
     /// <param name="gate">Decides per diagnostic whether it may be fixed; null lets every diagnostic be fixed.</param>
     /// <param name="filter">Selects the diagnostics considered at all (neither fixed nor reported otherwise); null selects every one.</param>
@@ -47,7 +46,6 @@ public sealed class DiagnosticCleanupOptions
         int maxPasses = DefaultMaxPasses,
         IReadOnlyDictionary<string, string>? analyzerConfigOverrides = null,
         IEnumerable<string>? diagnosticIds = null,
-        bool sortUsingsAfterFixes = false,
         IEnumerable<string>? excludedDiagnosticIds = null,
         DiagnosticGate? gate = null,
         Func<Diagnostic, bool>? filter = null,
@@ -61,7 +59,6 @@ public sealed class DiagnosticCleanupOptions
         AnalyzerConfigOverrides = (analyzerConfigOverrides ?? new Dictionary<string, string>()).ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
         _diagnosticIds = diagnosticIds is null ? null : new HashSet<string>(diagnosticIds, StringComparer.OrdinalIgnoreCase);
         _excludedIds = new HashSet<string>(excludedDiagnosticIds ?? [], StringComparer.OrdinalIgnoreCase);
-        SortUsingsAfterFixes = sortUsingsAfterFixes;
         Gate = gate;
         Filter = filter;
         Enforced = enforced;
@@ -81,9 +78,6 @@ public sealed class DiagnosticCleanupOptions
 
     /// <summary>The only diagnostic IDs that may be fixed, or null when every diagnostic of an enabled category may be.</summary>
     public IReadOnlyCollection<string>? DiagnosticIds => _diagnosticIds;
-
-    /// <summary>Whether the using directives of the cleaned document are sorted when a fix changed it.</summary>
-    public bool SortUsingsAfterFixes { get; }
 
     /// <summary>Decides per diagnostic whether it may be fixed.</summary>
     public DiagnosticGate? Gate { get; }

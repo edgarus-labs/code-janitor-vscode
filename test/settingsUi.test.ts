@@ -252,6 +252,7 @@ describe('override notes', () => {
         'codeJanitor.cleanup.removeRegions': `Overridden by .codejanitor: removeRegions in ${policyPath}`,
         'codeJanitor.cleanup.insertBlankLineBeforeReturnAndThrow': `Overridden by .codejanitor: insertBlankLineBeforeReturnAndThrow in ${policyPath}`,
         'codeJanitor.cleanup.insertBlankLinePadding': `Overridden by .codejanitor: insertBlankLinePadding in ${policyPath}`,
+        'codeJanitor.cleanup.insertBlankLinePaddingBeforeFieldsSingleLine': `Overridden by .codejanitor: insertBlankLinePaddingBeforeFieldsSingleLine in ${policyPath}`,
         'codeJanitor.cleanup.makeFieldsReadonlyWhenSafe': `Overridden by .editorconfig: dotnet_style_readonly_field in ${configPath}`,
       },
       ruleNotes: {

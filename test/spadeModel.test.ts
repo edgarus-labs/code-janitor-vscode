@@ -224,6 +224,16 @@ describe('spadeNodeAtLine', () => {
     expect(spadeNodeAtLine(roots, 3)?.name).toBe('Sample');
     expect(spadeNodeAtLine(roots, 40)).toBeUndefined();
   });
+
+  it('finds the member under a line inside the pseudo-groups of the sort by type, never a group', () => {
+    const grouped = buildSpadeTree(STRUCTURE, options({ sortOrder: 'type' }));
+
+    expect(spadeNodeAtLine(grouped, 15)?.name).toBe('Zed');
+    expect(spadeNodeAtLine(grouped, 21)?.name).toBe('Clear');
+    expect(spadeNodeAtLine(grouped, 24)?.name).toBe('Add');
+    expect(spadeNodeAtLine(grouped, 6)?.name).toBe('count');
+    expect(spadeNodeAtLine(grouped, 5)).toMatchObject({ name: 'Sample', contextValue: 'type' });
+  });
 });
 
 describe('dropPlan', () => {

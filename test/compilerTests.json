@@ -1,6 +1,7 @@
 {
   "preview": ["test/cleanupPreviewCompile.test.ts", "test/dotnetHelper.test.ts"],
   "razor": ["test/razorOracle.test.ts"],
+  "usings": ["test/usingPlacementCompile.test.ts"],
   "engine": ["test/check.test.ts", "test/engineServer.test.ts", "test/engineContract.test.ts"],
   "testbed": ["test/testbed.test.ts"]
 }

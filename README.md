@@ -26,11 +26,10 @@ Review the resulting diff and build your project, especially when enabling synta
 
 ## Installation
 
-Grab the `.vsix` for your platform from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases)
-(`code-janitor-<platform>-<version>.vsix`, for `win32-x64`, `win32-arm64`, `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`),
-then either:
+Grab the `.vsix` from the [GitHub Releases page](https://github.com/edgarus-labs/code-janitor-vscode/releases)
+(`code-janitor-<version>.vsix`, one package for every platform), then either:
 
-- run `code --install-extension code-janitor-<platform>-<version>.vsix`, or
+- run `code --install-extension code-janitor-<version>.vsix`, or
 - in VS Code, open the Extensions view, click the `...` menu, and choose **Install from VSIX...**.
 
 ## How to use it
@@ -83,7 +82,7 @@ For a team-wide cleanup policy, add a `.codejanitor` JSON file to the repository
 }
 ```
 
-The repository file is found from the cleaned file's folder upwards and the nearest `.codejanitor` (or `.code-janitor.json`) wins as a whole, so nested folders and multi-root workspaces can carry their own policy. A key it lists wins over the user's VS Code setting for files below it (`.editorconfig` wins over both where it enforces the option); a key it does not list follows the setting. Invalid JSON, unknown keys and values of the wrong type are ignored.
+The repository file is found from the cleaned file's folder upwards and the nearest `.codejanitor` (or `.code-janitor.json`) wins as a whole, so nested folders and multi-root workspaces can carry their own policy. A key it lists wins over the user's VS Code setting for files below it (`.editorconfig` wins over both where it enforces the option); a key it does not list follows the setting. Invalid JSON (a repeated key included) is reported and the file is ignored; unknown keys and values of the wrong type are ignored, `commentFormat` is not read, and a list value must hold only strings.
 
 A `.codejanitor` written for the Visual Studio extension works here too, with one difference: the
 `.editorconfig` switches `applyEditorConfigFormatting`, `applyEditorConfigNaming`,
@@ -150,7 +149,7 @@ jobs:
           dotnet-version: '10.0.x'
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.23.4'
       - run: npm ci
         working-directory: .code-janitor
       - run: npm run check --prefix .code-janitor -- --root "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/src"
@@ -222,7 +221,7 @@ value, leaves the decision to `.codejanitor` and then to the setting.
 | Remove multiple consecutive blank lines | `dotnet_style_allow_multiple_blank_lines_experimental` (IDE2000) | `false` |
 | Remove blank lines after `{` / before `}` | `csharp_style_allow_blank_lines_between_consecutive_braces_experimental` (IDE2002) | as set |
 | Convert to pattern-matching null checks | `csharp_style_prefer_null_check_over_type_check`, `dotnet_style_prefer_is_null_check_over_reference_equality_method` | on (an enforced `false` turns it off) |
-| Seal classes | `dotnet_diagnostic.CA1852.severity` | on, only where nothing in the loaded projects derives from, converts or constrains the class, and no project involved has inactive `#if` code |
+| Seal classes | `dotnet_diagnostic.CA1852.severity` | on, only where nothing in the loaded projects derives from, converts or constrains the class, and no project involved has inactive `#if` code; an enforced CA1852 alone seals only classes not visible outside the assembly, public ones need `sealClassesWhenSafe` |
 | `nameof` / `JsonSerializerOptions` reuse | `dotnet_diagnostic.CA1507.severity` / `dotnet_diagnostic.CA1869.severity` | on (CA1869 caches options built from constants in a `private static readonly` field) |
 | File header | `file_header_template` (`unset` = no header) | `fileHeaderCSharp` |
 | Remove end-of-line whitespace, final newline, BOM, indentation, line endings | `trim_trailing_whitespace`, `insert_final_newline`, `charset`, `indent_style`/`indent_size`/`tab_width`, `end_of_line` | as set |
@@ -296,7 +295,8 @@ name. These steps run in the extension and need no .NET.
 
 - **Files outside the workspace folders** (`codeJanitor.cleanup.performPartialCleanupOnExternal`):
   `ask` (once per cleanup run: Yes / No / Always / Never), `always` or `never`. A partial cleanup
-  leaves the using directives alone and never changes or creates other files.
+  leaves the using directives alone and never changes or creates other files. The cleanup previews
+  show a file outside the workspace folders as a partial cleanup without asking, and skip it with `never`.
 - **Cleanup on save** never moves types or renames into other files, and with
   `codeJanitor.cleanup.skipOrganizeUsingsDuringCleanupOnSave` leaves the using directives alone.
 - **External tools** after the cleanup of an open document (not on save):

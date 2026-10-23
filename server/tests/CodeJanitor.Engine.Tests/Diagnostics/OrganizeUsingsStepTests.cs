@@ -191,17 +191,17 @@ public sealed class OrganizeUsingsStepTests
     private static async Task<Document> ApplyAsync(Document document, bool removeAndSortUsings, bool format, string[] usingsToKeep, CancellationToken cancellationToken)
     {
         Assert.False(format, "Format Document has no Code Janitor setting in VS Code: IDE0055 formats when .editorconfig enforces it.");
-        if (!removeAndSortUsings)
+        JsonObject user = CleanupSettingsDefaults.Create();
+        user["organizeUsings"] = removeAndSortUsings;
+        user["usingStatementsToReinsertWhenRemoved"] = new JsonArray((usingsToKeep ?? Array.Empty<string>()).Select(text => (JsonNode)text).ToArray());
+        EffectiveSettings settings = EffectiveSettings.Create(document.FilePath, user, await EditorConfigOptions.ForDocumentAsync(document, cancellationToken), RepositoryPolicy.None);
+        OrganizeUsingsStep step = new OrganizeUsingsStep();
+        if (!step.IsEnabled(settings))
         {
             return document;
         }
 
-        JsonObject user = CleanupSettingsDefaults.Create();
-        user["organizeUsings"] = true;
-        user["usingStatementsToReinsertWhenRemoved"] = new JsonArray((usingsToKeep ?? Array.Empty<string>()).Select(text => (JsonNode)text).ToArray());
-        EffectiveSettings settings = EffectiveSettings.Create(document.FilePath, user, await EditorConfigOptions.ForDocumentAsync(document, cancellationToken), RepositoryPolicy.None);
-
-        Solution solution = await new OrganizeUsingsStep().ApplyAsync(document, settings, cancellationToken);
+        Solution solution = await step.ApplyAsync(document, settings, cancellationToken);
 
         return solution.GetDocument(document.Id);
     }

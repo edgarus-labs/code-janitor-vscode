@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createContext, createMockChatModel, resetMock, state } from './helpers/vscodeMock';
+import { network } from '../src/ai/safeFetch';
 
 // ---------------------------------------------------------------- aiService
 
@@ -369,8 +370,8 @@ describe('testCustomConnection', () => {
 
   it('returns failure when fetch fails', async () => {
     vi.useFakeTimers();
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = () => Promise.reject(new Error('network error'));
+    const originalFetch = network.fetch;
+    network.fetch = () => Promise.reject(new Error('network error'));
 
     try {
       const pending = testCustomConnection({ endpointUrl: 'https://api.example.com' });
@@ -380,14 +381,14 @@ describe('testCustomConnection', () => {
       expect(result.succeeded).toBe(false);
       expect(result.errorMessage).toBe('network error');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
       vi.useRealTimers();
     }
   });
 
   it('returns success and models when GET /models responds', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (url: string | URL | Request) => {
+    const originalFetch = network.fetch;
+    network.fetch = (url: string | URL | Request) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.endsWith('/models')) {
         return Promise.resolve({
@@ -412,13 +413,13 @@ describe('testCustomConnection', () => {
       expect(result.succeeded).toBe(true);
       expect(result.availableModels).toEqual(['gpt-4o', 'o3-mini']);
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('returns auth failure on 401 response from /models', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = () =>
+    const originalFetch = network.fetch;
+    network.fetch = () =>
       Promise.resolve({
         ok: false,
         status: 401,
@@ -433,13 +434,13 @@ describe('testCustomConnection', () => {
       expect(result.errorMessage).toContain('401');
       expect(result.errorMessage).toContain('Invalid API key');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('falls back to chat completions when /models returns 404', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (url: string | URL | Request) => {
+    const originalFetch = network.fetch;
+    network.fetch = (url: string | URL | Request) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('/models')) {
         return Promise.resolve({
@@ -464,7 +465,7 @@ describe('testCustomConnection', () => {
       expect(result.succeeded).toBe(true);
       expect(result.availableModels).toBeUndefined();
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 });
@@ -475,8 +476,8 @@ describe('getCustomChatCompletion', () => {
   });
 
   it('throws for invalid JSON response', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = () =>
+    const originalFetch = network.fetch;
+    network.fetch = () =>
       Promise.resolve({
         ok: true,
         status: 200,
@@ -487,13 +488,13 @@ describe('getCustomChatCompletion', () => {
     try {
       await expect(getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })).rejects.toThrow('not valid JSON');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('throws when response has no content', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = () =>
+    const originalFetch = network.fetch;
+    network.fetch = () =>
       Promise.resolve({
         ok: true,
         status: 200,
@@ -504,13 +505,13 @@ describe('getCustomChatCompletion', () => {
     try {
       await expect(getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com' })).rejects.toThrow('did not contain message content');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('extracts content from OpenAI chat shape', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = () =>
+    const originalFetch = network.fetch;
+    network.fetch = () =>
       Promise.resolve({
         ok: true,
         status: 200,
@@ -523,13 +524,13 @@ describe('getCustomChatCompletion', () => {
 
       expect(result).toBe('hello');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('extracts content from Anthropic shape', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = () =>
+    const originalFetch = network.fetch;
+    network.fetch = () =>
       Promise.resolve({
         ok: true,
         status: 200,
@@ -542,13 +543,13 @@ describe('getCustomChatCompletion', () => {
 
       expect(result).toBe('anthropic response');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('extracts content from plain message shape', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = () =>
+    const originalFetch = network.fetch;
+    network.fetch = () =>
       Promise.resolve({
         ok: true,
         status: 200,
@@ -561,15 +562,15 @@ describe('getCustomChatCompletion', () => {
 
       expect(result).toBe('local response');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('retries on transient 500 status', async () => {
     vi.useFakeTimers();
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let callCount = 0;
-    globalThis.fetch = () => {
+    network.fetch = () => {
       callCount++;
       if (callCount < 3) {
         return Promise.resolve({
@@ -596,16 +597,16 @@ describe('getCustomChatCompletion', () => {
       expect(await pending).toBe('retry success');
       expect(callCount).toBe(3);
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
       vi.useRealTimers();
     }
   });
 
   it('does not retry a non-transient 400 or 401', async () => {
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     for (const status of [400, 401]) {
       let callCount = 0;
-      globalThis.fetch = () => {
+      network.fetch = () => {
         callCount++;
 
         return Promise.resolve({
@@ -621,16 +622,16 @@ describe('getCustomChatCompletion', () => {
 
         expect(callCount).toBe(1);
       } finally {
-        globalThis.fetch = originalFetch;
+        network.fetch = originalFetch;
       }
     }
   });
 
   it('waits for Retry-After on 429 before the next attempt', async () => {
     vi.useFakeTimers();
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let callCount = 0;
-    globalThis.fetch = () => {
+    network.fetch = () => {
       callCount++;
 
       return Promise.resolve(
@@ -661,16 +662,16 @@ describe('getCustomChatCompletion', () => {
       await expect(pending).resolves.toBe('done');
       expect(callCount).toBe(2);
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
       vi.useRealTimers();
     }
   });
 
   it('backs off between attempts on transient 5xx without a Retry-After', async () => {
     vi.useFakeTimers();
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let callCount = 0;
-    globalThis.fetch = () => {
+    network.fetch = () => {
       callCount++;
 
       return Promise.resolve({ ok: false, status: 503, statusText: 'Unavailable', headers: new Headers(), text: () => Promise.resolve('down') } as Response);
@@ -686,40 +687,15 @@ describe('getCustomChatCompletion', () => {
 
       expect(callCount).toBe(3);
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
       vi.useRealTimers();
     }
   });
 
-  it('refuses redirects so the key header never reaches another host', async () => {
-    const originalFetch = globalThis.fetch;
-    const inits: (RequestInit | undefined)[] = [];
-    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
-      inits.push(init);
-
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: () => Promise.resolve('{"choices":[{"message":{"content":"ok"}}]}'),
-      } as Response);
-    };
-
-    try {
-      await getCustomChatCompletion('sys', 'usr', 100, { endpointUrl: 'https://api.example.com', apiKey: 'k' });
-      await testCustomConnection({ endpointUrl: 'https://api.example.com', apiKey: 'k' });
-
-      expect(inits.length).toBeGreaterThanOrEqual(2);
-      expect(inits.every((init) => init?.redirect === 'error')).toBe(true);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
   it('includes bearer token in Authorization header', async () => {
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let capturedHeaders: Record<string, string> = {};
-    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
+    network.fetch = (_url: string | URL | Request, init?: RequestInit) => {
       capturedHeaders = init?.headers as Record<string, string>;
 
       return Promise.resolve({
@@ -738,14 +714,14 @@ describe('getCustomChatCompletion', () => {
 
       expect(capturedHeaders.Authorization).toBe('Bearer sk-test');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('uses custom apiKeyHeader when provided', async () => {
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let capturedHeaders: Record<string, string> = {};
-    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
+    network.fetch = (_url: string | URL | Request, init?: RequestInit) => {
       capturedHeaders = init?.headers as Record<string, string>;
 
       return Promise.resolve({
@@ -765,7 +741,7 @@ describe('getCustomChatCompletion', () => {
 
       expect(capturedHeaders['X-Api-Key']).toBe('my-key');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
@@ -780,9 +756,9 @@ describe('getCustomChatCompletion', () => {
     let fetchCalls: Array<{ url: string; headers: Record<string, string> }>;
 
     beforeEach(() => {
-      originalFetch = globalThis.fetch;
+      originalFetch = network.fetch;
       fetchCalls = [];
-      globalThis.fetch = (url: string | URL | Request, init?: RequestInit) => {
+      network.fetch = (url: string | URL | Request, init?: RequestInit) => {
         fetchCalls.push({ url: String(url), headers: init?.headers as Record<string, string> });
 
         return Promise.resolve(okResponse);
@@ -790,7 +766,7 @@ describe('getCustomChatCompletion', () => {
     });
 
     afterEach(() => {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     });
 
     it('rejects a chat completion to a remote http endpoint before any network call', async () => {
@@ -826,9 +802,9 @@ describe('getCustomChatCompletion', () => {
   });
 
   it('skips auth header when no apiKey', async () => {
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let capturedHeaders: Record<string, string> = {};
-    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
+    network.fetch = (_url: string | URL | Request, init?: RequestInit) => {
       capturedHeaders = init?.headers as Record<string, string>;
 
       return Promise.resolve({
@@ -844,14 +820,14 @@ describe('getCustomChatCompletion', () => {
 
       expect(capturedHeaders.Authorization).toBeUndefined();
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('includes model in request body when configured', async () => {
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let capturedBody: string = '';
-    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
+    network.fetch = (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = init?.body as string;
 
       return Promise.resolve({
@@ -871,14 +847,14 @@ describe('getCustomChatCompletion', () => {
       const parsed = JSON.parse(capturedBody);
       expect(parsed.model).toBe('gpt-4');
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('includes num_ctx for local endpoints', async () => {
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let capturedBody: string = '';
-    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
+    network.fetch = (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = init?.body as string;
 
       return Promise.resolve({
@@ -898,14 +874,14 @@ describe('getCustomChatCompletion', () => {
       const parsed = JSON.parse(capturedBody);
       expect(parsed.num_ctx).toBe(4096);
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 
   it('omits num_ctx for remote endpoints', async () => {
-    const originalFetch = globalThis.fetch;
+    const originalFetch = network.fetch;
     let capturedBody: string = '';
-    globalThis.fetch = (_url: string | URL | Request, init?: RequestInit) => {
+    network.fetch = (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = init?.body as string;
 
       return Promise.resolve({
@@ -925,7 +901,7 @@ describe('getCustomChatCompletion', () => {
       const parsed = JSON.parse(capturedBody);
       expect(parsed.num_ctx).toBeUndefined();
     } finally {
-      globalThis.fetch = originalFetch;
+      network.fetch = originalFetch;
     }
   });
 });

@@ -351,6 +351,7 @@ public sealed class ClassSealingConverterTests
         string result = await new ClassSealingConverter().SealWhenSafeAsync(
             new[] { solution.GetDocument(target.Id) },
             new[] { $@"c:\repo\{referencedOutside.ToLowerInvariant()}\{referencedOutside}.csproj" },
+            false,
             CancellationToken.None);
 
         Assert.AreEqual(input, result);
@@ -366,6 +367,7 @@ public sealed class ClassSealingConverterTests
         string result = await new ClassSealingConverter().SealWhenSafeAsync(
             new[] { solution.GetDocument(target.Id) },
             new[] { @"C:\Repo\Other\Other.csproj" },
+            false,
             CancellationToken.None);
 
         Assert.AreEqual("namespace Demo { public sealed class Foo { } }", result);

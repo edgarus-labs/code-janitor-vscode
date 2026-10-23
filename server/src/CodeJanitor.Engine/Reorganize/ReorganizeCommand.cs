@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using CodeJanitor.Engine.Contracts;
+using CodeJanitor.Engine.Pipeline;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 
@@ -16,16 +17,16 @@ internal static class ReorganizeRequest
         return policy is { } value ? parsed with { PerformWhenPreprocessorConditionals = value } : parsed;
     }
 
-    public static async Task<Solution> ApplyAsync(Document document, ReorganizeSettings reorganize, IEffectiveSettings settings, CancellationToken cancellationToken)
+    public static async Task<(Solution Solution, ReorganizeResult Result)> ApplyAsync(Document document, ReorganizeSettings reorganize, IEffectiveSettings settings, CancellationToken cancellationToken)
     {
         var result = await Reorganizer.ReorganizeAsync(document, reorganize, ReorganizeCleanup.From(settings), cancellationToken).ConfigureAwait(false);
         var text = await document.GetTextAsync(cancellationToken).ConfigureAwait(false);
         if (result.Output == text.ToString())
         {
-            return document.Project.Solution;
+            return (document.Project.Solution, result);
         }
 
-        return document.WithText(SourceText.From(result.Output, text.Encoding, text.ChecksumAlgorithm)).Project.Solution;
+        return (document.WithText(SourceText.From(result.Output, text.Encoding, text.ChecksumAlgorithm)).Project.Solution, result);
     }
 }
 
@@ -38,15 +39,16 @@ public sealed class ReorganizeCommand : IDocumentCommand
 {
     public string Name => "reorganize";
 
-    public Task<Solution> ExecuteAsync(Document document, IEffectiveSettings settings, JsonObject? arguments, CancellationToken cancellationToken) =>
-        ReorganizeRequest.ApplyAsync(document, ReorganizeRequest.SettingsOf(settings, arguments), settings, cancellationToken);
+    public async Task<Solution> ExecuteAsync(Document document, IEffectiveSettings settings, JsonObject? arguments, CancellationToken cancellationToken) =>
+        (await ReorganizeRequest.ApplyAsync(document, ReorganizeRequest.SettingsOf(settings, arguments), settings, cancellationToken).ConfigureAwait(false)).Solution;
 }
 
 /// <summary>
 /// Reorganizes the members first in a cleanup when <c>reorganize.runAtStartOfCleanup</c> is on. A step cannot ask the
-/// user, so a file with preprocessor conditionals is only reorganized when the policy is <c>yes</c>.
+/// user, so a file with preprocessor conditionals is only reorganized when the policy is <c>yes</c>; the types it
+/// leaves alone and a file it does not reorganize are reported.
 /// </summary>
-public sealed class ReorganizeStep : ICleanupStep
+public sealed class ReorganizeStep : IIssueReportingStep
 {
     public string Name => "Reorganize members";
 
@@ -58,6 +60,17 @@ public sealed class ReorganizeStep : ICleanupStep
 
     public bool IsEnabled(IEffectiveSettings settings) => ReorganizeSettings.Parse(settings.GetNode("reorganize")).RunAtStartOfCleanup;
 
-    public Task<Solution> ApplyAsync(Document document, IEffectiveSettings settings, CancellationToken cancellationToken) =>
-        ReorganizeRequest.ApplyAsync(document, ReorganizeSettings.Parse(settings.GetNode("reorganize")), settings, cancellationToken);
+    public async Task<Solution> ApplyAsync(Document document, IEffectiveSettings settings, CancellationToken cancellationToken) =>
+        (await ApplyWithIssuesAsync(document, settings, cancellationToken).ConfigureAwait(false)).Solution;
+
+    /// <summary>Reorganizes the file and reports the types left alone, or that the file was not reorganized because of its preprocessor conditionals.</summary>
+    public async Task<(Solution Solution, IReadOnlyList<string> Issues)> ApplyWithIssuesAsync(Document document, IEffectiveSettings settings, CancellationToken cancellationToken)
+    {
+        var (solution, result) = await ReorganizeRequest.ApplyAsync(document, ReorganizeSettings.Parse(settings.GetNode("reorganize")), settings, cancellationToken).ConfigureAwait(false);
+        var notes = result.BlockedByPreprocessor
+            ? result.Skipped.Append("not applied, the file has preprocessor conditionals (#if, #pragma); set codeJanitor.reorganize.performWhenPreprocessorConditionals to \"yes\" to reorganize such files in a cleanup")
+            : result.Skipped;
+
+        return (solution, [.. notes.Select(note => $"{Name}: {note}")]);
+    }
 }

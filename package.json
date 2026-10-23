@@ -2950,6 +2950,7 @@
     "build": "npm run build:server && node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
+    "check:node": "vite-node scripts/check-node.ts",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "test": "vitest run",
     "pretest:e2e": "npm run build && tsc -p tsconfig.e2e.json",

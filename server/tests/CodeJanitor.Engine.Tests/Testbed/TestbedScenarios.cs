@@ -48,14 +48,6 @@ public sealed record TestbedScenario(
     public override string ToString() => Id;
 }
 
-/// <summary>What a cleanup made of a scenario file.</summary>
-/// <param name="Input">The text before the cleanup.</param>
-/// <param name="Output">The cleaned text (with a leading U+FEFF when the result keeps a byte order mark).</param>
-/// <param name="Again">The text after cleaning <paramref name="Output"/> once more.</param>
-/// <param name="Issues">What the cleanup reported: its issues and <c>unresolved: &lt;id&gt; line &lt;n&gt;: &lt;message&gt; (&lt;reason&gt;)</c>.</param>
-/// <param name="Outcome">The first cleanup's outcome.</param>
-public sealed record TestbedRun(string Input, string Output, string Again, IReadOnlyList<string> Issues, CleanupOutcome Outcome);
-
 /// <summary>
 /// The shared xunit helper for the testbed (<c>.testbed</c>, a clone of edgarus-labs/code-janitor-testbed): finds it through
 /// <c>CODE_JANITOR_TESTBED</c> or <c>&lt;repo&gt;/.testbed</c>, loads <c>scenarios.json</c>, builds the workspace documents of the
@@ -224,10 +216,6 @@ public static class TestbedScenarios
         return settings;
     }
 
-    /// <summary>The settings of the scenario with its own option off.</summary>
-    public static JsonObject OffSettingsOf(TestbedScenario scenario) =>
-        SettingsOf(scenario with { Settings = [], CodeStyle = [] });
-
     /// <summary>The testbed's C# projects as one solution (cached; documents carry the files' text without a byte order mark).</summary>
     public static Solution Solution => LazySolution.Value;
 
@@ -275,35 +263,6 @@ public static class TestbedScenarios
         var text = await document.GetTextAsync();
 
         return (text.Encoding?.GetPreamble().Length > 0 ? "\uFEFF" : string.Empty) + text;
-    }
-
-    /// <summary>
-    /// Cleans the scenario file with <paramref name="settings"/> (default: <see cref="SettingsOf"/>), then cleans the result
-    /// once more for the idempotence check.
-    /// </summary>
-    public static async Task<TestbedRun> CleanAsync(TestbedScenario scenario, JsonObject? settings = null, ICleanupEngine? engine = null, string? input = null)
-    {
-        engine ??= new CleanupEngine();
-        settings ??= SettingsOf(scenario);
-        input ??= ReadText(scenario.FullPath);
-
-        var first = await CleanTextAsync(engine, scenario.FullPath, input, settings);
-        var again = await CleanTextAsync(engine, scenario.FullPath, first.Output, settings);
-
-        return new TestbedRun(input, first.Output, again.Output, first.Issues, first.Outcome);
-    }
-
-    /// <summary>The cleanup of one text of a file: the cleaned text and what was reported.</summary>
-    public static async Task<(string Output, IReadOnlyList<string> Issues, CleanupOutcome Outcome)> CleanTextAsync(ICleanupEngine engine, string fullPath, string input, JsonObject settings)
-    {
-        var document = CreateDocument(fullPath, input);
-        var outcome = await engine.CleanupAsync(document, new CleanupRequest(settings, [], null), CancellationToken.None);
-        var output = await TextOfAsync(outcome.Solution.GetDocument(document.Id)!);
-        var issues = outcome.Issues
-            .Concat(outcome.Unresolved.Select(unresolved => $"unresolved: {unresolved.Id} line {unresolved.Line}: {unresolved.Message} ({unresolved.Reason})"))
-            .ToList();
-
-        return (output, issues, outcome);
     }
 
     /// <summary>Why <paramref name="output"/> fails the checks of the scenario; empty when it passes them.</summary>
@@ -369,34 +328,6 @@ public static class TestbedScenarios
                 return $"unknown check type {check["t"]?.ToJsonString()}";
         }
     }
-
-    /// <summary>
-    /// Asserts, for a cleanup scenario: the checks hold; a report-only scenario leaves the code as it
-    /// was and any other non-trap one changes it; cleaning the result again changes nothing. Returns the problems.
-    /// </summary>
-    public static IReadOnlyList<string> Problems(TestbedScenario scenario, TestbedRun run)
-    {
-        var problems = Failures(scenario, run.Output, run.Issues).ToList();
-        if (scenario.ReportOnly && run.Output != run.Input)
-        {
-            problems.Add("an option that is only reported must not change the code");
-        }
-        else if (!scenario.ReportOnly && !scenario.Trap && run.Output == run.Input)
-        {
-            problems.Add("the bad code must change");
-        }
-
-        if (run.Again != run.Output)
-        {
-            problems.Add("cleaning the result again must change nothing");
-        }
-
-        return problems;
-    }
-
-    /// <summary>The <c>.editorconfig</c> of a scenario with every severity turned off.</summary>
-    public static string Silenced(string editorconfig) =>
-        Regex.Replace(Regex.Replace(editorconfig, @":(?:warning|error|suggestion)\b", ":silent"), @"(\.severity\s*=\s*)(?:warning|error|suggestion)\b", "$1none");
 
     private static IEnumerable<KeyValuePair<string, JsonNode?>> Merge(JsonObject? first, JsonObject second)
     {
@@ -573,7 +504,7 @@ public static class TestbedScenarios
         var runtimeDirectory = RuntimeEnvironment.GetRuntimeDirectory();
         var dotnetRoot = Path.GetFullPath(Path.Combine(runtimeDirectory, "..", "..", ".."));
         var sdk = Directory.Exists(Path.Combine(dotnetRoot, "sdk"))
-            ? Directory.GetDirectories(Path.Combine(dotnetRoot, "sdk")).OrderByDescending(path => path, StringComparer.Ordinal).FirstOrDefault()
+            ? NewestSdk(Directory.GetDirectories(Path.Combine(dotnetRoot, "sdk")))
             : null;
         var analyzers = sdk is null ? null : Path.Combine(sdk, "Sdks", "Microsoft.NET.Sdk", "analyzers");
         if (analyzers is null || !Directory.Exists(analyzers))
@@ -589,6 +520,16 @@ public static class TestbedScenarios
             .Select(path => (AnalyzerReference)new AnalyzerFileReference(path, LoadFromLoader.Instance))
             .ToImmutableArray();
     });
+
+    /// <summary>The SDK folder with the highest version number, a release before a preview of the same number.</summary>
+    internal static string? NewestSdk(IEnumerable<string> directories) => directories
+        .Select(folder => (Folder: folder, Name: Path.GetFileName(folder)))
+        .Select(sdk => (sdk.Folder, Release: !sdk.Name.Contains('-', StringComparison.Ordinal), Version: Version.TryParse(sdk.Name.Split('-')[0], out var version) ? version : null))
+        .Where(sdk => sdk.Version is not null)
+        .OrderByDescending(sdk => sdk.Version)
+        .ThenByDescending(sdk => sdk.Release)
+        .Select(sdk => sdk.Folder)
+        .FirstOrDefault();
 
     private sealed class LoadFromLoader : IAnalyzerAssemblyLoader
     {

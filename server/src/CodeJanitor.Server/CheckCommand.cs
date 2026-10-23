@@ -231,7 +231,10 @@ internal static partial class CheckCommand
     [GeneratedRegex("^[A-Z]+[0-9]+$")]
     private static partial Regex DiagnosticId();
 
-    /// <summary><paramref name="target"/> itself when it is a <c>.cs</c> file, or the <c>.cs</c> files under it outside build and tool folders.</summary>
+    /// <summary>
+    /// <paramref name="target"/> itself when it is a <c>.cs</c> file, or the <c>.cs</c> files under it outside build and tool
+    /// folders, without following directory links (symbolic links, junctions).
+    /// </summary>
     private static IEnumerable<string> CSharpFiles(string target)
     {
         if (File.Exists(target))
@@ -245,7 +248,7 @@ internal static partial class CheckCommand
         }
 
         return Directory.EnumerateFileSystemEntries(target).SelectMany(entry => Directory.Exists(entry)
-            ? SkippedFolders.Contains(Path.GetFileName(entry)) ? [] : CSharpFiles(entry)
+            ? SkippedFolders.Contains(Path.GetFileName(entry)) || new DirectoryInfo(entry).LinkTarget is not null ? [] : CSharpFiles(entry)
             : entry.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ? [entry] : []);
     }
 }

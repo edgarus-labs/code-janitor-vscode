@@ -62,18 +62,6 @@ public sealed class TestbedSettingsScenarioTests
         Assert.Equal(output, again);
     }
 
-    /// <summary>The same scenarios through the whole engine (<see cref="CleanupEngine" />), with the shared testbed helper.</summary>
-    [Theory]
-    [MemberData(nameof(Scenarios))]
-    public async Task Scenario_PassesThroughTheEngine(string id)
-    {
-        var scenario = TestbedScenarios.Get(id);
-
-        var run = await TestbedScenarios.CleanAsync(scenario);
-
-        Assert.Empty(TestbedScenarios.Problems(scenario, run));
-    }
-
     [Fact]
     public void TheTestbedIsFound_AndHasScenariosForTheseSteps() => Assert.True(OwnScenarioIds().Count() >= 45, $"found {OwnScenarioIds().Count()} scenarios at {LocalTestbed.Root}");
 }

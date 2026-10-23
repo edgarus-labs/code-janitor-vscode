@@ -344,13 +344,14 @@ public sealed partial class CleanupEngine : ICleanupEngine
             return 0;
         }
 
+        var copies = before.GetDocument(documentId)?.FilePath is { } filePath ? before.GetDocumentIdsWithFilePath(filePath) : [];
         var count = 0;
         foreach (var projectChanges in after.GetChanges(before).GetProjectChanges())
         {
             count += projectChanges.GetAddedDocuments().Count();
             foreach (var changedId in projectChanges.GetChangedDocuments(onlyGetDocumentsWithTextChanges: true))
             {
-                if (changedId == documentId)
+                if (changedId == documentId || copies.Contains(changedId))
                 {
                     continue;
                 }

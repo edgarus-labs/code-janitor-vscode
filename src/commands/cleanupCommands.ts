@@ -10,9 +10,12 @@ import {
   expandToCSharpFiles,
   expandToCleanableFiles,
   expandToCommentFiles,
+  externalFileCleanup,
   isCSharp,
   isCleanupTarget,
+  isOutsideWorkspaceFolders,
   isSupportedFile,
+  openDocumentVersions,
   runCleanupOnUris,
   runFixNamespaceOnUris,
   runFormatCommentsOnUris,
@@ -397,10 +400,11 @@ function previewChoices(rules: readonly RuleResult[]): PreviewChoice[] {
     }));
 }
 
-/** The cleanup of a document without the rules left out, and what each rule changed. */
+/** The cleanup of a document without the rules left out, what each rule changed, and the open document versions it was computed from. */
 interface ActivePreview {
   readonly outcome: FileOutcome;
   readonly rules: readonly RuleResult[];
+  readonly openVersions: ReadonlyMap<string, number>;
 }
 
 async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, editor: vscode.TextEditor): Promise<void> {
@@ -411,20 +415,29 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
     return;
   }
 
+  const partial = isOutsideWorkspaceFolders(document.uri);
+  const skipBecause = partial ? (await externalFileCleanup(document.uri, false)).skipBecause : undefined;
+  if (skipBecause) {
+    void vscode.window.showInformationMessage(`Code Janitor: ${document.uri.fsPath} skipped: ${skipBecause}.`);
+
+    return;
+  }
+
   const file = { uri: document.uri, content: document.getText(), isOpen: true };
   const compute = async (excludedRules: readonly string[]): Promise<ActivePreview> => {
+    const openVersions = openDocumentVersions();
     if (!isCSharp(document.uri)) {
-      return { outcome: { text: await cleanupOtherLanguage(file), otherFiles: [], newFiles: [], unresolved: 0 }, rules: [] };
+      return { outcome: { text: await cleanupOtherLanguage(file), otherFiles: [], newFiles: [], unresolved: 0 }, rules: [], openVersions };
     }
 
-    const result = await cleanupCSharpResult(file, { renameAcrossWorkspace: false, honorOnlyChangedLines: false, excludedRules });
+    const result = await cleanupCSharpResult(file, { renameAcrossWorkspace: false, honorOnlyChangedLines: false, partial, excludedRules });
     // Only the complete first preview logs: the previews without some rules repeat its messages.
     const outcome =
       excludedRules.length === 0
         ? engineOutcome(document.uri, result, 'Preview cleanup')
         : { text: result.text, otherFiles: result.otherFiles, newFiles: result.newFiles, unresolved: result.unresolved.length };
 
-    return { outcome, rules: result.rules };
+    return { outcome, rules: result.rules, openVersions };
   };
   const changes = (preview: ActivePreview) =>
     preview.outcome.text !== file.content || preview.outcome.otherFiles.length > 0 || preview.outcome.newFiles.length > 0;
@@ -511,7 +524,7 @@ async function previewCleanupActiveDocument(_context: vscode.ExtensionContext, e
   }
 
   try {
-    await applyFileOutcome(file, preview.outcome);
+    await applyFileOutcome(file, preview.outcome, preview.openVersions);
     logDiagnostic(`Preview cleanup applied to ${document.fileName}.`);
     void vscode.window.showInformationMessage('Code Janitor: cleanup applied.');
   } catch (err) {

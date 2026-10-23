@@ -103,9 +103,13 @@ namespace Company.App.Ext
 
 namespace Company.App.Extra
 {
+    public sealed class ExtraSequence
+    {
+    }
+
     public static class MoreLinq
     {
-        public static IEnumerable<int> Where(this IEnumerable<int> source, Func<int, bool> predicate) => source;
+        public static ExtraSequence Where(this IEnumerable<int> source, Func<int, bool> predicate) => new ExtraSequence();
     }
 }
 
