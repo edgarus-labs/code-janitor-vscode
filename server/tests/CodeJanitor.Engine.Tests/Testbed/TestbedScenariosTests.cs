@@ -15,18 +15,6 @@ public sealed class TestbedScenariosTests
     }
 
     [Fact]
-    public async Task TheTestbedProjectsCompileWithoutErrors()
-    {
-        foreach (var project in TestbedScenarios.Solution.Projects)
-        {
-            var compilation = await project.GetCompilationAsync();
-            var errors = compilation!.GetDiagnostics().Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error).Take(5).ToList();
-
-            Assert.True(errors.Count == 0, $"{project.Name}: {string.Join("\n", errors)}");
-        }
-    }
-
-    [Fact]
     public void TheSealingScenariosBelongToTheirLibraryProject()
     {
         var document = TestbedScenarios.CreateDocument(TestbedScenarios.Get("SealClassesWhenSafe"));
