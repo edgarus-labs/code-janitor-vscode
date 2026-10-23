@@ -29,12 +29,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - name: Install dependencies
         run: npm ci
+      - name: Check Node.js
+        run: npm run check:node
       - name: ESLint
         run: npm run lint
       - name: Prettier and dotnet format
@@ -50,6 +53,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
       - uses: actions/setup-dotnet@v6
         with:
@@ -58,6 +62,8 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - name: Check Node.js
+        run: npm run check:node
       - name: Typecheck
         run: npm run compile
       - name: Typecheck scripts
@@ -92,6 +98,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
       - uses: actions/setup-dotnet@v6
         with:
@@ -100,6 +107,8 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - name: Check Node.js
+        run: npm run check:node
       - uses: actions/download-artifact@v8
         with:
           name: server
@@ -176,6 +185,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
       - uses: actions/setup-dotnet@v6
         with:
@@ -184,6 +194,8 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - name: Check Node.js
+        run: npm run check:node
       - uses: actions/download-artifact@v8
         with:
           name: server
@@ -208,6 +220,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
       - uses: actions/setup-dotnet@v6
         with:
@@ -216,6 +229,8 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - name: Check Node.js
+        run: npm run check:node
       - uses: actions/download-artifact@v8
         with:
           name: server
@@ -246,6 +261,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
       - uses: actions/setup-dotnet@v6
         with:
@@ -254,6 +270,8 @@ jobs:
             10.0.x
       - name: Install dependencies
         run: npm ci
+      - name: Check Node.js
+        run: npm run check:node
       - uses: actions/download-artifact@v8
         with:
           name: server
