@@ -1,8 +1,7 @@
 /**
  * `.editorconfig` cleanup in a real VS Code host: files created under the fixture folder
  * `test/e2e/fixtures/workspace/editorconfig`, whose `.editorconfig` sets naming, code-style,
- * formatting and one-type-per-file rules, go through the real commands, the real save pipeline
- * and the real output channel.
+ * formatting and one-type-per-file rules, go through the real commands and the real save pipeline.
  */
 
 import * as assert from 'node:assert/strict';
@@ -39,34 +38,6 @@ function fixtureFolder(): string {
   return path.join(workspace.uri.fsPath, 'editorconfig');
 }
 
-/**
- * Resolves once the Code Janitor output channel shows a line matching `pattern`. VS Code fills the
- * channel's backing document asynchronously, so this follows its change events; Mocha's test
- * timeout fails the test if the line never appears.
- */
-async function outputChannelLine(pattern: RegExp): Promise<string> {
-  const isChannel = (document: vscode.TextDocument) => document.uri.scheme === 'output' && document.uri.path.includes('Code Janitor');
-  const { promise, resolve } = Promise.withResolvers<string>();
-  const check = (document: vscode.TextDocument) => {
-    const line = isChannel(document) ? document.getText().split('\n').find((candidate) => pattern.test(candidate)) : undefined;
-    if (line !== undefined) {
-      resolve(line);
-    }
-  };
-  const subscriptions = [
-    vscode.workspace.onDidOpenTextDocument(check),
-    vscode.workspace.onDidChangeTextDocument((event) => check(event.document)),
-  ];
-  try {
-    await vscode.commands.executeCommand('codeJanitor.showOutputChannel');
-    vscode.workspace.textDocuments.forEach(check);
-
-    return await promise;
-  } finally {
-    subscriptions.forEach((subscription) => subscription.dispose());
-  }
-}
-
 suite('.editorconfig cleanup (real VS Code host)', () => {
   let folder: string;
 
@@ -94,30 +65,14 @@ suite('.editorconfig cleanup (real VS Code host)', () => {
     const text = editor.document.getText();
     assert.match(text, /^namespace Demo;$/m, 'The namespace should become file-scoped (IDE0161).');
     assert.match(text, /^internal class Counter$/m, 'Four-space indentation of a file-scoped namespace starts at column 0.');
-    assert.match(text, /^    private int _count;$/m, 'The private field should be renamed to _camelCase (IDE1006).');
-    assert.match(text, /^        if \(value > 0\)$/m, 'The if statement should be re-indented and spaced (IDE0055).');
-    assert.match(text, /^            _count \+= value;$/m, 'References to the renamed field should follow it.');
-  });
-
-  test('settings cleanup does not apply are reported in the Code Janitor output channel', async () => {
-    const filePath = path.join(folder, 'Reported.cs');
-    fs.writeFileSync(filePath, UNCLEAN_COUNTER, 'utf8');
-    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(filePath));
-
-    await vscode.commands.executeCommand('codeJanitor.cleanupActiveFile');
-
-    // Listed once per session and settings file, with the number of files it applies to.
-    const line = await outputChannelLine(/\.editorconfig setting not supported: .*dotnet_style_prefer_non_hidden_explicit_cast_in_source/);
-    assert.match(line, /"dotnet_style_prefer_non_hidden_explicit_cast_in_source = true:warning" is not supported and was not applied\./);
+    assert.match(text, /^ {4}private int _count;$/m, 'The private field should be renamed to _camelCase (IDE1006).');
+    assert.match(text, /^ {8}if \(value > 0\)$/m, 'The if statement should be re-indented and spaced (IDE0055).');
+    assert.match(text, /^ {12}_count \+= value;$/m, 'References to the renamed field should follow it.');
   });
 
   test('Cleanup Selected Files moves extra top-level types to their own files (SA1402)', async () => {
     const filePath = path.join(folder, 'First.cs');
-    fs.writeFileSync(
-      filePath,
-      ['namespace Demo;', '', 'internal class First', '{', '}', '', 'internal class Second', '{', '}', ''].join('\n'),
-      'utf8'
-    );
+    fs.writeFileSync(filePath, ['namespace Demo;', '', 'internal class First', '{', '}', '', 'internal class Second', '{', '}', ''].join('\n'), 'utf8');
     const uri = vscode.Uri.file(filePath);
 
     await vscode.commands.executeCommand('codeJanitor.cleanupSelectedFiles', uri, [uri]);
@@ -130,46 +85,51 @@ suite('.editorconfig cleanup (real VS Code host)', () => {
   });
 
   test('cleanup on save applies the .editorconfig rules to the saved file', async () => {
-    assert.equal(
-      vscode.workspace.getConfiguration('codeJanitor').get('cleanup.onSave'),
-      true,
-      'The fixture workspace enables cleanup on save.'
-    );
+    assert.equal(vscode.workspace.getConfiguration('codeJanitor').get('cleanup.onSave'), true, 'The fixture workspace enables cleanup on save.');
     const filePath = path.join(folder, 'Saved.cs');
     fs.writeFileSync(filePath, 'namespace Demo;\n\ninternal class Saved\n{\n}\n', 'utf8');
     const editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(filePath));
 
+    const unclean = UNCLEAN_COUNTER.replace('class Counter', 'class SavedCounter');
     await editor.edit((edit) =>
-      edit.replace(
-        new vscode.Range(editor.document.positionAt(0), editor.document.positionAt(editor.document.getText().length)),
-        UNCLEAN_COUNTER
-      )
+      edit.replace(new vscode.Range(editor.document.positionAt(0), editor.document.positionAt(editor.document.getText().length)), unclean)
     );
     await editor.document.save();
 
     const saved = fs.readFileSync(filePath, 'utf8');
     assert.match(saved, /^namespace Demo;$/m);
-    assert.match(saved, /^    private int _count;$/m);
-    assert.match(saved, /^        if \(value > 0\)$/m);
+    assert.match(saved, /^ {4}private int _count;$/m);
+    assert.match(saved, /^ {8}if \(value > 0\)$/m);
   });
 
   test('shows the .editorconfig violations as diagnostics with a quick fix for each occurrence', async () => {
     const filePath = path.join(folder, 'Tally.cs');
-    fs.writeFileSync(filePath, ['namespace Demo;', '', 'internal class Tally', '{', '    private int count;', '', '    public int Next() => ++count;', '}', ''].join('\n'), 'utf8');
+    fs.writeFileSync(
+      filePath,
+      ['namespace Demo;', '', 'internal class Tally', '{', '    private int count;', '', '    public int Next() => ++count;', '}', ''].join('\n'),
+      'utf8'
+    );
     const document = await vscode.workspace.openTextDocument(filePath);
     await vscode.window.showTextDocument(document);
 
     const diagnostic = await codeJanitorDiagnostic(document.uri, 'IDE1006');
     assert.equal(diagnostic.severity, vscode.DiagnosticSeverity.Warning);
     assert.equal(diagnostic.range.start.line, 4);
-    const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', document.uri, diagnostic.range);
+    // The edit of a quick fix is computed lazily (resolveCodeAction): resolve the offered actions, as the light bulb does on selection.
+    const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+      'vscode.executeCodeActionProvider',
+      document.uri,
+      diagnostic.range,
+      undefined,
+      10
+    );
     const fix = actions.find((action) => action.title === 'Fix IDE1006');
     assert.ok(fix?.edit, `A "Fix IDE1006" quick fix should be offered, got: ${actions.map((action) => action.title).join(', ')}.`);
     assert.ok(actions.some((action) => action.title === 'Fix all IDE1006 in file'));
 
     assert.ok(await vscode.workspace.applyEdit(fix.edit));
 
-    assert.match(document.getText(), /^    private int _count;$/m);
+    assert.match(document.getText(), /^ {4}private int _count;$/m);
     assert.match(document.getText(), /\+\+_count;/);
     await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
   });

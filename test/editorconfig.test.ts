@@ -1,20 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import {
-  isEnforced,
-  loadEditorConfigProperties,
-  resolveDiagnosticSeverity,
-  resolveEditorConfigProperties,
-  splitOptionSeverity,
-} from '../src/cleanup/editorconfig';
+import { loadEditorConfigProperties, resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
 describe('resolveEditorConfigProperties', () => {
-  const resolve = (text: string, filePath: string, directory = '/repo') =>
-    resolveEditorConfigProperties([{ directory, text }], filePath);
-  const matches = (glob: string, filePath: string) =>
-    resolve(`[${glob}]\nhit = yes\n`, filePath).get('hit') === 'yes';
+  const resolve = (text: string, filePath: string, directory = '/repo') => resolveEditorConfigProperties([{ directory, text }], filePath);
+  const matches = (glob: string, filePath: string) => resolve(`[${glob}]\nhit = yes\n`, filePath).get('hit') === 'yes';
 
   it('ignores properties in the preamble except root', () => {
     const props = resolve('root = true\nindent_style = tab\n[*]\nindent_size = 4\n', '/repo/a.cs');
@@ -24,10 +16,7 @@ describe('resolveEditorConfigProperties', () => {
   });
 
   it('lower-cases keys, keeps value case and strips comments', () => {
-    const props = resolve(
-      '# comment\n; comment\n[*.cs]\nDotnet_Naming_Style.Prefix.Required_Prefix = I ; trailing\nkey: value # trailing\n',
-      '/repo/a.cs'
-    );
+    const props = resolve('# comment\n; comment\n[*.cs]\nDotnet_Naming_Style.Prefix.Required_Prefix = I ; trailing\nkey: value # trailing\n', '/repo/a.cs');
 
     expect(props.get('dotnet_naming_style.prefix.required_prefix')).toBe('I');
     expect(props.get('DOTNET_NAMING_STYLE.PREFIX.REQUIRED_PREFIX')).toBe('I');
@@ -189,63 +178,5 @@ describe('loadEditorConfigProperties', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
-});
-
-describe('severity helpers', () => {
-  const props = (text: string) => resolveEditorConfigProperties([{ directory: '/r', text: `[*]\n${text}` }], '/r/a.cs');
-
-  it('splits option values from their severity suffix', () => {
-    expect(splitOptionSeverity('true:warning')).toEqual({ value: 'true', severity: 'warning' });
-    expect(splitOptionSeverity('when_types_loosely_match : suggestion')).toEqual({
-      value: 'when_types_loosely_match',
-      severity: 'suggestion',
-    });
-    expect(splitOptionSeverity('true')).toEqual({ value: 'true' });
-    expect(splitOptionSeverity('a:b')).toEqual({ value: 'a:b' });
-  });
-
-  it('prefers dotnet_diagnostic, then category, then all analyzers, then the option severity', () => {
-    const all = 'dotnet_analyzer_diagnostic.severity = error\n';
-    const category = 'dotnet_analyzer_diagnostic.category-Style.severity = suggestion\n';
-    const specific = 'dotnet_diagnostic.IDE1006.severity = silent\n';
-
-    expect(resolveDiagnosticSeverity(props(''), 'IDE1006', 'warning')).toBe('warning');
-    expect(resolveDiagnosticSeverity(props(all), 'IDE1006', 'warning')).toBe('error');
-    expect(resolveDiagnosticSeverity(props(all + category), 'IDE1006', 'warning')).toBe('suggestion');
-    expect(resolveDiagnosticSeverity(props(all + category + specific), 'IDE1006', 'warning')).toBe('silent');
-    expect(resolveDiagnosticSeverity(props(category), 'IDE1006', 'warning', 'Naming')).toBe('warning');
-    expect(resolveDiagnosticSeverity(props('dotnet_diagnostic.IDE1006.severity = default\n' + all), 'IDE1006', 'none')).toBe(
-      'none'
-    );
-    // `warn` is not a severity Roslyn reads: it is invalid and falls back like any other invalid name.
-    expect(resolveDiagnosticSeverity(props('dotnet_diagnostic.IDE1006.severity = warn\n'), 'IDE1006')).toBeUndefined();
-    expect(resolveDiagnosticSeverity(props('dotnet_diagnostic.IDE1006.severity = warn\n' + all), 'IDE1006')).toBe('error');
-    expect(splitOptionSeverity('true:warn')).toEqual({ value: 'true:warn' });
-    expect(resolveDiagnosticSeverity(props(''), 'IDE1006')).toBeUndefined();
-  });
-
-  it('lets bulk severities enable CA1852 (bulk-configurable) but not CA1307/CA1867 (disabled by default), as the SDK does', () => {
-    const bulk = props('dotnet_analyzer_diagnostic.category-Performance.severity = warning\ndotnet_analyzer_diagnostic.category-Globalization.severity = warning\n');
-    const all = props('dotnet_analyzer_diagnostic.severity = warning\n');
-
-    expect(resolveDiagnosticSeverity(bulk, 'CA1852', undefined, 'Performance', false)).toBe('warning');
-    expect(resolveDiagnosticSeverity(all, 'CA1852', undefined, 'Performance', false)).toBe('warning');
-    for (const [id, category] of [['CA1307', 'Globalization'], ['CA1867', 'Performance']]) {
-      expect(resolveDiagnosticSeverity(bulk, id, undefined, category, false), id).toBeUndefined();
-      expect(resolveDiagnosticSeverity(all, id, undefined, category, false), id).toBeUndefined();
-      expect(resolveDiagnosticSeverity(props(`dotnet_diagnostic.${id}.severity = warning\n`), id, undefined, category, false), id).toBe('warning');
-    }
-  });
-
-  it('enforces only suggestion, warning and error', () => {
-    expect(['none', 'silent', 'suggestion', 'warning', 'error', undefined].map((s) => isEnforced(s as never))).toEqual([
-      false,
-      false,
-      true,
-      true,
-      true,
-      false,
-    ]);
   });
 });

@@ -8,11 +8,60 @@ First release of the Visual Studio Code port.
 
 ### Added (Visual Studio parity)
 
+- **Spade** (the `Spade` view in the Explorer, **Show Spade**): the namespaces, types, members and regions of the active C# file,
+  from the C# engine and refreshed as you type; file order, type order (the Reorganize order, in groups by member type) or
+  alphabetical (`codeJanitor.spade.primarySortOrder`), search by name, parameters, types, metadata and McCabe complexity coloured
+  at `complexityWarningThreshold`/`complexityAlertThreshold`. Selecting an item goes to it (`centerOnWhole`), the cursor selects
+  its item, collapsing a type or region folds it (`synchronizeOutlining`). Context menu: Delete (with the documentation and
+  attributes, after confirmation, one undo), Find All References, Insert Region, Remove Region. Drag and drop moves a member
+  before or after a sibling with its comments and attributes, and is refused when the move would add a compiler error.
+- **Generate Tests to Target Coverage (AI)**: the C# engine finds the decision points of the member at the cursor (guard
+  clauses, `if`/`else`, switch cases and arms, `?:`, `??`, `catch`, `throw`); the AI generates tests until the estimated branch
+  coverage reaches `codeJanitor.ai.tests.targetCoveragePercentage` or `maxCoverageIterations` run out, with progress and cancel.
+  The options prompt is prefilled from the settings and saves what is changed; the report and the tests open beside the editor.
 - **Testbed.** `npm run test:testbed` runs every cleanup option against deliberately bad C# from the public
   [code-janitor-testbed](https://github.com/edgarus-labs/code-janitor-testbed) repository (one class per option) and builds and runs the
   cleaned solution with the real compiler. It found the fixes listed under **Fixed (found on real code)**.
-- **CI.** The tests that build C# with the .NET SDK run in one job per category (`test/compilerTests.json`), each on its own runner
-  with the .NET 10 SDK (`10.0.x`); Build and Test runs the rest. The Code Style compiler tests build each rule group as its own project.
+  `CODE_JANITOR_TESTBED_SCENARIOS` (scenario ids or option names) runs only the named cleanups, with the same checks and build.
+- **CI.** Lint and format run first; every other job needs them. Build and Test, the e2e tests, the server tests, the compiler tests
+  (one job per category of `test/compilerTests.json`), the compile oracle and the testbed run on Linux (`ubuntu-26.04`), Windows
+  (`windows-2025`) and macOS (`macos-15`), with the .NET 10 SDK (`10.0.x`). Runner labels are explicit instead of `ubuntu-latest`.
+- **Release.** The tests run on the three systems, then one `.vsix` is packaged per platform (`win32-x64`, `win32-arm64`, `linux-x64`,
+  `linux-arm64`, `darwin-x64`, `darwin-arm64`), each with the server published for that runtime only.
+- **Cleanup per language.** Files that are not C# get the cleanup steps of their language family, as in Visual Studio: C-family
+  languages (C/C++, CSS, LESS, SCSS, JavaScript, TypeScript, JSON, PHP, PowerShell, R) the blank line rules at braces and the padding
+  before `//` comments; HTML, XAML and XML the three markup rules (never inside comments, CDATA, attribute values or HTML `script`,
+  `style`, `pre` and `textarea`); Visual Basic `#Region` removal and padding, blank lines after attributes and between chained
+  statements, padding before `Case` and `'` comments, and comment formatting; every language its `codeJanitor.cleanup.fileHeader<Language>`
+  (below a shebang, an XML declaration or a PHP opening tag). `codeJanitor.cleanup.fileTypes.*` selects the languages while
+  `includeOtherFileTypes` is on, and `excludeT4GeneratedCode` skips a file next to a `.tt` template of the same name.
+  Format Comments also formats the comments of Visual Basic, C-family, PowerShell and R files.
+- **Files outside the workspace folders** (`codeJanitor.cleanup.performPartialCleanupOnExternal`: `ask`, `always`, `never`): `ask`
+  asks once per cleanup run (Yes / No / Always / Never; Always and Never are saved in the user settings). A partial cleanup leaves
+  the using directives alone and never changes or creates other files; on save a file outside the folders is cleaned partially
+  without asking, unless the setting is `never`.
+- **Cleanup on save** never moves a type to its own file (SA1402/MA0048 are reported instead), keeps renames in the saved file,
+  and with `codeJanitor.cleanup.skipOrganizeUsingsDuringCleanupOnSave` leaves the using directives alone (`organizeUsings`,
+  IDE0005, IDE0065).
+- **External tools after cleanup** of an open document: Format Document (`codeJanitor.cleanup.runFormatDocument`), then the commands
+  of `codeJanitor.thirdParty.otherCleaningCommands` with the document active; a failing command is logged and the others run. Not on
+  save, which they would hold up.
+- **AI XML documentation during cleanup** (`codeJanitor.ai.xmlDoc.runDuringCleanup`, not on save, not when only changed lines are
+  cleaned) within the Visual Studio budget: `maxRequestsPerCleanup`, `maxEstimatedTokensPerCleanup`, `globalTimeoutSeconds`,
+  `maxParallelFiles`; the output channel gets what was documented, skipped by the budget and failed.
+- **Diagnostics mode** (`codeJanitor.general.diagnosticsMode`): skip reasons and the informational messages of batch commands are
+  written only in diagnostics mode; errors and warnings always are.
+- `codeJanitor.collapsing.collapseExplorerWhenOpened` collapses the Explorer when the extension activates.
+- **Per-kind blank line padding settings** (`codeJanitor.cleanup.insertBlankLinePadding<Before|After><Kind>`, plus
+  `…BeforeSingleLineComments` and `…BetweenPropertiesMultiLineAccessors`): a per-kind setting set in any scope wins over the
+  `insertBlankLinePadding` group toggle, as the individual keys of `.codejanitor` already did.
+- **Comment formatting of the Visual Studio extension** (`codeJanitor.formatting.comment*`): comments are wrapped at
+  `commentWrapColumn` and consecutive `//` lines are reflowed into one paragraph; XML documentation is laid out by the
+  `commentXml*` options; lines starting with `commentIgnoreLinesStartingWith` are left alone.
+- **Feature switches** (`codeJanitor.features.*`, all on by default): turning one off hides its commands from the menus and the
+  Command Palette, and hides the Spade view.
+- **Fixes of third-party analyzers.** The C# engine applies the code fixes of every enforced analyzer of the project, including
+  NuGet analyzer packages, with the same compiler-error check as the IDE rules.
 - Code Style rules (`codeJanitor.cleanup.codeStyleRules`, `.codejanitor` `codeStyle`), grouped in the settings panel; override notes that disable the controls `.editorconfig` decides; export/import of the rules.
 - Using directive placement is proven against an index of the project's declarations instead of the old name-prefix heuristic: namespace-relative directives (`using Services;` in `Company.App`) are written fully qualified, `csharp_using_directive_placement = inside_namespace` moves file-level directives into the namespace (`global::`-qualifying what would bind differently), and every file where the move is not provably safe is left unchanged with the reason in the output.
 - File-scoped namespaces are only written for projects known to use C# 10+; `convertToFileScopedNamespace` keeps using directives inside the namespace and reports why a namespace was not converted.
@@ -27,6 +76,22 @@ First release of the Visual Studio Code port.
 
 ### Changed (Visual Studio parity)
 
+- **Breaking: the C# engine is Roslyn.** C# cleanup, the editor diagnostics and quick fixes, the preview, Reorganize, the
+  commands on C# files and `npm run check` run on a bundled .NET server (`dist/server`, Roslyn 5.9) that loads the projects
+  with MSBuild and applies Roslyn's own analyzers and code fixes. It needs the .NET 10 SDK or later (`dotnet` on the `PATH`,
+  or `codeJanitor.dotnetPath`); without it C# cleanup is unavailable and says so once, while other file types and Razor
+  still work. The TypeScript C# parser and rule implementations are removed (Razor keeps its own C# layout), so the entries
+  below that describe how the TypeScript engine rewrote or reported C# code no longer apply: Roslyn decides what each rule
+  reports and how it is fixed, and a fix that adds a compiler error in any project or target framework compiling the file is
+  rejected. Without a solution file, the projects of the workspace folder that reference the cleaned file's project are
+  loaded too, so renames reach every project that uses the symbol.
+- The server targets .NET 10 (the target of Roslyn 5.9's MSBuild workspace) and runs on the newest installed .NET runtime
+  (`RollForward=LatestMajor`): a runtime older than the SDK could not locate MSBuild, and C# was cleaned without its projects.
+- The AI provider settings (`ai.provider`, `ai.copilotModel`, `ai.customEndpointUrl`, `ai.customModel`, `ai.customApiKeyHeader`, `ai.xmlDoc.runDuringCleanup`) have application scope and `codeJanitor.dotnetPath` machine scope: a workspace's `.vscode/settings.json` can no longer redirect the code sent to a model, the stored API key or the executable that runs the engine. The coverage target's minimum is 10, as the command enforces.
+- Development: ESLint and Prettier for TypeScript and JavaScript (`npm run lint`, `npm run format`, `npm run format:check`), `dotnet format whitespace` for the server, and a Husky pre-commit hook (lint-staged) that runs them on the staged files.
+- Node.js 22 or later is required for development, CI and the release workflow; CI also runs the e2e tests under `xvfb-run`, typechecks `scripts/` (`npm run typecheck:scripts`) and lists the files of the packaged VSIX. `@vscode/vsce` is a pinned dev dependency, and the F5 launch builds the server first.
+- Class sealing (`sealClassesWhenSafe`, CA1852) follows the Visual Studio rule: no class is sealed in a project, or a
+  project referencing it, that contains inactive `#if` code.
 - `.codejanitor` is discovered per file, walking up from the cleaned file's folder (nearest file wins as a whole), in cleanup on save, every cleanup command, the editor diagnostics, the preview and check mode (`npm run check`); before, only the first workspace folder's root was read.
 - Precedence is `.editorconfig` (where it enforces) > `.codejanitor` > VS Code settings, as in the Visual Studio extension; a key in `.codejanitor` now wins over an explicit VS Code setting.
 - As in Visual Studio: `:none` option suffix stops a rule, severity suffix on plain options, CA1852 not enabled by category/global severity, IDE2000/IDE2002 inverted blank-line keys, `csharp_style_expression_bodied_lambdas = when_on_single_line`, null-check keys, `file_header_template` independent of IDE0073 and `unset`, using-order keys, Roslyn default values for severity-only enforcement (see README).
@@ -60,7 +125,7 @@ First release of the Visual Studio Code port.
   made.
 - **Marketplace icon** (`assets/icon.png`, 128x128) and a rewritten, user-facing `README.md`: what
   the extension does, the problem it solves, and how to use it, instead of internal architecture
-  notes (those moved to `PLAN.md`, the porting/dev history document).
+  notes.
 - **C# cleanup engine**, reimplemented natively in TypeScript. All 27 converters of the original
   Roslyn engine: BOM removal, trailing whitespace, tabs to spaces, blank-line normalization and
   padding, region handling, `#endregion` naming, file headers, comment formatting, explicit access
@@ -214,13 +279,23 @@ First release of the Visual Studio Code port.
   preview and asks before applying anything, exactly as it does standalone. No workspace-wide
   variant: unlike documentation (which only adds comments), an AI refactor changes logic-adjacent
   code, so applying it unattended across many files was judged too risky to ship without a
-  finer-grained review step per change; see `PLAN.md` for the reasoning.
+  finer-grained review step per change.
 
 - **Preview Cleanup** can now leave out single changes. **Choose Rules...** lists each step and
   each `.editorconfig` rule that changes the file, with its number of changes
   (`IDE0090 (3 changes)`). Unchecked ones are left out of the diff and of what gets applied.
 
 ### Fixed
+- Security:
+  - An AI XML documentation summary containing a Unicode NEL, line or paragraph separator or another control character could end
+    the `///` comment and put code into the file; summaries are now always one line.
+  - The custom AI endpoint refuses plain `http://` on a host that is not local or on a private network, so the API key and the source
+    code are never sent unencrypted; use `https://`.
+  - `codeJanitor.thirdParty.otherCleaningCommands` has application scope: a workspace's `.vscode/settings.json` can no longer choose
+    the commands a cleanup runs.
+  - The extension declares that it does not run in untrusted workspaces (Restricted Mode), since the C# engine loads the workspace's
+    MSBuild projects and analyzers.
+  - The release workflow pins `softprops/action-gh-release` to a commit.
 - Rewrites that broke the build or changed behavior, found by cleaning a large real C# solution with every setting and rule:
   - `readonly` was added to a field written inside an interpolated string (`$"{_n++}"`, `$"{(_n = 3)}"`, `out _n`).
   - `static` was added to a lambda that captures a local, a parameter or a member (CS8820/CS8821), also through names inside interpolated strings, in
@@ -455,18 +530,7 @@ First release of the Visual Studio Code port.
 - Added `test/e2e/`, a suite that runs inside a real, isolated VS Code instance
   (`@vscode/test-cli` / `@vscode/test-electron`) rather than the hand-written `vscode` mock the
   rest of the suite uses - real activation, real command registration, the real Settings schema.
-  `npm run test:e2e`; runs in CI on Ubuntu (via `xvfb-run`), Windows and macOS.
-
-### Testing
-
-- Added `test/e2e/`, a suite that runs inside a real, isolated VS Code instance
-  (`@vscode/test-cli` / `@vscode/test-electron`) rather than the hand-written `vscode` mock the
-  rest of the suite uses - real activation, real command registration, the real Settings schema.
-  `npm run test:e2e`; runs in CI on Ubuntu (via `xvfb-run`), Windows and macOS.
-- Added `scripts/smoke-test.js` (`npm run smoke-test -- <path>`): runs the cleanup pipeline and the
-  XML documentation planner against every `.cs` file in an arbitrary real-world repository,
-  read-only, no `vscode` host needed. Catches parser/pipeline crashes that hand-written unit test
-  fixtures do not reach.
+  `npm run test:e2e`; runs in CI on Ubuntu (via `xvfb-run`).
 - `test/e2e/editorConfig.test.ts`: in the real VS Code host, a fixture folder with its own
   `.editorconfig` checks that cleanup applies naming, code-style and formatting rules, lists the
   settings it does not apply in the Code Janitor output channel, moves extra types to their own
@@ -476,10 +540,10 @@ First release of the Visual Studio Code port.
   the .NET SDK.
 - `npm run verify:compile`: a compile oracle that builds C# projects before and after cleanup with
   every rule enforced and finds the rule behind each new compiler error, over a corpus of tricky
-  C# in `test/oracle` (see `PLAN.md`). Development only; needs the .NET SDK.
+  C# in `test/oracle`. Development only; needs the .NET SDK.
 - `npm run generate:editorconfig`: writes an `.editorconfig` with every documented C# code-style,
   formatting and naming option at its documented default, enforcing as warnings what cleanup
-  applies (see `PLAN.md`).
+  applies.
 - Extended `test/e2e/` to a full pass over the three places a user actually interacts with the
   extension: every declared setting is read from the real Settings system and checked against its
   declared JSON type/enum, plus a real update/clear round-trip; every declared command is executed
@@ -495,6 +559,4 @@ First release of the Visual Studio Code port.
 
 ### Notes
 
-- The extension is pure TypeScript/JavaScript with no runtime dependencies. C# parsing uses a
-  hand-written lexer and recursive-descent parser, so the same artifact runs on Windows, Linux and
-  macOS, on x86-64 and arm64, with no .NET runtime, no WebAssembly and no native binaries.
+- The extension bundles a .NET server (`dist/server`, Roslyn) for C# cleanup and needs the .NET 10 SDK or later on the machine; the TypeScript side has a single runtime dependency (`vscode-jsonrpc`). Razor and the other file types need no .NET.

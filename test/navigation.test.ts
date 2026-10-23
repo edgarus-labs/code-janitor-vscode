@@ -90,8 +90,8 @@ describe('Switch File: finding the file', () => {
     state.files.set('/w/Form1.cs', '');
     state.files.set('/w/Form1.Designer.cs', '');
 
-    expect(await findRelatedFile('/w/Form1.cs', groups)).toBe('/w/Form1.Designer.cs');
-    expect(await findRelatedFile('/w/Form1.Designer.cs', groups)).toBe('/w/Form1.cs');
+    expect(await findRelatedFile('/w/Form1.cs', groups)).toBe(path.normalize('/w/Form1.Designer.cs'));
+    expect(await findRelatedFile('/w/Form1.Designer.cs', groups)).toBe(path.normalize('/w/Form1.cs'));
   });
 
   it('prefers the earlier candidate when several exist', async () => {
@@ -99,8 +99,8 @@ describe('Switch File: finding the file', () => {
     state.files.set('/w/Page.razor.cs', '');
     state.files.set('/w/Page.razor.css', '');
 
-    expect(await findRelatedFile('/w/Page.razor.cs', groups)).toBe('/w/Page.razor.css');
-    expect(await findRelatedFile('/w/Page.razor', groups)).toBe('/w/Page.razor.cs');
+    expect(await findRelatedFile('/w/Page.razor.cs', groups)).toBe(path.normalize('/w/Page.razor.css'));
+    expect(await findRelatedFile('/w/Page.razor', groups)).toBe(path.normalize('/w/Page.razor.cs'));
   });
 
   it('returns nothing when no related file exists, and never the file itself', async () => {
@@ -134,7 +134,7 @@ describe('Switch File command', () => {
 
     await run('codeJanitor.switchFile');
 
-    expect((opened as Uri[]).map((uri) => uri.fsPath)).toEqual(['/w/View.xaml']);
+    expect((opened as Uri[]).map((uri) => uri.fsPath)).toEqual([path.normalize('/w/View.xaml')]);
   });
 
   it('uses the configured groups instead of the defaults', async () => {
@@ -149,7 +149,7 @@ describe('Switch File command', () => {
 
     await run('codeJanitor.switchFile');
 
-    expect(opened.map((uri) => uri.fsPath)).toEqual(['/w/Login.steps.cs']);
+    expect(opened.map((uri) => uri.fsPath)).toEqual([path.normalize('/w/Login.steps.cs')]);
   });
 
   it('says when there is no related file or no file', async () => {
@@ -181,7 +181,7 @@ describe('Switch File command', () => {
 
     await run('codeJanitor.switchFile', Uri.file('/w/Page.razor'));
 
-    expect(opened.map((uri) => uri.fsPath)).toEqual(['/w/Page.razor.cs']);
+    expect(opened.map((uri) => uri.fsPath)).toEqual([path.normalize('/w/Page.razor.cs')]);
   });
 });
 
@@ -194,6 +194,25 @@ describe('workflow commands', () => {
 
     expect(calls).toEqual([]);
     expect(state.informationMessages).toEqual(['Code Janitor: no active editor.', 'Code Janitor: no active editor.']);
+  });
+});
+
+describe('Collapse the Explorer when a workspace opens (collapsing.collapseExplorerWhenOpened)', () => {
+  it('collapses every folder of the Explorer when the setting is on', () => {
+    const calls = recordBuiltIns('workbench.files.action.collapseExplorerFolders');
+    state.configuration.set('codeJanitor.collapsing.collapseExplorerWhenOpened', true);
+
+    registerNavigationCommands(createContext());
+
+    expect(calls).toEqual([['workbench.files.action.collapseExplorerFolders', []]]);
+  });
+
+  it('leaves the Explorer as it is while the setting is off', () => {
+    const calls = recordBuiltIns('workbench.files.action.collapseExplorerFolders');
+
+    registerNavigationCommands(createContext());
+
+    expect(calls).toEqual([]);
   });
 });
 

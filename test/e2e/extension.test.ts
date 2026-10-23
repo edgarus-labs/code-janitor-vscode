@@ -16,7 +16,6 @@
 
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
@@ -75,8 +74,7 @@ async function withPromptsAutoAnswered<T>(run: () => Promise<T>): Promise<T> {
   // Cancel free-text prompts (namespace name, API key) and decline modal confirmations (AI apply,
   // XML doc preview, batch AI documentation) - the conservative choice for a mechanical smoke sweep.
   (vscode.window as { showInputBox: unknown }).showInputBox = () => Promise.resolve(undefined);
-  (vscode.window as { showQuickPick: unknown }).showQuickPick = (items: unknown) =>
-    Promise.resolve(Array.isArray(items) ? items[0] : undefined);
+  (vscode.window as { showQuickPick: unknown }).showQuickPick = (items: unknown) => Promise.resolve(Array.isArray(items) ? items[0] : undefined);
   (vscode.window as { showInformationMessage: unknown }).showInformationMessage = () => Promise.resolve(undefined);
   (vscode.window as { showWarningMessage: unknown }).showWarningMessage = () => Promise.resolve(undefined);
 
@@ -124,11 +122,7 @@ suite('Code Janitor extension (real VS Code host)', () => {
 
       for (const command of declared) {
         assert.ok(registered.includes(command), `"${command}" is declared but not registered.`);
-        assert.equal(
-          registered.filter((id) => id === command).length,
-          1,
-          `"${command}" is registered more than once.`
-        );
+        assert.equal(registered.filter((id) => id === command).length, 1, `"${command}" is registered more than once.`);
       }
     });
   });
@@ -193,16 +187,12 @@ suite('Code Janitor extension (real VS Code host)', () => {
           '/// <summary>Existing docs.</summary>\r\ninternal class Sample\r\n{\r\n    public int Add(int x, int y)   \r\n    {\r\n        return x + y;\r\n    }\r\n}\r\n'
         );
 
-        await withPromptsAutoAnswered(() =>
-          assert.doesNotReject(() => Promise.resolve(vscode.commands.executeCommand(command)))
-        );
+        await withPromptsAutoAnswered(() => assert.doesNotReject(() => Promise.resolve(vscode.commands.executeCommand(command))));
       });
     }
 
     test('"Cleanup Changed Files (Git)" (codeJanitor.cleanupChangedFiles)', async () => {
-      await assert.doesNotReject(() =>
-        Promise.resolve(vscode.commands.executeCommand('codeJanitor.cleanupChangedFiles'))
-      );
+      await assert.doesNotReject(() => Promise.resolve(vscode.commands.executeCommand('codeJanitor.cleanupChangedFiles')));
     });
   });
 
@@ -216,7 +206,7 @@ suite('Code Janitor extension (real VS Code host)', () => {
     });
 
     test('Cleanup Selected Files cleans a file on disk without needing it open', async () => {
-      const filePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'code-janitor-e2e-')), 'Dirty.cs');
+      const filePath = path.join(fs.mkdtempSync(path.join(workspaceRoot, 'e2e-')), 'Dirty.cs');
       fs.writeFileSync(filePath, 'internal class C   \r\n{\r\n}\r\n', 'utf8');
       const uri = vscode.Uri.file(filePath);
 
@@ -263,15 +253,11 @@ suite('Code Janitor extension (real VS Code host)', () => {
     });
 
     test('Test AI Connection reports a result without Copilot installed or a custom endpoint set', async () => {
-      await assert.doesNotReject(() =>
-        Promise.resolve(vscode.commands.executeCommand('codeJanitor.testAiConnection'))
-      );
+      await assert.doesNotReject(() => Promise.resolve(vscode.commands.executeCommand('codeJanitor.testAiConnection')));
     });
 
     test('Use GitHub Copilot Model warns instead of throwing when no model is available', async () => {
-      await withPromptsAutoAnswered(() =>
-        assert.doesNotReject(() => Promise.resolve(vscode.commands.executeCommand('codeJanitor.selectCopilotModel')))
-      );
+      await withPromptsAutoAnswered(() => assert.doesNotReject(() => Promise.resolve(vscode.commands.executeCommand('codeJanitor.selectCopilotModel'))));
     });
   });
 });

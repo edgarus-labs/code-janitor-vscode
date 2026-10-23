@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="$(RoslynVersion)" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="$(RoslynVersion)" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodeJanitor.Engine.Tests" />
+  </ItemGroup>
+</Project>

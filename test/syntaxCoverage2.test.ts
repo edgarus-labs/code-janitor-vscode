@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCSharpSource } from '../src/cleanup/syntax/parser';
+import { parseCSharpSource } from '../src/razor/csharp/syntax/parser';
 
 function parse(source: string) {
   return parseCSharpSource(source).rootNode;
@@ -789,9 +789,6 @@ describe('parseCSharpSource - targeted edge cases', () => {
   it('keeps a tuple-typed declaration in a statement header', () => {
     const root = parse('class C { void M() { foreach ((int a, string b) t in xs) { } using ((int, int) p = f) { } } }');
 
-    expect(root.descendantsOfType('variable_declaration').map((node) => node.text)).toEqual([
-      '(int a, string b) t',
-      '(int, int) p = f',
-    ]);
+    expect(root.descendantsOfType('variable_declaration').map((node) => node.text)).toEqual(['(int a, string b) t', '(int, int) p = f']);
   });
 });

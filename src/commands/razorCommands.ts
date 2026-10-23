@@ -32,11 +32,12 @@ export function registerRazorCommands(context: vscode.ExtensionContext): void {
       const uris = targets.length > 0 ? (await Promise.all(targets.map((uri) => expandToRazorFiles(uri)))).flat() : active ? [active] : [];
 
       const result = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Formatting Razor...' },
-        () => runFormatRazorOnUris(uris)
+        { location: vscode.ProgressLocation.Notification, title: 'Formatting Razor...', cancellable: true },
+        (_progress, token) => runFormatRazorOnUris(uris, token)
       );
       const failed = result.failed > 0 ? `, ${result.failed} failed` : '';
-      void vscode.window.showInformationMessage(`Code Janitor: Razor formatted - ${result.changed} file(s) changed${failed}.`);
+      const cancelled = result.cancelled ? ', cancelled before finishing' : '';
+      void vscode.window.showInformationMessage(`Code Janitor: Razor formatted - ${result.changed} file(s) changed${failed}${cancelled}.`);
     })
   );
 }

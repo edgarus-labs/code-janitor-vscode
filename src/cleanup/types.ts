@@ -1,30 +1,4 @@
-import { ReorganizeSettings, createDefaultReorganizeSettings } from '../reorganize/settings';
-
-/**
- * A single composable source-text transformation - a "block" in the cleanup pipeline. Each block
- * takes C# source text and returns transformed source, returning its input unchanged when it does
- * not apply. Blocks are pure and unit-testable, so any subset of them can be composed in any order.
- */
-export interface SourceTransformation {
-  readonly name: string;
-  /** For a step that is one `.editorconfig` diagnostic (`IDE1006` naming, `IDE0055` formatting): its id. */
-  readonly diagnosticId?: string;
-  apply(source: string): string;
-  /**
-   * For a transformation made of several rules (the `.editorconfig` code-style rules): applies it
-   * without the rules whose id is in `excludedRules`, and tells how many places each rule changed.
-   */
-  applyRules?(source: string, excludedRules: ReadonlySet<string>): { readonly output: string; readonly rules: readonly RuleChange[] };
-}
-
-/** What one rule of a transformation did in a preview; an excluded rule changes nothing. */
-export interface RuleChange {
-  /** The rule's diagnostic id(s), e.g. `IDE0090` or `IDE0007/IDE0008`. */
-  readonly id: string;
-  /** The number of separate places the rule changed. */
-  readonly changes: number;
-  readonly included: boolean;
-}
+import { ReorganizeSettings, createDefaultReorganizeSettings } from './reorganizeSettings';
 
 export const enum HeaderPosition {
   DocumentStart = 0,
@@ -38,7 +12,7 @@ export const enum HeaderUpdateMode {
 
 /**
  * Cleanup flags, mirroring the `Cleaning_*` / `Formatting_*` settings of the source extension.
- * The VS Code settings are mapped onto this shape before the pipeline is built.
+ * The VS Code settings are mapped onto this shape and sent to the C# engine.
  */
 export interface CleanupSettings {
   insertBlankLinePaddingBeforeClasses: boolean;
@@ -73,6 +47,7 @@ export interface CleanupSettings {
   insertBlankLinePaddingAfterUsingStatementBlocks: boolean;
   insertBlankLinePaddingBeforeCaseStatements: boolean;
   insertBlankLinePaddingBeforeSingleLineComments: boolean;
+  insertBlankLinePaddingBetweenPropertiesMultiLineAccessors: boolean;
 
   insertExplicitAccessModifiersOnClasses: boolean;
   insertExplicitAccessModifiersOnDelegates: boolean;
@@ -109,12 +84,19 @@ export interface CleanupSettings {
 
   moveUsingsOutsideNamespace: boolean;
   organizeUsings: boolean;
+  /**
+   * Using directives (e.g. `using System.Linq;`) that cleanup puts back when it removed them as
+   * unused (IDE0005), mirroring `Cleaning_UsingStatementsToReinsertWhenRemovedExpression`.
+   */
+  usingStatementsToReinsertWhenRemoved: readonly string[];
 
   updateEndRegionDirectives: boolean;
   updateSingleLineMethods: boolean;
   updateAccessorsToBothBeSingleLineOrMultiLine: boolean;
 
   formatComments: boolean;
+  /** How `formatComments` and the Format Comments command lay comments out (the `Formatting_Comment*` settings). */
+  commentFormat: CommentFormatOptions;
 
   /** Member reorganization (the `Reorganizing_*` settings); it runs first when `runAtStartOfCleanup` is on. */
   reorganize: ReorganizeSettings;
@@ -130,7 +112,29 @@ export interface CleanupSettings {
   removeBlankLinesBetweenChainedStatements: boolean;
   removeMultipleConsecutiveBlankLines: boolean;
 
+  /** Markup files (XML, XAML, HTML): blank lines before a closing tag are removed. */
+  removeBlankLinesBeforeClosingTags: boolean;
+  /** Markup files: `<a >` becomes `<a>`. */
+  removeBlankSpacesBeforeClosingAngleBrackets: boolean;
+  /** Markup files: `<a/>` becomes `<a />`. */
+  insertBlankSpaceBeforeSelfClosingAngleBrackets: boolean;
+
   fileHeaderCSharp: string;
+  fileHeaderVB: string;
+  fileHeaderFSharp: string;
+  fileHeaderCPlusPlus: string;
+  fileHeaderCSS: string;
+  fileHeaderLESS: string;
+  fileHeaderSCSS: string;
+  fileHeaderJavaScript: string;
+  fileHeaderTypeScript: string;
+  fileHeaderJSON: string;
+  fileHeaderHTML: string;
+  fileHeaderXAML: string;
+  fileHeaderXML: string;
+  fileHeaderPHP: string;
+  fileHeaderPowerShell: string;
+  fileHeaderR: string;
   fileHeaderPosition: HeaderPosition;
   fileHeaderUpdateMode: HeaderUpdateMode;
 
@@ -140,6 +144,41 @@ export interface CleanupSettings {
    * `.editorconfig` enforces keeps its `.editorconfig` value; the rest apply as `suggestion`.
    */
   codeStyleRules: Readonly<Record<string, string>>;
+}
+
+/** Comment formatting options, mirroring the `Formatting_Comment*` settings of the source extension. */
+export interface CommentFormatOptions {
+  /** The column comments are wrapped at. */
+  wrapColumn: number;
+  /** A comment whose last word alone crosses the wrap column is not wrapped. */
+  skipWrapOnLastWord: boolean;
+  /** Comment lines starting with one of these (after the comment prefix) are left as they are. */
+  ignoreLinesStartingWith: readonly string[];
+  xmlAlignParamTags: boolean;
+  xmlKeepTagsTogether: boolean;
+  xmlSpaceSingleTags: boolean;
+  xmlSpaceTags: boolean;
+  xmlSplitAllTags: boolean;
+  xmlSplitSummaryTagToMultipleLines: boolean;
+  xmlTagsToLowerCase: boolean;
+  /** Extra indentation of the content of XML tags, in spaces. */
+  xmlValueIndent: number;
+}
+
+export function createDefaultCommentFormatOptions(): CommentFormatOptions {
+  return {
+    wrapColumn: 100,
+    skipWrapOnLastWord: true,
+    ignoreLinesStartingWith: ['ReSharper disable ', 'ReSharper enable '],
+    xmlAlignParamTags: false,
+    xmlKeepTagsTogether: false,
+    xmlSpaceSingleTags: false,
+    xmlSpaceTags: false,
+    xmlSplitAllTags: false,
+    xmlSplitSummaryTagToMultipleLines: true,
+    xmlTagsToLowerCase: false,
+    xmlValueIndent: 0,
+  };
 }
 
 /** Defaults mirroring `Settings.settings` of the source extension. */
@@ -177,6 +216,7 @@ export function createDefaultSettings(): CleanupSettings {
     insertBlankLinePaddingAfterUsingStatementBlocks: true,
     insertBlankLinePaddingBeforeCaseStatements: true,
     insertBlankLinePaddingBeforeSingleLineComments: false,
+    insertBlankLinePaddingBetweenPropertiesMultiLineAccessors: false,
 
     insertExplicitAccessModifiersOnClasses: true,
     insertExplicitAccessModifiersOnDelegates: true,
@@ -205,12 +245,14 @@ export function createDefaultSettings(): CleanupSettings {
 
     moveUsingsOutsideNamespace: true,
     organizeUsings: false,
+    usingStatementsToReinsertWhenRemoved: [],
 
     updateEndRegionDirectives: true,
     updateSingleLineMethods: true,
     updateAccessorsToBothBeSingleLineOrMultiLine: false,
 
     formatComments: false,
+    commentFormat: createDefaultCommentFormatOptions(),
     reorganize: createDefaultReorganizeSettings(),
 
     removeRegions: true,
@@ -224,7 +266,26 @@ export function createDefaultSettings(): CleanupSettings {
     removeBlankLinesBetweenChainedStatements: true,
     removeMultipleConsecutiveBlankLines: true,
 
+    removeBlankLinesBeforeClosingTags: true,
+    removeBlankSpacesBeforeClosingAngleBrackets: true,
+    insertBlankSpaceBeforeSelfClosingAngleBrackets: true,
+
     fileHeaderCSharp: '',
+    fileHeaderVB: '',
+    fileHeaderFSharp: '',
+    fileHeaderCPlusPlus: '',
+    fileHeaderCSS: '',
+    fileHeaderLESS: '',
+    fileHeaderSCSS: '',
+    fileHeaderJavaScript: '',
+    fileHeaderTypeScript: '',
+    fileHeaderJSON: '',
+    fileHeaderHTML: '',
+    fileHeaderXAML: '',
+    fileHeaderXML: '',
+    fileHeaderPHP: '',
+    fileHeaderPowerShell: '',
+    fileHeaderR: '',
     fileHeaderPosition: HeaderPosition.DocumentStart,
     fileHeaderUpdateMode: HeaderUpdateMode.Insert,
 

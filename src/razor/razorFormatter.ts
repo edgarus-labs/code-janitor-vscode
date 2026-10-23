@@ -1,4 +1,4 @@
-import { CODE, classifyCSharp } from '../cleanup/csharpScanner';
+import { CODE, classifyCSharp } from './csharp/scanner';
 import { layoutControlHeader, layoutMembers, layoutStatements } from './csharpLayout';
 import { RazorFormatOptions, RazorLayout, indentUnitOf, resolveRazorLayout } from './razorOptions';
 import {
@@ -8,6 +8,8 @@ import {
   isIdentifierPart,
   isIdentifierStart,
   isVerbatimElement,
+  skipCSharpComment,
+  skipCharLiteral,
   skipElement,
   skipExpression,
   skipString,
@@ -69,10 +71,56 @@ const PARENTHESIZED_KEYWORDS: readonly string[] = ['if', 'for', 'foreach', 'whil
 
 /** HTML elements laid out as blocks (or not rendered): whitespace next to them renders nothing. */
 const BLOCK_ELEMENTS = new Set([
-  'address', 'article', 'aside', 'blockquote', 'body', 'br', 'caption', 'col', 'colgroup', 'dd', 'details', 'dialog', 'div',
-  'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'header',
-  'hgroup', 'hr', 'html', 'li', 'link', 'main', 'menu', 'meta', 'nav', 'ol', 'p', 'section', 'summary', 'table', 'tbody',
-  'td', 'tfoot', 'th', 'thead', 'title', 'tr', 'ul',
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'body',
+  'br',
+  'caption',
+  'col',
+  'colgroup',
+  'dd',
+  'details',
+  'dialog',
+  'div',
+  'dl',
+  'dt',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'head',
+  'header',
+  'hgroup',
+  'hr',
+  'html',
+  'li',
+  'link',
+  'main',
+  'menu',
+  'meta',
+  'nav',
+  'ol',
+  'p',
+  'section',
+  'summary',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'title',
+  'tr',
+  'ul',
 ]);
 
 class Formatter {
@@ -203,14 +251,10 @@ class Formatter {
       const following = segments[index + 1];
       const before = inner.slice(inner.lastIndexOf('\n', segment.start - 1) + 1, segment.start);
       const startTouches =
-        !sideBySide(previous, previous?.end ?? 0, segment.start) &&
-        !/\s$/.test(before) &&
-        (before.length > 0 || (!rendersBefore && segment === markup[0]));
+        !sideBySide(previous, previous?.end ?? 0, segment.start) && !/\s$/.test(before) && (before.length > 0 || (!rendersBefore && segment === markup[0]));
 
       const endTouches =
-        !sideBySide(following, segment.end, following?.start ?? 0) &&
-        !/^\s/.test(inner.slice(segment.end)) &&
-        (segment.end < inner.length || !rendersAfter);
+        !sideBySide(following, segment.end, following?.start ?? 0) && !/^\s/.test(inner.slice(segment.end)) && (segment.end < inner.length || !rendersAfter);
 
       return startTouches || endTouches;
     });
@@ -560,10 +604,10 @@ function splitSegments(inner: string): Segment[] | undefined {
       next = skipString(inner, i) - 1;
       statementStart = false;
     } else if (c === "'") {
-      next = skipCharacter(inner, i) - 1;
+      next = skipCharLiteral(inner, i) - 1;
       statementStart = false;
     } else if (c === '/' && (inner[i + 1] === '/' || inner[i + 1] === '*')) {
-      next = skipComment(inner, i) - 1;
+      next = skipCSharpComment(inner, i) - 1;
     } else if (c === '@' && (inner[i + 1] === '*' || inner[i + 1] === ':' || inner[i + 1] === '<')) {
       next = skipTransition(inner, i) - 1;
       statementStart = true;
@@ -609,32 +653,6 @@ function splitSegments(inner: string): Segment[] | undefined {
   flushCode(inner.length);
 
   return segments;
-}
-
-function skipCharacter(text: string, index: number): number {
-  for (let i = index + 1; i < Math.min(text.length, index + 12); i++) {
-    if (text[i] === '\\') {
-      i++;
-    } else if (text[i] === '\n') {
-      return -1;
-    } else if (text[i] === "'") {
-      return i + 1;
-    }
-  }
-
-  return -1;
-}
-
-function skipComment(text: string, index: number): number {
-  if (text[index + 1] === '/') {
-    const end = text.indexOf('\n', index);
-
-    return end < 0 ? text.length : end;
-  }
-
-  const end = text.indexOf('*/', index + 2);
-
-  return end < 0 ? -1 : end + 2;
 }
 
 /**

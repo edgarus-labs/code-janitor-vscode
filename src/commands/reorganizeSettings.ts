@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ReorganizeSettings, parseReorganizeSettings } from '../reorganize/settings';
+import { ReorganizeSettings, parseReorganizeSettings } from '../cleanup/reorganizeSettings';
 
 /** Maps the `codeJanitor.reorganize.*` settings onto the reorganizer's settings. */
 export function readReorganizeSettings(): ReorganizeSettings {

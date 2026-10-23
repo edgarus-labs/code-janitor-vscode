@@ -1,9 +1,13 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { newCompilerErrors } from '../scripts/compileOracle';
+import { startEngine } from '../scripts/engineServer';
 import { registerCleanupCommands } from '../src/commands/cleanupCommands';
 import { runCleanupOnUris } from '../src/commands/cleanupCore';
+import { EngineClient } from '../src/engine/client';
+import { setEngine } from '../src/engine/vscodeEngine';
 import { BuildResult, DEFAULT_CSPROJ, buildProject, dotnetAvailable, formatErrors } from './helpers/dotnetBuild';
 import { FakeQuickPick, assertScriptsPassed, installPreviewMock, previewState } from './helpers/previewMock';
 import { PreviewProject, csharpFiles, previewProject, removeTempDirectories, restoreOriginals } from './helpers/previewFixtures';
@@ -16,6 +20,7 @@ import { TextDocument, createContext, resetMock, state } from './helpers/vscodeM
  */
 describe.skipIf(!dotnetAvailable)('cleanup preview against the real C# compiler', () => {
   let before: BuildResult;
+  let client: EngineClient;
 
   /** Writes the fixture project with a csproj to disk and keeps the mock file system in sync. */
   function project(): PreviewProject {
@@ -29,10 +34,17 @@ describe.skipIf(!dotnetAvailable)('cleanup preview against the real C# compiler'
     const first = project();
     before = buildProject(first.root);
     removeTempDirectories();
-  }, 180_000);
+    client = startEngine([os.tmpdir()]);
+  }, 600_000);
+
+  afterAll(async () => {
+    setEngine(undefined);
+    await client?.shutdown();
+  });
 
   beforeEach(() => {
     resetMock();
+    setEngine(client);
     installPreviewMock();
     registerCleanupCommands(createContext());
   });
@@ -62,7 +74,10 @@ describe.skipIf(!dotnetAvailable)('cleanup preview against the real C# compiler'
     restoreOriginals(created);
     editors.forEach(([document]) => document.setText(created.originals.get(document.uri.fsPath)!));
     try {
-      await runCleanupOnUris(createContext(), files.map((file) => created.uri(file)));
+      await runCleanupOnUris(
+        createContext(),
+        files.map((file) => created.uri(file))
+      );
 
       return editorTexts(created, files);
     } finally {
@@ -152,10 +167,7 @@ describe.skipIf(!dotnetAvailable)('cleanup preview against the real C# compiler'
     const files = csharpFiles(created);
     state.foundFiles = files.map((file) => created.uri(file));
     // Order.cs without its brace rule: the approved text is the cleanup minus that rule, and still compiles.
-    user(
-      (picker) => picker.clickButton('Order.cs', 'Choose Rules...'),
-      accept
-    );
+    user((picker) => picker.clickButton('Order.cs', 'Choose Rules...'), accept);
     state.quickPickSelections = [['Remove trailing whitespace', 'Normalize blank lines', 'IDE0090']];
 
     await run('codeJanitor.previewCleanupWorkspace');

@@ -55,8 +55,27 @@ const PARENTHESES_VALUES = ['always_for_clarity', 'never_if_unnecessary'];
 
 /** The modifiers accepted in `csharp_preferred_modifier_order`. */
 const KNOWN_MODIFIERS: ReadonlySet<string> = new Set([
-  'public', 'private', 'protected', 'internal', 'file', 'static', 'extern', 'new', 'virtual', 'abstract',
-  'sealed', 'override', 'readonly', 'unsafe', 'required', 'volatile', 'async', 'partial', 'const', 'fixed', 'ref',
+  'public',
+  'private',
+  'protected',
+  'internal',
+  'file',
+  'static',
+  'extern',
+  'new',
+  'virtual',
+  'abstract',
+  'sealed',
+  'override',
+  'readonly',
+  'unsafe',
+  'required',
+  'volatile',
+  'async',
+  'partial',
+  'const',
+  'fixed',
+  'ref',
 ]);
 
 /** `csharp_preferred_modifier_order`: a comma-separated list of distinct known modifiers. */
@@ -97,9 +116,15 @@ const rule = createRule;
 
 /** Every rule, in the order shown in the settings panel. */
 export const CODE_STYLE_RULES: readonly CodeStyleRule[] = [
-  rule(MODIFIERS, 'csharp_preferred_modifier_order', 'Order modifiers', ['IDE0036'], [],
+  rule(
+    MODIFIERS,
+    'csharp_preferred_modifier_order',
+    'Order modifiers',
+    ['IDE0036'],
+    [],
     'public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async',
-    isModifierOrder),
+    isModifierOrder
+  ),
   rule(MODIFIERS, 'csharp_prefer_static_local_function', 'Make local functions static', ['IDE0062'], BOOLEAN, 'true'),
   rule(MODIFIERS, 'csharp_prefer_static_anonymous_function', 'Make anonymous functions static', ['IDE0320'], BOOLEAN, 'true'),
   rule(MODIFIERS, 'csharp_style_prefer_readonly_struct', 'Make structs readonly', ['IDE0250'], BOOLEAN, 'true'),
@@ -117,8 +142,22 @@ export const CODE_STYLE_RULES: readonly CodeStyleRule[] = [
   rule(EXPRESSION_BODIES, 'csharp_style_expression_bodied_accessors', 'Accessors', ['IDE0027'], EXPRESSION_BODY, 'true'),
   rule(EXPRESSION_BODIES, 'csharp_style_expression_bodied_local_functions', 'Local functions', ['IDE0061'], EXPRESSION_BODY, 'false'),
 
-  rule(PATTERN_MATCHING, 'csharp_style_pattern_matching_over_is_with_cast_check', "Pattern matching over 'is' with cast", ['IDE0020', 'IDE0038'], BOOLEAN, 'true'),
-  rule(PATTERN_MATCHING, 'csharp_style_pattern_matching_over_as_with_null_check', "Pattern matching over 'as' with null check", ['IDE0019', 'IDE0260'], BOOLEAN, 'true'),
+  rule(
+    PATTERN_MATCHING,
+    'csharp_style_pattern_matching_over_is_with_cast_check',
+    "Pattern matching over 'is' with cast",
+    ['IDE0020', 'IDE0038'],
+    BOOLEAN,
+    'true'
+  ),
+  rule(
+    PATTERN_MATCHING,
+    'csharp_style_pattern_matching_over_as_with_null_check',
+    "Pattern matching over 'as' with null check",
+    ['IDE0019', 'IDE0260'],
+    BOOLEAN,
+    'true'
+  ),
   rule(PATTERN_MATCHING, 'csharp_style_prefer_pattern_matching', 'Combine patterns', ['IDE0078'], BOOLEAN, 'true'),
   rule(PATTERN_MATCHING, 'csharp_style_prefer_not_pattern', "Use 'not' pattern", ['IDE0083'], BOOLEAN, 'true'),
   rule(PATTERN_MATCHING, 'csharp_style_prefer_extended_property_pattern', 'Use extended property patterns', ['IDE0170'], BOOLEAN, 'true'),
@@ -136,7 +175,14 @@ export const CODE_STYLE_RULES: readonly CodeStyleRule[] = [
   rule(MODERN_EXPRESSIONS, 'csharp_style_prefer_utf8_string_literals', 'Use UTF-8 string literals', ['IDE0230'], BOOLEAN, 'true'),
   rule(MODERN_EXPRESSIONS, 'csharp_style_prefer_tuple_swap', 'Swap values with tuples', ['IDE0180'], BOOLEAN, 'true'),
   rule(MODERN_EXPRESSIONS, 'csharp_style_deconstructed_variable_declaration', 'Deconstruct variable declarations', ['IDE0042'], BOOLEAN, 'true'),
-  rule(MODERN_EXPRESSIONS, 'csharp_style_unused_value_assignment_preference', 'Unused value assignments', ['IDE0059'], ['discard_variable', 'unused_local_variable'], 'discard_variable'),
+  rule(
+    MODERN_EXPRESSIONS,
+    'csharp_style_unused_value_assignment_preference',
+    'Unused value assignments',
+    ['IDE0059'],
+    ['discard_variable', 'unused_local_variable'],
+    'discard_variable'
+  ),
   rule(MODERN_EXPRESSIONS, 'csharp_prefer_simple_default_expression', "Use 'default' literal", ['IDE0034'], BOOLEAN, 'true'),
   rule(MODERN_EXPRESSIONS, 'dotnet_style_prefer_auto_properties', 'Use auto-properties', ['IDE0032'], BOOLEAN, 'true'),
   rule(MODERN_EXPRESSIONS, 'dotnet_style_prefer_compound_assignment', 'Use compound assignment', ['IDE0054', 'IDE0074'], BOOLEAN, 'true'),
@@ -146,7 +192,14 @@ export const CODE_STYLE_RULES: readonly CodeStyleRule[] = [
   rule(MODERN_EXPRESSIONS, 'dotnet_style_collection_initializer', 'Use collection initializers', ['IDE0028'], BOOLEAN, 'true'),
   rule(MODERN_EXPRESSIONS, 'dotnet_style_explicit_tuple_names', 'Use explicit tuple names', ['IDE0033'], BOOLEAN, 'true'),
   rule(MODERN_EXPRESSIONS, 'dotnet_style_prefer_inferred_tuple_names', 'Use inferred tuple element names', ['IDE0037'], BOOLEAN, 'true'),
-  rule(MODERN_EXPRESSIONS, 'dotnet_style_prefer_inferred_anonymous_type_member_names', 'Use inferred anonymous type member names', ['IDE0037'], BOOLEAN, 'true'),
+  rule(
+    MODERN_EXPRESSIONS,
+    'dotnet_style_prefer_inferred_anonymous_type_member_names',
+    'Use inferred anonymous type member names',
+    ['IDE0037'],
+    BOOLEAN,
+    'true'
+  ),
 
   rule(QUALIFICATION, 'dotnet_style_qualification_for_field', 'Fields', ['IDE0003', 'IDE0009'], BOOLEAN, 'false'),
   rule(QUALIFICATION, 'dotnet_style_qualification_for_property', 'Properties', ['IDE0003', 'IDE0009'], BOOLEAN, 'false'),
@@ -156,9 +209,30 @@ export const CODE_STYLE_RULES: readonly CodeStyleRule[] = [
   rule(PREDEFINED_TYPES, 'dotnet_style_predefined_type_for_locals_parameters_members', 'Locals, parameters and members', ['IDE0049'], BOOLEAN, 'true'),
   rule(PREDEFINED_TYPES, 'dotnet_style_predefined_type_for_member_access', 'Member access expressions', ['IDE0049'], BOOLEAN, 'true'),
 
-  rule(PARENTHESES, 'dotnet_style_parentheses_in_arithmetic_binary_operators', 'Arithmetic operators', ['IDE0047', 'IDE0048'], PARENTHESES_VALUES, 'always_for_clarity'),
-  rule(PARENTHESES, 'dotnet_style_parentheses_in_relational_binary_operators', 'Relational operators', ['IDE0047', 'IDE0048'], PARENTHESES_VALUES, 'always_for_clarity'),
-  rule(PARENTHESES, 'dotnet_style_parentheses_in_other_binary_operators', 'Other binary operators', ['IDE0047', 'IDE0048'], PARENTHESES_VALUES, 'always_for_clarity'),
+  rule(
+    PARENTHESES,
+    'dotnet_style_parentheses_in_arithmetic_binary_operators',
+    'Arithmetic operators',
+    ['IDE0047', 'IDE0048'],
+    PARENTHESES_VALUES,
+    'always_for_clarity'
+  ),
+  rule(
+    PARENTHESES,
+    'dotnet_style_parentheses_in_relational_binary_operators',
+    'Relational operators',
+    ['IDE0047', 'IDE0048'],
+    PARENTHESES_VALUES,
+    'always_for_clarity'
+  ),
+  rule(
+    PARENTHESES,
+    'dotnet_style_parentheses_in_other_binary_operators',
+    'Other binary operators',
+    ['IDE0047', 'IDE0048'],
+    PARENTHESES_VALUES,
+    'always_for_clarity'
+  ),
   rule(PARENTHESES, 'dotnet_style_parentheses_in_other_operators', 'Other operators', ['IDE0047', 'IDE0048'], PARENTHESES_VALUES, 'never_if_unnecessary'),
 ];
 

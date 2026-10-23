@@ -14,26 +14,43 @@ const IMPORTABLE_SETTINGS: Partial<Record<keyof CleanupSettings, string>> = {
 
 const BOOLEAN_GROUPS: Record<string, string[]> = {
   insertBlankLinePadding: [
-    'insertBlankLinePaddingBeforeClasses', 'insertBlankLinePaddingAfterClasses',
-    'insertBlankLinePaddingBeforeDelegates', 'insertBlankLinePaddingAfterDelegates',
-    'insertBlankLinePaddingBeforeEnumerations', 'insertBlankLinePaddingAfterEnumerations',
-    'insertBlankLinePaddingBeforeEvents', 'insertBlankLinePaddingAfterEvents',
-    'insertBlankLinePaddingBeforeFieldsMultiLine', 'insertBlankLinePaddingAfterFieldsMultiLine',
-    'insertBlankLinePaddingBeforeInterfaces', 'insertBlankLinePaddingAfterInterfaces',
-    'insertBlankLinePaddingBeforeMethods', 'insertBlankLinePaddingAfterMethods',
-    'insertBlankLinePaddingBeforeNamespaces', 'insertBlankLinePaddingAfterNamespaces',
-    'insertBlankLinePaddingBeforePropertiesMultiLine', 'insertBlankLinePaddingAfterPropertiesMultiLine',
-    'insertBlankLinePaddingBeforeStructs', 'insertBlankLinePaddingAfterStructs',
-    'insertBlankLinePaddingBeforeRegionTags', 'insertBlankLinePaddingAfterRegionTags',
-    'insertBlankLinePaddingBeforeEndRegionTags', 'insertBlankLinePaddingAfterEndRegionTags',
-    'insertBlankLinePaddingBeforeUsingStatementBlocks', 'insertBlankLinePaddingAfterUsingStatementBlocks',
+    'insertBlankLinePaddingBeforeClasses',
+    'insertBlankLinePaddingAfterClasses',
+    'insertBlankLinePaddingBeforeDelegates',
+    'insertBlankLinePaddingAfterDelegates',
+    'insertBlankLinePaddingBeforeEnumerations',
+    'insertBlankLinePaddingAfterEnumerations',
+    'insertBlankLinePaddingBeforeEvents',
+    'insertBlankLinePaddingAfterEvents',
+    'insertBlankLinePaddingBeforeFieldsMultiLine',
+    'insertBlankLinePaddingAfterFieldsMultiLine',
+    'insertBlankLinePaddingBeforeInterfaces',
+    'insertBlankLinePaddingAfterInterfaces',
+    'insertBlankLinePaddingBeforeMethods',
+    'insertBlankLinePaddingAfterMethods',
+    'insertBlankLinePaddingBeforeNamespaces',
+    'insertBlankLinePaddingAfterNamespaces',
+    'insertBlankLinePaddingBeforePropertiesMultiLine',
+    'insertBlankLinePaddingAfterPropertiesMultiLine',
+    'insertBlankLinePaddingBeforeStructs',
+    'insertBlankLinePaddingAfterStructs',
+    'insertBlankLinePaddingBeforeRegionTags',
+    'insertBlankLinePaddingAfterRegionTags',
+    'insertBlankLinePaddingBeforeEndRegionTags',
+    'insertBlankLinePaddingAfterEndRegionTags',
+    'insertBlankLinePaddingBeforeUsingStatementBlocks',
+    'insertBlankLinePaddingAfterUsingStatementBlocks',
     'insertBlankLinePaddingBeforeCaseStatements',
   ],
   insertExplicitAccessModifiers: [
-    'insertExplicitAccessModifiersOnClasses', 'insertExplicitAccessModifiersOnDelegates',
-    'insertExplicitAccessModifiersOnEnumerations', 'insertExplicitAccessModifiersOnEvents',
-    'insertExplicitAccessModifiersOnFields', 'insertExplicitAccessModifiersOnInterfaces',
-    'insertExplicitAccessModifiersOnMethods', 'insertExplicitAccessModifiersOnProperties',
+    'insertExplicitAccessModifiersOnClasses',
+    'insertExplicitAccessModifiersOnDelegates',
+    'insertExplicitAccessModifiersOnEnumerations',
+    'insertExplicitAccessModifiersOnEvents',
+    'insertExplicitAccessModifiersOnFields',
+    'insertExplicitAccessModifiersOnInterfaces',
+    'insertExplicitAccessModifiersOnMethods',
+    'insertExplicitAccessModifiersOnProperties',
     'insertExplicitAccessModifiersOnStructs',
   ],
 };
@@ -101,11 +118,7 @@ export async function exportRepositorySettings(workspaceRoot?: string): Promise<
 
   const filePath = path.join(root, REPOSITORY_CONFIG_FILE);
   if (fs.existsSync(filePath)) {
-    const choice = await vscode.window.showWarningMessage(
-      `Code Janitor: overwrite ${REPOSITORY_CONFIG_FILE}?`,
-      { modal: true },
-      'Overwrite'
-    );
+    const choice = await vscode.window.showWarningMessage(`Code Janitor: overwrite ${REPOSITORY_CONFIG_FILE}?`, { modal: true }, 'Overwrite');
     if (choice !== 'Overwrite') {
       return;
     }

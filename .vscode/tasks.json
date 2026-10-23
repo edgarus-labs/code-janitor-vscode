@@ -24,6 +24,18 @@
     },
     {
       "type": "npm",
+      "script": "build:server",
+      "label": "npm: build:server",
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: prepare debug",
+      "dependsOn": ["npm: build:server", "npm: watch"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "type": "npm",
       "script": "test",
       "label": "npm: test",
       "problemMatcher": [],

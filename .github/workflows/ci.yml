@@ -6,39 +6,156 @@ on:
   pull_request:
     branches: [develop, main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Read-only token: jobs build and run code from another repository (the testbed).
 permissions:
   contents: read
 
+# Bash on every runner, Windows included (Git Bash), so the steps are the same everywhere.
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  lint:
+    name: Lint and format (ESLint, Prettier, dotnet format)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Install dependencies
+        run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Prettier and dotnet format
+        run: npm run format:check
+
   build:
     name: Build and Test
-    runs-on: ubuntu-latest
+    needs: [lint, server]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - name: Install dependencies
         run: npm ci
       - name: Typecheck
         run: npm run compile
+      - name: Typecheck scripts
+        run: npm run typecheck:scripts
       - name: Test (without the compiler tests, which run in the compiler-tests jobs)
         env:
           CODE_JANITOR_TEST_CATEGORY: unit
         run: npm test
-      - name: Bundle
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
+      - name: Bundle the extension
         run: node esbuild.js --production
       - name: Verify bundle
         run: npm run verify:bundle
+      - name: Verify packaged VSIX contents
+        run: |
+          npx vsce ls > vsix-files.txt
+          grep -q '^dist/server/CodeJanitor.Server.dll$' vsix-files.txt
+          grep -q '^dist/extension.js$' vsix-files.txt
+          ! grep -E '^(src|server|test|scripts|shared)/' vsix-files.txt
+          ! grep -E '^\.' vsix-files.txt
+
+  e2e:
+    name: Extension tests in VS Code (e2e)
+    needs: [lint, build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Install dependencies
+        run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
+      - name: Bundle the extension
+        run: node esbuild.js --production
+      - name: Compile the e2e tests
+        run: npx tsc -p tsconfig.e2e.json
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Run the e2e tests under xvfb
+        run: xvfb-run -a npx vscode-test
+
+  server:
+    name: C# engine server (build, artifact and xunit tests)
+    needs: lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: edgarus-labs/code-janitor-testbed
+          ref: develop
+          path: .testbed
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build
+        run: dotnet build -c Release server/CodeJanitor.Server.slnx
+      - name: Publish the server
+        run: dotnet publish server/src/CodeJanitor.Server/CodeJanitor.Server.csproj -c Release --no-build -o dist/server --nologo -v quiet
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server
+          path: dist/server
+          retention-days: 1
+          if-no-files-found: error
+      - name: Test
+        env:
+          CODE_JANITOR_TESTBED: ${{ github.workspace }}/.testbed
+        run: dotnet test -c Release server/CodeJanitor.Server.slnx --no-build
 
   compiler-test-categories:
     name: List compiler test categories
-    runs-on: ubuntu-latest
+    needs: [lint, build]
+    runs-on: ubuntu-26.04
     outputs:
       categories: ${{ steps.list.outputs.categories }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The testbed category runs in its own job, which also clones the testbed.
       - id: list
         run: echo "categories=$(jq -c 'keys - ["testbed"]' test/compilerTests.json)" >> "$GITHUB_OUTPUT"
@@ -46,23 +163,31 @@ jobs:
   compiler-tests:
     name: Compiler tests (${{ matrix.category }})
     needs: compiler-test-categories
-    # Public repository: GitHub-hosted runners only. One runner per category, so the builds of one never slow another down.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
+    env:
+      CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         category: ${{ fromJSON(needs.compiler-test-categories.outputs.categories) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - name: Install dependencies
         run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
       - name: Build cleaned C# with the real compiler
         env:
           CODE_JANITOR_TEST_CATEGORY: ${{ matrix.category }}
@@ -71,49 +196,69 @@ jobs:
 
   compile-oracle:
     name: Compile oracle (cleaned C# still builds)
+    needs: [lint, build]
     # Public repository: GitHub-hosted runners only. The run takes about a minute; the limit is a safety net
     # against a hung dotnet build or a long blame loop after a failure.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
+    env:
+      CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - name: Install dependencies
         run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
       - name: Build test/oracle before and after cleanup
         run: npm run verify:compile
 
   testbed:
     name: Testbed (every cleanup option on bad C#, built and run)
+    needs: [lint, build]
     # Public repository: GitHub-hosted runners only. The whole job takes a few minutes; the limit is a safety net.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
+    env:
+      CODE_JANITOR_SERVER_DLL: ${{ github.workspace }}/dist/server/CodeJanitor.Server.dll
     steps:
       # No token is left in .git/config: the testbed's MSBuild targets and program run in this job.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # Pinned, bumped deliberately: a push to the testbed must not change what this repository's CI checks.
-      - uses: actions/checkout@v4
+      # The testbed's develop branch: the testbed and this repository are not versioned separately.
+      - uses: actions/checkout@v7
         with:
           repository: edgarus-labs/code-janitor-testbed
-          ref: fad6873ed30f8b1e3357e666cc2314cf4d8f6692
+          ref: develop
           path: .testbed
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
-      - uses: actions/setup-dotnet@v4
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - name: Install dependencies
         run: npm ci
-      - name: Run every scenario, then build and run the cleaned solution
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: dist/server
+      - name: Run every scenario through the C# engine server, then build and run the cleaned solution
         env:
           CODE_JANITOR_TESTBED: ${{ github.workspace }}/.testbed
           CODE_JANITOR_REQUIRE_TESTBED: '1'

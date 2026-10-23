@@ -54,8 +54,7 @@ describe('formatRazor: ported Visual Studio scenarios', () => {
   });
 
   it('formats @try / @catch / @finally blocks', () => {
-    const input =
-      '@try{var xml="<Child A=\'1\' B=\'2\' C=\'3\' />";}@catch(Exception ex){var total=1+2;}@finally{<Child A="1" B="2" C="3" />}';
+    const input = '@try{var xml="<Child A=\'1\' B=\'2\' C=\'3\' />";}@catch(Exception ex){var total=1+2;}@finally{<Child A="1" B="2" C="3" />}';
     const expected =
       '@try\n{\n    var xml = "<Child A=\'1\' B=\'2\' C=\'3\' />";\n}\n@catch (Exception ex)\n{\n    var total = 1 + 2;\n}\n@finally\n{\n    <Child A="1" B="2" C="3" />\n}';
     expect(formatRazor(input)).toBe(expected);

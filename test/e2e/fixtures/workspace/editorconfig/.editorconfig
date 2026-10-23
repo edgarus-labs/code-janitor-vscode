@@ -15,9 +15,6 @@ csharp_space_after_keywords_in_control_flow_statements = true
 # Code style
 csharp_style_namespace_declarations = file_scoped:warning
 
-# A documented option cleanup does not apply: reported in the Code Janitor output channel.
-dotnet_style_prefer_non_hidden_explicit_cast_in_source = true:warning
-
 # Naming (IDE1006): private fields are _camelCase
 dotnet_naming_rule.private_fields_underscore.severity = warning
 dotnet_naming_rule.private_fields_underscore.symbols = private_fields

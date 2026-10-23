@@ -21,6 +21,17 @@ export function logInfo(message: string): void {
   channel?.appendLine(`[${timestamp()}] ${message}`);
 }
 
+/**
+ * A diagnostic message - why a file or a step was skipped, what a batch is doing - written only in diagnostics
+ * mode (`codeJanitor.general.diagnosticsMode`), as in Visual Studio. Errors and warnings use {@link logError}
+ * and {@link logInfo}, which always write.
+ */
+export function logDiagnostic(message: string): void {
+  if (vscode.workspace.getConfiguration('codeJanitor').get<boolean>('general.diagnosticsMode', false)) {
+    logInfo(message);
+  }
+}
+
 export function logError(context: string, err: unknown): void {
   const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
   channel?.appendLine(`[${timestamp()}] ERROR - ${context}: ${detail}`);

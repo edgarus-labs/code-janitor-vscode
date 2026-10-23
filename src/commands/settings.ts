@@ -1,9 +1,9 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { XmlDocRunOptions } from '../cleanup/xmlDocumentation';
+import { XmlDocRunOptions } from '../engine/xmlDoc';
 import { parseCodeStyleSetting } from '../cleanup/codeStyleRules';
 import { applyRepositoryPolicy, readRepositoryPolicy } from '../cleanup/repositoryOverrides';
-import { CleanupSettings, HeaderPosition, HeaderUpdateMode, createDefaultSettings } from '../cleanup/types';
+import { CleanupSettings, HeaderPosition, HeaderUpdateMode, createDefaultCommentFormatOptions, createDefaultSettings } from '../cleanup/types';
 import { readReorganizeSettings } from './reorganizeSettings';
 import { logInfo } from '../logging';
 
@@ -14,10 +14,7 @@ import { logInfo } from '../logging';
  * walking up from `startDirectory` - the directory of the cleaned file; without one, the first workspace folder.
  */
 export function readCleanupSettings(startDirectory?: string): CleanupSettings {
-  return applyRepositoryPolicy(
-    readUserCleanupSettings(),
-    readRepositoryPolicy(startDirectory ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, logInfo)
-  );
+  return applyRepositoryPolicy(readUserCleanupSettings(), readRepositoryPolicy(startDirectory ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, logInfo));
 }
 
 /**
@@ -28,45 +25,62 @@ export function readCleanupSettingsForUri(uri: vscode.Uri): CleanupSettings {
   return readCleanupSettings(uri.scheme === 'file' ? path.dirname(uri.fsPath) : vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath);
 }
 
-/** The `codeJanitor.cleanup.*` settings as the user configured them, without any repository policy. */
-function readUserCleanupSettings(): CleanupSettings {
+/**
+ * The `codeJanitor.cleanup.*` settings as the user configured them, without any repository policy: what the
+ * C# engine receives, as it resolves `.codejanitor` and `.editorconfig` per file itself.
+ */
+export function readUserCleanupSettings(): CleanupSettings {
   const cfg = vscode.workspace.getConfiguration('codeJanitor');
   const base = createDefaultSettings();
 
-  // Two VS Code toggles deliberately fan out to all per-kind flags of the original extension.
+  // Two VS Code toggles deliberately fan out to all per-kind flags of the original extension; a per-kind
+  // padding setting the user set explicitly (in any scope) wins over its group toggle.
   const insertExplicit = cfg.get<boolean>('cleanup.insertExplicitAccessModifiers', base.insertExplicitAccessModifiersOnClasses);
   const insertPadding = cfg.get<boolean>('cleanup.insertBlankLinePadding', base.insertBlankLinePaddingBeforeClasses);
+  const padding = (key: PaddingKey, grouped = true): boolean => {
+    const inspected = cfg.inspect<boolean>(`cleanup.${key}`);
+    const explicit = inspected?.workspaceFolderValue ?? inspected?.workspaceValue ?? inspected?.globalValue;
+
+    return explicit ?? (grouped ? insertPadding : base[key]);
+  };
+  const comment = createDefaultCommentFormatOptions();
 
   return {
     ...base,
 
-    insertBlankLinePaddingBeforeClasses: insertPadding,
-    insertBlankLinePaddingAfterClasses: insertPadding,
-    insertBlankLinePaddingBeforeDelegates: insertPadding,
-    insertBlankLinePaddingAfterDelegates: insertPadding,
-    insertBlankLinePaddingBeforeEnumerations: insertPadding,
-    insertBlankLinePaddingAfterEnumerations: insertPadding,
-    insertBlankLinePaddingBeforeEvents: insertPadding,
-    insertBlankLinePaddingAfterEvents: insertPadding,
-    insertBlankLinePaddingBeforeFieldsMultiLine: insertPadding,
-    insertBlankLinePaddingAfterFieldsMultiLine: insertPadding,
-    insertBlankLinePaddingBeforeInterfaces: insertPadding,
-    insertBlankLinePaddingAfterInterfaces: insertPadding,
-    insertBlankLinePaddingBeforeMethods: insertPadding,
-    insertBlankLinePaddingAfterMethods: insertPadding,
-    insertBlankLinePaddingBeforeNamespaces: insertPadding,
-    insertBlankLinePaddingAfterNamespaces: insertPadding,
-    insertBlankLinePaddingBeforePropertiesMultiLine: insertPadding,
-    insertBlankLinePaddingAfterPropertiesMultiLine: insertPadding,
-    insertBlankLinePaddingBeforeStructs: insertPadding,
-    insertBlankLinePaddingAfterStructs: insertPadding,
-    insertBlankLinePaddingBeforeRegionTags: insertPadding,
-    insertBlankLinePaddingAfterRegionTags: insertPadding,
-    insertBlankLinePaddingBeforeEndRegionTags: insertPadding,
-    insertBlankLinePaddingAfterEndRegionTags: insertPadding,
-    insertBlankLinePaddingBeforeUsingStatementBlocks: insertPadding,
-    insertBlankLinePaddingAfterUsingStatementBlocks: insertPadding,
-    insertBlankLinePaddingBeforeCaseStatements: insertPadding,
+    insertBlankLinePaddingBeforeClasses: padding('insertBlankLinePaddingBeforeClasses'),
+    insertBlankLinePaddingAfterClasses: padding('insertBlankLinePaddingAfterClasses'),
+    insertBlankLinePaddingBeforeDelegates: padding('insertBlankLinePaddingBeforeDelegates'),
+    insertBlankLinePaddingAfterDelegates: padding('insertBlankLinePaddingAfterDelegates'),
+    insertBlankLinePaddingBeforeEnumerations: padding('insertBlankLinePaddingBeforeEnumerations'),
+    insertBlankLinePaddingAfterEnumerations: padding('insertBlankLinePaddingAfterEnumerations'),
+    insertBlankLinePaddingBeforeEvents: padding('insertBlankLinePaddingBeforeEvents'),
+    insertBlankLinePaddingAfterEvents: padding('insertBlankLinePaddingAfterEvents'),
+    insertBlankLinePaddingBeforeFieldsMultiLine: padding('insertBlankLinePaddingBeforeFieldsMultiLine'),
+    insertBlankLinePaddingAfterFieldsMultiLine: padding('insertBlankLinePaddingAfterFieldsMultiLine'),
+    insertBlankLinePaddingBeforeFieldsSingleLine: padding('insertBlankLinePaddingBeforeFieldsSingleLine', false),
+    insertBlankLinePaddingAfterFieldsSingleLine: padding('insertBlankLinePaddingAfterFieldsSingleLine', false),
+    insertBlankLinePaddingBeforeInterfaces: padding('insertBlankLinePaddingBeforeInterfaces'),
+    insertBlankLinePaddingAfterInterfaces: padding('insertBlankLinePaddingAfterInterfaces'),
+    insertBlankLinePaddingBeforeMethods: padding('insertBlankLinePaddingBeforeMethods'),
+    insertBlankLinePaddingAfterMethods: padding('insertBlankLinePaddingAfterMethods'),
+    insertBlankLinePaddingBeforeNamespaces: padding('insertBlankLinePaddingBeforeNamespaces'),
+    insertBlankLinePaddingAfterNamespaces: padding('insertBlankLinePaddingAfterNamespaces'),
+    insertBlankLinePaddingBeforePropertiesMultiLine: padding('insertBlankLinePaddingBeforePropertiesMultiLine'),
+    insertBlankLinePaddingAfterPropertiesMultiLine: padding('insertBlankLinePaddingAfterPropertiesMultiLine'),
+    insertBlankLinePaddingBeforePropertiesSingleLine: padding('insertBlankLinePaddingBeforePropertiesSingleLine', false),
+    insertBlankLinePaddingAfterPropertiesSingleLine: padding('insertBlankLinePaddingAfterPropertiesSingleLine', false),
+    insertBlankLinePaddingBeforeStructs: padding('insertBlankLinePaddingBeforeStructs'),
+    insertBlankLinePaddingAfterStructs: padding('insertBlankLinePaddingAfterStructs'),
+    insertBlankLinePaddingBeforeRegionTags: padding('insertBlankLinePaddingBeforeRegionTags'),
+    insertBlankLinePaddingAfterRegionTags: padding('insertBlankLinePaddingAfterRegionTags'),
+    insertBlankLinePaddingBeforeEndRegionTags: padding('insertBlankLinePaddingBeforeEndRegionTags'),
+    insertBlankLinePaddingAfterEndRegionTags: padding('insertBlankLinePaddingAfterEndRegionTags'),
+    insertBlankLinePaddingBeforeUsingStatementBlocks: padding('insertBlankLinePaddingBeforeUsingStatementBlocks'),
+    insertBlankLinePaddingAfterUsingStatementBlocks: padding('insertBlankLinePaddingAfterUsingStatementBlocks'),
+    insertBlankLinePaddingBeforeCaseStatements: padding('insertBlankLinePaddingBeforeCaseStatements'),
+    insertBlankLinePaddingBeforeSingleLineComments: padding('insertBlankLinePaddingBeforeSingleLineComments', false),
+    insertBlankLinePaddingBetweenPropertiesMultiLineAccessors: padding('insertBlankLinePaddingBetweenPropertiesMultiLineAccessors', false),
 
     insertExplicitAccessModifiersOnClasses: insertExplicit,
     insertExplicitAccessModifiersOnDelegates: insertExplicit,
@@ -80,6 +94,7 @@ function readUserCleanupSettings(): CleanupSettings {
 
     moveUsingsOutsideNamespace: cfg.get('cleanup.moveUsingsOutsideNamespace', base.moveUsingsOutsideNamespace),
     organizeUsings: cfg.get('cleanup.organizeUsings', base.organizeUsings),
+    usingStatementsToReinsertWhenRemoved: cfg.get<string[]>('cleanup.usingStatementsToReinsertWhenRemoved', [...base.usingStatementsToReinsertWhenRemoved]),
     convertToFileScopedNamespace: cfg.get('cleanup.convertToFileScopedNamespace', base.convertToFileScopedNamespace),
     convertToVarWhenApparent: cfg.get('cleanup.convertToVarWhenApparent', base.convertToVarWhenApparent),
     makeFieldsReadonlyWhenSafe: cfg.get('cleanup.makeFieldsReadonlyWhenSafe', base.makeFieldsReadonlyWhenSafe),
@@ -97,8 +112,24 @@ function readUserCleanupSettings(): CleanupSettings {
 
     updateEndRegionDirectives: cfg.get('cleanup.updateEndRegionDirectives', base.updateEndRegionDirectives),
     updateSingleLineMethods: cfg.get('cleanup.updateSingleLineMethods', base.updateSingleLineMethods),
-    updateAccessorsToBothBeSingleLineOrMultiLine: cfg.get('cleanup.updateAccessorsToBothBeSingleLineOrMultiLine', base.updateAccessorsToBothBeSingleLineOrMultiLine),
+    updateAccessorsToBothBeSingleLineOrMultiLine: cfg.get(
+      'cleanup.updateAccessorsToBothBeSingleLineOrMultiLine',
+      base.updateAccessorsToBothBeSingleLineOrMultiLine
+    ),
     formatComments: cfg.get('cleanup.formatComments', base.formatComments),
+    commentFormat: {
+      wrapColumn: cfg.get('formatting.commentWrapColumn', comment.wrapColumn),
+      skipWrapOnLastWord: cfg.get('formatting.commentSkipWrapOnLastWord', comment.skipWrapOnLastWord),
+      ignoreLinesStartingWith: cfg.get<string[]>('formatting.commentIgnoreLinesStartingWith', [...comment.ignoreLinesStartingWith]),
+      xmlAlignParamTags: cfg.get('formatting.commentXmlAlignParamTags', comment.xmlAlignParamTags),
+      xmlKeepTagsTogether: cfg.get('formatting.commentXmlKeepTagsTogether', comment.xmlKeepTagsTogether),
+      xmlSpaceSingleTags: cfg.get('formatting.commentXmlSpaceSingleTags', comment.xmlSpaceSingleTags),
+      xmlSpaceTags: cfg.get('formatting.commentXmlSpaceTags', comment.xmlSpaceTags),
+      xmlSplitAllTags: cfg.get('formatting.commentXmlSplitAllTags', comment.xmlSplitAllTags),
+      xmlSplitSummaryTagToMultipleLines: cfg.get('formatting.commentXmlSplitSummaryTagToMultipleLines', comment.xmlSplitSummaryTagToMultipleLines),
+      xmlTagsToLowerCase: cfg.get('formatting.commentXmlTagsToLowerCase', comment.xmlTagsToLowerCase),
+      xmlValueIndent: cfg.get('formatting.commentXmlValueIndent', comment.xmlValueIndent),
+    },
     reorganize: readReorganizeSettings(),
 
     removeRegions: cfg.get('cleanup.removeRegions', base.removeRegions),
@@ -111,8 +142,32 @@ function readUserCleanupSettings(): CleanupSettings {
     removeBlankLinesBeforeClosingBrace: cfg.get('cleanup.removeBlankLinesBeforeClosingBrace', base.removeBlankLinesBeforeClosingBrace),
     removeBlankLinesBetweenChainedStatements: cfg.get('cleanup.removeBlankLinesBetweenChainedStatements', base.removeBlankLinesBetweenChainedStatements),
     removeMultipleConsecutiveBlankLines: cfg.get('cleanup.removeMultipleConsecutiveBlankLines', base.removeMultipleConsecutiveBlankLines),
+    removeBlankLinesBeforeClosingTags: cfg.get('cleanup.removeBlankLinesBeforeClosingTags', base.removeBlankLinesBeforeClosingTags),
+    removeBlankSpacesBeforeClosingAngleBrackets: cfg.get(
+      'cleanup.removeBlankSpacesBeforeClosingAngleBrackets',
+      base.removeBlankSpacesBeforeClosingAngleBrackets
+    ),
+    insertBlankSpaceBeforeSelfClosingAngleBrackets: cfg.get(
+      'cleanup.insertBlankSpaceBeforeSelfClosingAngleBrackets',
+      base.insertBlankSpaceBeforeSelfClosingAngleBrackets
+    ),
 
     fileHeaderCSharp: cfg.get('cleanup.fileHeaderCSharp', base.fileHeaderCSharp),
+    fileHeaderVB: cfg.get('cleanup.fileHeaderVB', base.fileHeaderVB),
+    fileHeaderFSharp: cfg.get('cleanup.fileHeaderFSharp', base.fileHeaderFSharp),
+    fileHeaderCPlusPlus: cfg.get('cleanup.fileHeaderCPlusPlus', base.fileHeaderCPlusPlus),
+    fileHeaderCSS: cfg.get('cleanup.fileHeaderCSS', base.fileHeaderCSS),
+    fileHeaderLESS: cfg.get('cleanup.fileHeaderLESS', base.fileHeaderLESS),
+    fileHeaderSCSS: cfg.get('cleanup.fileHeaderSCSS', base.fileHeaderSCSS),
+    fileHeaderJavaScript: cfg.get('cleanup.fileHeaderJavaScript', base.fileHeaderJavaScript),
+    fileHeaderTypeScript: cfg.get('cleanup.fileHeaderTypeScript', base.fileHeaderTypeScript),
+    fileHeaderJSON: cfg.get('cleanup.fileHeaderJSON', base.fileHeaderJSON),
+    fileHeaderHTML: cfg.get('cleanup.fileHeaderHTML', base.fileHeaderHTML),
+    fileHeaderXAML: cfg.get('cleanup.fileHeaderXAML', base.fileHeaderXAML),
+    fileHeaderXML: cfg.get('cleanup.fileHeaderXML', base.fileHeaderXML),
+    fileHeaderPHP: cfg.get('cleanup.fileHeaderPHP', base.fileHeaderPHP),
+    fileHeaderPowerShell: cfg.get('cleanup.fileHeaderPowerShell', base.fileHeaderPowerShell),
+    fileHeaderR: cfg.get('cleanup.fileHeaderR', base.fileHeaderR),
     fileHeaderPosition:
       cfg.get<string>('cleanup.fileHeaderPosition', base.fileHeaderPosition === HeaderPosition.AfterUsings ? 'afterUsings' : 'documentStart') === 'afterUsings'
         ? HeaderPosition.AfterUsings
@@ -125,6 +180,9 @@ function readUserCleanupSettings(): CleanupSettings {
     codeStyleRules: parseCodeStyleSetting(cfg.get('cleanup.codeStyleRules', {})),
   };
 }
+
+/** The per-kind blank line padding flags of the cleanup settings. */
+type PaddingKey = Extract<keyof CleanupSettings, `insertBlankLinePadding${string}`>;
 
 /** Maps the `codeJanitor.ai.xmlDoc.*` settings onto the documentation planner's options. */
 export function readXmlDocOptions(): XmlDocRunOptions {

@@ -183,9 +183,7 @@ describe('Razor files in the cleanup', () => {
 
     it('Cleanup Workspace searches for and formats the Razor files', async () => {
       const all = [Uri.file('/w/A.razor'), Uri.file('/w/B.cshtml'), Uri.file('/w/C.txt')];
-      vi.spyOn(workspace, 'findFiles').mockImplementation((include) =>
-        Promise.resolve(all.filter((uri) => path.matchesGlob(uri.fsPath, include as string)))
-      );
+      vi.spyOn(workspace, 'findFiles').mockImplementation((include) => Promise.resolve(all.filter((uri) => path.matchesGlob(uri.fsPath, include as string))));
 
       await run('codeJanitor.cleanupWorkspace');
 

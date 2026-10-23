@@ -1,11 +1,10 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { insertRegionAroundLines, removeRegionAt, removeRegionsInLines } from '../reorganize/regionEdits';
-import { ReorganizeResult, reorganizeSourceDetailed } from '../reorganize/reorganize';
-import { ReorganizeSettings } from '../reorganize/settings';
-import { CleanupSettings } from '../cleanup/types';
-import { logInfo } from '../logging';
-import { CollectedFile, collectFiles, expandToCSharpFiles, isCSharp, isPathCleanable, writeFileContent } from './cleanupCore';
+import { insertRegionAroundLines } from '../text/regionEdits';
+import { PreprocessorPolicy } from '../cleanup/reorganizeSettings';
+import { documentParams, engine, reportEngineUnavailable } from '../engine/vscodeEngine';
+import { logError, logInfo } from '../logging';
+import { CollectedFile, applyFileOutcome, collectFiles, expandToCSharpFiles, isCSharp, isPathCleanable, runEngineCommand } from './cleanupCore';
 import { replaceChangedPart, selectedLines } from './editorText';
 import { readReorganizeSettings } from './reorganizeSettings';
 import { readCleanupSettingsForUri } from './settings';
@@ -20,38 +19,83 @@ export function registerReorganizeCommands(context: vscode.ExtensionContext): vo
   );
 }
 
-interface ReorganizeTarget {
-  name: string;
-  content: string;
-  /** The cleanup settings of the file: its nearest `.codejanitor` applies. */
-  cleanup: CleanupSettings;
+/** The engine's dry run of `reorganize`: whether preprocessor conditionals stop it, and the types it leaves alone. */
+interface ReorganizeReport {
+  readonly blockedByPreprocessor: boolean;
+  readonly skipped: readonly string[];
 }
 
+/** What reorganizing one file did. */
 interface Reorganization {
-  file: ReorganizeTarget;
-  result: ReorganizeResult;
+  readonly file: CollectedFile;
+  readonly report: ReorganizeReport;
+  /** Whether the file was reorganized (preprocessor conditionals allowing). */
+  readonly reorganized: boolean;
+  readonly changed: boolean;
+  readonly error?: string;
 }
 
 /**
  * Reorganizes the files. Files with preprocessor conditionals are reorganized only when the
  * policy says yes; on "ask" the user is asked once for all of them (`CodeReorganizationAvailabilityLogic`).
  */
-async function reorganizeFiles(files: readonly ReorganizeTarget[], settings: ReorganizeSettings): Promise<Reorganization[]> {
-  let outcomes = files.map((file) => ({ file, result: reorganizeSourceDetailed(file.content, settings, file.cleanup) }));
-  const blocked = outcomes.filter((outcome) => outcome.result.blockedByPreprocessor);
-
-  if (blocked.length > 0 && settings.performWhenPreprocessorConditionals === 'ask' && (await askAboutPreprocessorConditionals(blocked.map((outcome) => outcome.file.name)))) {
-    const permissive: ReorganizeSettings = { ...settings, performWhenPreprocessorConditionals: 'yes' };
-    outcomes = outcomes.map((outcome) =>
-      outcome.result.blockedByPreprocessor
-        ? { file: outcome.file, result: reorganizeSourceDetailed(outcome.file.content, permissive, outcome.file.cleanup) }
-        : outcome
-    );
+async function reorganizeFiles(files: readonly CollectedFile[]): Promise<Reorganization[]> {
+  const reports: { file: CollectedFile; report?: ReorganizeReport; error?: unknown }[] = [];
+  for (const file of files) {
+    try {
+      reports.push({ file, report: await engine().query<ReorganizeReport>({ ...documentParams(file.uri, file.content), query: 'reorganizeReport' }) });
+    } catch (error) {
+      reports.push({ file, error });
+    }
   }
 
-  for (const { file, result } of outcomes) {
-    for (const line of result.skipped) {
-      logInfo(`Reorganize ${file.name}: ${line}`);
+  const policy = readReorganizeSettings().performWhenPreprocessorConditionals;
+  const blocked = reports.filter((entry) => entry.report?.blockedByPreprocessor);
+  const permitted: PreprocessorPolicy =
+    blocked.length > 0 && policy === 'ask'
+      ? (await askAboutPreprocessorConditionals(blocked.map((entry) => path.basename(entry.file.uri.fsPath))))
+        ? 'yes'
+        : 'no'
+      : policy;
+
+  const outcomes: Reorganization[] = [];
+  for (const { file, report, error } of reports) {
+    const name = path.basename(file.uri.fsPath);
+    // An unavailable engine was already reported once: its files fail with an empty error, shown nowhere else.
+    const failed = (err: unknown): Reorganization => {
+      const unavailable = reportEngineUnavailable(err);
+      if (!unavailable) {
+        logError(`Reorganize ${file.uri.fsPath}`, err);
+      }
+
+      return {
+        file,
+        report: { blockedByPreprocessor: false, skipped: [] },
+        reorganized: false,
+        changed: false,
+        error: unavailable ? '' : (err as Error).message,
+      };
+    };
+    if (!report) {
+      outcomes.push(failed(error));
+      continue;
+    }
+
+    for (const line of report.skipped) {
+      logInfo(`Reorganize ${name}: ${line}`);
+    }
+
+    if (report.blockedByPreprocessor && permitted !== 'yes') {
+      outcomes.push({ file, report, reorganized: false, changed: false });
+      continue;
+    }
+
+    try {
+      const outcome = await runEngineCommand(file, 'reorganize', 'Reorganize', { performWhenPreprocessorConditionals: permitted });
+      await applyFileOutcome(file, outcome);
+      outcomes.push({ file, report, reorganized: true, changed: outcome.text !== file.content });
+    } catch (err) {
+      outcomes.push(failed(err));
     }
   }
 
@@ -83,8 +127,8 @@ async function askAboutPreprocessorConditionals(names: readonly string[]): Promi
   return choice === REORGANIZE || choice === ALWAYS;
 }
 
-function leftAloneNote(result: ReorganizeResult): string {
-  return result.skipped.length > 0 ? ` ${result.skipped.length} type(s) left alone (see the Code Janitor output).` : '';
+function leftAloneNote(report: ReorganizeReport): string {
+  return report.skipped.length > 0 ? ` ${report.skipped.length} type(s) left alone (see the Code Janitor output).` : '';
 }
 
 async function reorganizeActiveFile(): Promise<void> {
@@ -96,29 +140,29 @@ async function reorganizeActiveFile(): Promise<void> {
   }
 
   const name = path.basename(editor.document.uri.fsPath);
-  const source = editor.document.getText();
-  const [{ result }] = await reorganizeFiles([{ name, content: source, cleanup: readCleanupSettingsForUri(editor.document.uri) }], readReorganizeSettings());
+  const [outcome] = await reorganizeFiles([{ uri: editor.document.uri, content: editor.document.getText(), isOpen: true }]);
+  if (outcome.error !== undefined) {
+    if (outcome.error) {
+      void vscode.window.showWarningMessage(`Code Janitor: ${name} was not reorganized - ${outcome.error}`);
+    }
 
-  if (result.blockedByPreprocessor) {
+    return;
+  }
+
+  if (!outcome.reorganized) {
     void vscode.window.showInformationMessage(`Code Janitor: ${name} has preprocessor conditionals, so it was not reorganized.`);
 
     return;
   }
 
-  if (result.output === source) {
-    void vscode.window.showInformationMessage(`Code Janitor: nothing to reorganize.${leftAloneNote(result)}`);
+  if (!outcome.changed) {
+    void vscode.window.showInformationMessage(`Code Janitor: nothing to reorganize.${leftAloneNote(outcome.report)}`);
 
     return;
   }
 
-  if (!(await replaceChangedPart(editor, result.output))) {
-    void vscode.window.showWarningMessage(`Code Janitor: VS Code did not apply the reorganization of ${name}.`);
-
-    return;
-  }
-
-  if (result.skipped.length > 0) {
-    void vscode.window.showInformationMessage(`Code Janitor: reorganized.${leftAloneNote(result)}`);
+  if (outcome.report.skipped.length > 0) {
+    void vscode.window.showInformationMessage(`Code Janitor: reorganized.${leftAloneNote(outcome.report)}`);
   }
 }
 
@@ -137,56 +181,29 @@ async function reorganizeSelectedFiles(clicked?: vscode.Uri, selected?: vscode.U
     return;
   }
 
-  const summary = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Reorganizing selected files...' },
-    () => reorganizeUris(expanded)
+  const outcomes = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Reorganizing selected files...' }, async () =>
+    reorganizeFiles(await collectFiles(expanded))
   );
 
-  const parts = [`${summary.changed} file(s) changed`];
-  if (summary.failed > 0) {
-    parts.push(`${summary.failed} failed`);
+  const failed = outcomes.filter((outcome) => outcome.error !== undefined);
+  for (const outcome of failed.filter((candidate) => candidate.error)) {
+    void vscode.window.showWarningMessage(`Code Janitor: ${outcome.file.uri.fsPath} - ${outcome.error}`);
   }
-  if (summary.blocked > 0) {
-    parts.push(`${summary.blocked} skipped because of preprocessor conditionals`);
+
+  const blocked = outcomes.filter((outcome) => outcome.error === undefined && !outcome.reorganized).length;
+  const leftAlone = outcomes.reduce((total, outcome) => total + outcome.report.skipped.length, 0);
+  const parts = [`${outcomes.filter((outcome) => outcome.changed).length} file(s) changed`];
+  if (failed.length > 0) {
+    parts.push(`${failed.length} failed`);
   }
-  if (summary.leftAlone > 0) {
-    parts.push(`${summary.leftAlone} type(s) left alone (see the Code Janitor output)`);
+  if (blocked > 0) {
+    parts.push(`${blocked} skipped because of preprocessor conditionals`);
+  }
+  if (leftAlone > 0) {
+    parts.push(`${leftAlone} type(s) left alone (see the Code Janitor output)`);
   }
 
   void vscode.window.showInformationMessage(`Code Janitor: reorganize complete - ${parts.join(', ')}.`);
-}
-
-async function reorganizeUris(uris: vscode.Uri[]): Promise<{ changed: number; failed: number; blocked: number; leftAlone: number }> {
-  const collected = await collectFiles(uris);
-  const outcomes = await reorganizeFiles(
-    collected.map((file) => ({ name: path.basename(file.uri.fsPath), content: file.content, cleanup: readCleanupSettingsForUri(file.uri) })),
-    readReorganizeSettings()
-  );
-
-  let changed = 0;
-  let failed = 0;
-  let blocked = 0;
-  let leftAlone = 0;
-
-  for (const [index, { result }] of outcomes.entries()) {
-    const file: CollectedFile = collected[index];
-    leftAlone += result.skipped.length;
-    blocked += result.blockedByPreprocessor ? 1 : 0;
-
-    if (result.output === file.content) {
-      continue;
-    }
-
-    try {
-      await writeFileContent(file, result.output);
-      changed++;
-    } catch (error) {
-      failed++;
-      void vscode.window.showWarningMessage(`Code Janitor: ${file.uri.fsPath} - ${(error as Error).message}`);
-    }
-  }
-
-  return { changed, failed, blocked, leftAlone };
 }
 
 async function insertRegion(): Promise<void> {
@@ -208,7 +225,10 @@ async function insertRegion(): Promise<void> {
 
   if (await replaceChangedPart(editor, inserted.text)) {
     // The name is selected, ready to be typed over.
-    editor.selection = new vscode.Selection(new vscode.Position(inserted.nameLine, inserted.nameStart), new vscode.Position(inserted.nameLine, inserted.nameEnd));
+    editor.selection = new vscode.Selection(
+      new vscode.Position(inserted.nameLine, inserted.nameStart),
+      new vscode.Position(inserted.nameLine, inserted.nameEnd)
+    );
   }
 }
 
@@ -221,16 +241,25 @@ async function removeRegion(): Promise<void> {
     return;
   }
 
-  const source = editor.document.getText();
+  const file = { uri: editor.document.uri, content: editor.document.getText(), isOpen: true };
   const selected = editor.selection.isEmpty ? undefined : selectedLines(editor.selection);
-  const output = selected ? removeRegionsInLines(source, selected.firstLine, selected.lastLine) : removeRegionAt(source, editor.selection.active.line);
-  if (output === source) {
-    void vscode.window.showInformationMessage(
-      'Code Janitor: there is no region under the cursor or in the selection. Use Remove Regions to remove all the regions of the file.'
-    );
+  // The selection's regions, or only the region whose `#region` or `#endregion` is under the cursor (not the regions nested in it).
+  const lines = selected ? { startLine: selected.firstLine, endLine: selected.lastLine } : { line: editor.selection.active.line };
+  try {
+    const outcome = await runEngineCommand(file, 'removeRegions', 'Remove Region', lines);
+    if (outcome.text === file.content) {
+      void vscode.window.showInformationMessage(
+        'Code Janitor: there is no region under the cursor or in the selection. Use Remove Regions to remove all the regions of the file.'
+      );
 
-    return;
+      return;
+    }
+
+    await applyFileOutcome(file, outcome);
+  } catch (err) {
+    if (!reportEngineUnavailable(err)) {
+      logError(`Remove Region of ${file.uri.fsPath}`, err);
+      void vscode.window.showWarningMessage(`Code Janitor: ${(err as Error).message}`);
+    }
   }
-
-  await replaceChangedPart(editor, output);
 }

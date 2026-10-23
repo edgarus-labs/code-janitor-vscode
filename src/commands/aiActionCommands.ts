@@ -14,7 +14,9 @@ import {
   testsSystemPrompt,
 } from '../ai/aiActions';
 import { getAiChatCompletion } from '../ai/aiService';
-import { findEnclosingMember } from '../cleanup/memberAtPosition';
+import { runGenerateTestsToTargetCoverage } from '../ai/coverage/coverageCommand';
+import { MemberAtPosition } from '../engine/protocol';
+import { documentParams, engine, reportEngineUnavailable } from '../engine/vscodeEngine';
 import { logError } from '../logging';
 
 interface Target {
@@ -30,12 +32,8 @@ const MAX_COVERAGE_INPUT_CHARS = 120_000;
 /** Explain, review, refactor and unit-test generation, ported from the AI commands of the original. */
 export function registerAiActionCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand('codeJanitor.aiExplain', () =>
-      runMarkdownAction(context, 'Explaining code...', EXPLAIN_SYSTEM_PROMPT, buildExplainPrompt)
-    ),
-    vscode.commands.registerCommand('codeJanitor.aiCodeReview', () =>
-      runMarkdownAction(context, 'Reviewing code...', REVIEW_SYSTEM_PROMPT, buildReviewPrompt)
-    ),
+    vscode.commands.registerCommand('codeJanitor.aiExplain', () => runMarkdownAction(context, 'Explaining code...', EXPLAIN_SYSTEM_PROMPT, buildExplainPrompt)),
+    vscode.commands.registerCommand('codeJanitor.aiCodeReview', () => runMarkdownAction(context, 'Reviewing code...', REVIEW_SYSTEM_PROMPT, buildReviewPrompt)),
     vscode.commands.registerCommand('codeJanitor.aiRefactor', () => runRefactor(context)),
     vscode.commands.registerCommand('codeJanitor.cleanAndRefactor', async () => {
       // Deterministic cleanup never needs confirmation; the AI refactor step still shows its own
@@ -45,9 +43,8 @@ export function registerAiActionCommands(context: vscode.ExtensionContext): void
     }),
     vscode.commands.registerCommand('codeJanitor.aiGenerateUnitTests', () => runGenerateTests(context)),
     vscode.commands.registerCommand('codeJanitor.aiCoverageReport', () => runCoverageReport(context)),
-    vscode.commands.registerCommand('codeJanitor.aiGenerateTestsFromCoverageGaps', () =>
-      runGenerateTestsFromCoverageGaps(context)
-    )
+    vscode.commands.registerCommand('codeJanitor.aiGenerateTestsFromCoverageGaps', () => runGenerateTestsFromCoverageGaps(context)),
+    vscode.commands.registerCommand('codeJanitor.aiGenerateTestsToTargetCoverage', () => runGenerateTestsToTargetCoverage(context))
   );
 }
 
@@ -57,7 +54,7 @@ async function runMarkdownAction(
   systemPrompt: string,
   buildPrompt: (name: string, code: string) => string
 ): Promise<void> {
-  const target = resolveTarget();
+  const target = await resolveTarget();
   if (!target) {
     return;
   }
@@ -106,14 +103,7 @@ async function runGenerateTestsFromCoverageGaps(context: vscode.ExtensionContext
     context,
     'Generating tests from coverage gaps...',
     testsSystemPrompt(framework, mocking),
-    buildCoverageGapTestsPrompt(
-      sourceName,
-      sourceText,
-      coverageFileName,
-      trimCoverageInput(coverageText),
-      framework,
-      mocking
-    )
+    buildCoverageGapTestsPrompt(sourceName, sourceText, coverageFileName, trimCoverageInput(coverageText), framework, mocking)
   );
 
   if (response === undefined) {
@@ -127,17 +117,13 @@ async function runGenerateTestsFromCoverageGaps(context: vscode.ExtensionContext
 
 async function runRefactor(context: vscode.ExtensionContext): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  const target = resolveTarget();
+  const versionBeforeTarget = editor?.document.version;
+  const target = await resolveTarget();
   if (!editor || !target) {
     return;
   }
 
-  const response = await requestCompletion(
-    context,
-    'Refactoring code...',
-    REFACTOR_SYSTEM_PROMPT,
-    buildRefactorPrompt(target.name, target.code)
-  );
+  const response = await requestCompletion(context, 'Refactoring code...', REFACTOR_SYSTEM_PROMPT, buildRefactorPrompt(target.name, target.code));
 
   if (response === undefined) {
     return;
@@ -153,19 +139,25 @@ async function runRefactor(context: vscode.ExtensionContext): Promise<void> {
   const summary = await vscode.workspace.openTextDocument({ content: response, language: 'markdown' });
   await vscode.window.showTextDocument(summary, { preview: true, viewColumn: vscode.ViewColumn.Beside });
 
-  const choice = await vscode.window.showInformationMessage(
-    `Code Janitor: replace '${target.name}' with the refactored version?`,
-    { modal: true },
-    'Apply'
-  );
+  const choice = await vscode.window.showInformationMessage(`Code Janitor: replace '${target.name}' with the refactored version?`, { modal: true }, 'Apply');
 
-  if (choice === 'Apply') {
-    await editor.edit((builder) => builder.replace(target.range, refactored));
+  if (choice !== 'Apply') {
+    return;
+  }
+
+  if (editor.document.isClosed || editor.document.version !== versionBeforeTarget) {
+    void vscode.window.showWarningMessage('Code Janitor: the document changed while the refactoring was being prepared - nothing was replaced.');
+
+    return;
+  }
+
+  if (!(await editor.edit((builder) => builder.replace(target.range, refactored)))) {
+    void vscode.window.showWarningMessage('Code Janitor: VS Code did not apply the refactoring.');
   }
 }
 
 async function runGenerateTests(context: vscode.ExtensionContext): Promise<void> {
-  const target = resolveTarget();
+  const target = await resolveTarget();
   if (!target) {
     return;
   }
@@ -359,11 +351,14 @@ function workspaceRelativePath(uri: vscode.Uri): string {
     return uri.fsPath;
   }
 
-  return uri.fsPath.slice(folder.uri.fsPath.length).replace(/^[\\/]/, '').replace(/\\/g, '/');
+  return uri.fsPath
+    .slice(folder.uri.fsPath.length)
+    .replace(/^[\\/]/, '')
+    .replace(/\\/g, '/');
 }
 
-/** The selection when there is one, otherwise the member under the caret, otherwise the file. */
-function resolveTarget(): Target | undefined {
+/** The selection when there is one, otherwise the member under the caret (as the C# engine finds it), otherwise the file. */
+async function resolveTarget(): Promise<Target | undefined> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'csharp') {
     void vscode.window.showInformationMessage('Code Janitor: open a C# file first.');
@@ -381,18 +376,35 @@ function resolveTarget(): Target | undefined {
     };
   }
 
-  const member = findEnclosingMember(document.getText(), document.offsetAt(editor.selection.active));
+  const content = document.getText();
+  let member: MemberAtPosition | null = null;
+  try {
+    const { line, character } = editor.selection.active;
+    member = await engine().query<MemberAtPosition | null>({
+      ...documentParams(document.uri, content),
+      query: 'memberAtPosition',
+      arguments: { line, character },
+    });
+  } catch (err) {
+    // Without the engine the action still runs, on the whole file.
+    if (!reportEngineUnavailable(err)) {
+      logError(`Finding the member at the caret in ${document.uri.fsPath}`, err);
+    }
+  }
+
   if (member) {
-    const start = document.getText().indexOf(member.text);
+    // The member's own text within its lines: the replacement keeps the indentation before it.
+    const start = content.indexOf(member.text, document.offsetAt(new vscode.Position(member.startLine, 0)));
 
     return {
       name: member.name,
       code: member.text,
-      range: new vscode.Range(document.positionAt(start), document.positionAt(start + member.text.length)),
+      range:
+        start >= 0
+          ? new vscode.Range(document.positionAt(start), document.positionAt(start + member.text.length))
+          : new vscode.Range(new vscode.Position(member.startLine, 0), document.lineAt(Math.min(member.endLine, document.lineCount - 1)).range.end),
     };
   }
-
-  const content = document.getText();
 
   return {
     name: document.fileName.split(/[\\/]/).pop() ?? 'file',
@@ -401,12 +413,7 @@ function resolveTarget(): Target | undefined {
   };
 }
 
-async function requestCompletion(
-  context: vscode.ExtensionContext,
-  title: string,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<string | undefined> {
+async function requestCompletion(context: vscode.ExtensionContext, title: string, systemPrompt: string, userPrompt: string): Promise<string | undefined> {
   try {
     const maxTokens = vscode.workspace.getConfiguration('codeJanitor').get<number>('ai.maxTokensPerRequest', 2048);
 
@@ -416,9 +423,7 @@ async function requestCompletion(
     );
 
     if (!response.trim()) {
-      void vscode.window.showWarningMessage(
-        'Code Janitor: the AI model returned an empty response. Please check your model settings.'
-      );
+      void vscode.window.showWarningMessage('Code Janitor: the AI model returned an empty response. Please check your model settings.');
 
       return undefined;
     }

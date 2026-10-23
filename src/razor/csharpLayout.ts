@@ -1,10 +1,8 @@
-import { CODE, classifyCSharp } from '../cleanup/csharpScanner';
-import { resolveEditorConfigProperties } from '../cleanup/editorconfig';
-import { Node, TextEdit, applyEdits, parseCSharp } from '../cleanup/parser';
-import { lex } from '../cleanup/syntax/lexer';
-import { createEditorConfigFormattingConverter } from '../cleanup/transformations/editorConfigFormatting';
-import { SourceTransformation } from '../cleanup/types';
-import { parseErrorCount } from '../cleanup/transformations/editorConfigSupport';
+import { CODE, classifyCSharp } from './csharp/scanner';
+import { formatCSharp } from './csharp/formatting';
+import { FormattingOptions, parseErrorCount } from './csharp/formattingSupport';
+import { Node, TextEdit, applyEdits, parseCSharp } from './csharp/parser';
+import { lex } from './csharp/syntax/lexer';
 import { RazorLayout, indentUnitOf } from './razorOptions';
 
 /**
@@ -55,7 +53,7 @@ function layout(content: string, prefix: string, suffix: string, depth: number, 
     return undefined;
   }
 
-  const laidOut = collapseAutoProperties(engineFor(options).apply(prepare(wrapped)));
+  const laidOut = collapseAutoProperties(formatCSharp(prepare(wrapped), formattingOptions(options)));
   if (!laidOut.startsWith(prefix) || !laidOut.endsWith(suffix)) {
     return undefined;
   }
@@ -129,53 +127,43 @@ function dedent(inner: string, depth: number, options: RazorLayout): string | un
   return lines.join('\n');
 }
 
-const engines = new Map<string, SourceTransformation>();
+/** Roslyn's default C# formatting options, with the indentation of the Razor file. */
+function formattingOptions(options: RazorLayout): FormattingOptions {
+  const values: Record<string, string> = {
+    indent_style: options.indentStyle,
+    indent_size: String(options.indentSize),
+    tab_width: String(options.indentSize),
+    csharp_new_line_before_open_brace:
+      'accessors, anonymous_methods, anonymous_types, control_blocks, events, indexers, lambdas, local_functions, methods, object_collection_array_initializers, properties, types',
+    csharp_new_line_before_else: 'true',
+    csharp_new_line_before_catch: 'true',
+    csharp_new_line_before_finally: 'true',
+    csharp_preserve_single_line_statements: 'false',
+    csharp_preserve_single_line_blocks: 'true',
+    csharp_indent_case_contents: 'true',
+    csharp_indent_switch_labels: 'true',
+    csharp_indent_block_contents: 'true',
+    csharp_indent_braces: 'false',
+    csharp_space_after_keywords_in_control_flow_statements: 'true',
+    csharp_space_around_binary_operators: 'before_and_after',
+    csharp_space_between_parentheses: 'false',
+    csharp_space_after_comma: 'true',
+    csharp_space_before_comma: 'false',
+    csharp_space_after_cast: 'false',
+    csharp_space_before_colon_in_inheritance_clause: 'true',
+    csharp_space_after_colon_in_inheritance_clause: 'true',
+    csharp_space_before_semicolon_in_for_statement: 'false',
+    csharp_space_after_semicolon_in_for_statement: 'true',
+    csharp_space_before_dot: 'false',
+    csharp_space_after_dot: 'false',
+    csharp_space_between_method_call_parameter_list_parentheses: 'false',
+    csharp_space_between_method_declaration_parameter_list_parentheses: 'false',
+    csharp_space_between_method_call_name_and_opening_parenthesis: 'false',
+    csharp_space_between_method_declaration_name_and_open_parenthesis: 'false',
+  };
 
-function engineFor(options: RazorLayout): SourceTransformation {
-  const key = `${options.indentStyle}${options.indentSize}`;
-  let engine = engines.get(key);
-  if (!engine) {
-    const props = resolveEditorConfigProperties([{ directory: '/', text: ENGINE_RULES(options) }], '/razor.cs');
-    engine = createEditorConfigFormattingConverter(props, () => undefined);
-    engines.set(key, engine);
-  }
-
-  return engine;
+  return { get: (key) => values[key.toLowerCase()] };
 }
-
-const ENGINE_RULES = (options: RazorLayout): string => `root = true
-[*.cs]
-indent_style = ${options.indentStyle}
-indent_size = ${options.indentSize}
-tab_width = ${options.indentSize}
-dotnet_diagnostic.IDE0055.severity = warning
-csharp_new_line_before_open_brace = accessors, anonymous_methods, anonymous_types, control_blocks, events, indexers, lambdas, local_functions, methods, object_collection_array_initializers, properties, types
-csharp_new_line_before_else = true
-csharp_new_line_before_catch = true
-csharp_new_line_before_finally = true
-csharp_preserve_single_line_statements = false
-csharp_preserve_single_line_blocks = true
-csharp_indent_case_contents = true
-csharp_indent_switch_labels = true
-csharp_indent_block_contents = true
-csharp_indent_braces = false
-csharp_space_after_keywords_in_control_flow_statements = true
-csharp_space_around_binary_operators = before_and_after
-csharp_space_between_parentheses = false
-csharp_space_after_comma = true
-csharp_space_before_comma = false
-csharp_space_after_cast = false
-csharp_space_before_colon_in_inheritance_clause = true
-csharp_space_after_colon_in_inheritance_clause = true
-csharp_space_before_semicolon_in_for_statement = false
-csharp_space_after_semicolon_in_for_statement = true
-csharp_space_before_dot = false
-csharp_space_after_dot = false
-csharp_space_between_method_call_parameter_list_parentheses = false
-csharp_space_between_method_declaration_parameter_list_parentheses = false
-csharp_space_between_method_call_name_and_opening_parenthesis = false
-csharp_space_between_method_declaration_name_and_open_parenthesis = false
-`;
 
 /** Operators of assignments and initializers that take a space on both sides. */
 const ASSIGNMENT_OPERATOR = /^(?:[-+*/%&|^]|<<|>>>?|\?\?)?=$/;
@@ -192,12 +180,27 @@ function prepare(source: string): string {
     const visit = (node: Node): void => {
       const children = node.children;
       if (node.type === 'equals_value_clause' || node.type === 'property_declaration') {
-        add(spaceAroundToken(source, children.find((child) => child.type === '=')));
+        add(
+          spaceAroundToken(
+            source,
+            children.find((child) => child.type === '=')
+          )
+        );
       } else if (node.type === 'assignment_expression') {
-        add(spaceAroundToken(source, children.find((child) => ASSIGNMENT_OPERATOR.test(child.type))));
+        add(
+          spaceAroundToken(
+            source,
+            children.find((child) => ASSIGNMENT_OPERATOR.test(child.type))
+          )
+        );
       }
 
-      add(spaceAroundToken(source, children.find((child) => child.type === '=>')));
+      add(
+        spaceAroundToken(
+          source,
+          children.find((child) => child.type === '=>')
+        )
+      );
       if (node.type === 'conditional_expression') {
         children.filter((child) => child.type === '?' || child.type === ':').forEach((token) => add(spaceAroundToken(source, token)));
       }
@@ -205,7 +208,13 @@ function prepare(source: string): string {
       if (node.type === 'switch_body' && node.parent?.type === 'switch_statement') {
         add(splitSwitchBody(source, children));
       } else if (node.type === 'declaration_list') {
-        add(breakBetween(source, children.filter((child) => child.isNamed && child.type !== 'comment'), () => true));
+        add(
+          breakBetween(
+            source,
+            children.filter((child) => child.isNamed && child.type !== 'comment'),
+            () => true
+          )
+        );
       } else if (node.type === 'enum_member_declaration_list') {
         add(explodeEnumList(source, children));
       }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lineRangeToSort, sortLineRange } from '../src/reorganize/sortLines';
+import { lineRangeToSort, sortLineRange } from '../src/text/sortLines';
 
 // Ported from SortLinesCommand.SortText: the selected lines, empty lines dropped, sorted with the
 // culture comparer, each followed by a line break.

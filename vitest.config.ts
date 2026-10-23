@@ -21,6 +21,7 @@ export default defineConfig({
     // Vitest's default of 5 s is too short for the tests that run `dotnet build`: a cold SDK on a CI runner
     // takes about 9 s for the first build alone.
     testTimeout: 60_000,
+    globalSetup: category === 'unit' ? [] : ['./test/globalSetup.ts'],
     alias: {
       // The command layer imports `vscode`, which only exists inside the extension host.
       vscode: fileURLToPath(new URL('./test/helpers/vscodeMock.ts', import.meta.url)),

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CodeJanitor.Engine/CodeJanitor.Engine.csproj" />
+    <Project Path="src/CodeJanitor.Server/CodeJanitor.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CodeJanitor.Engine.Tests/CodeJanitor.Engine.Tests.csproj" />
+  </Folder>
+</Solution>

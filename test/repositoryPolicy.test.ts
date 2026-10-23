@@ -33,9 +33,22 @@ describe('parseRepositoryPolicy', () => {
     expect(parseRepositoryPolicy('{ "other": {} }')).toEqual({ overrides: {}, codeStyle: {} });
     expect(parseRepositoryPolicy('{ "cleanup": [] }')).toEqual({ overrides: {}, codeStyle: {} });
 
-    const { overrides } = parseRepositoryPolicy('{ "cleanup": { "unknownKey": true, "convertToVarWhenApparent": "yes", "removeRegions": "no", "codeStyleRules": {} } }');
+    const { overrides } = parseRepositoryPolicy(
+      '{ "cleanup": { "unknownKey": true, "convertToVarWhenApparent": "yes", "removeRegions": "no", "codeStyleRules": {} } }'
+    );
 
     expect(overrides).toEqual({});
+  });
+
+  it('accepts only scalar and string-list values: the object-valued settings and wrong list shapes are ignored', () => {
+    const { overrides } = parseRepositoryPolicy(
+      '{ "cleanup": { "commentFormat": { "wrapColumn": 10 }, "usingStatementsToReinsertWhenRemoved": { "a": 1 }, "removeRegions": false } }'
+    );
+
+    expect(overrides).toEqual({ removeRegions: false });
+    expect(parseRepositoryPolicy('{ "cleanup": { "usingStatementsToReinsertWhenRemoved": ["using System;"] } }').overrides).toEqual({
+      usingStatementsToReinsertWhenRemoved: ['using System;'],
+    });
   });
 
   it('maps the header enums and text', () => {
@@ -184,6 +197,20 @@ describe('readRepositoryPolicy', () => {
     expect(readRepositoryPolicy(isolated).overrides).toEqual({});
   });
 
+  it('logs invalid JSON once per session and file instead of ignoring it silently', () => {
+    const broken = path.join(root, 'broken');
+    fs.mkdirSync(broken);
+    fs.writeFileSync(path.join(broken, '.codejanitor'), '{ not json');
+    const messages: string[] = [];
+
+    readRepositoryPolicy(broken, (message) => messages.push(message));
+    readRepositoryPolicy(broken, (message) => messages.push(message));
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain(path.join(broken, '.codejanitor'));
+    expect(messages[0]).toMatch(/not valid JSON/);
+  });
+
   it('logs a Visual Studio-only key once per session and file', () => {
     fs.writeFileSync(path.join(root, '.codejanitor'), '{ "cleanup": { "applyEditorConfigCodeStyle": true } }');
     const messages: string[] = [];
@@ -191,6 +218,8 @@ describe('readRepositoryPolicy', () => {
     readRepositoryPolicy(root, (message) => messages.push(message));
     readRepositoryPolicy(root, (message) => messages.push(message));
 
-    expect(messages).toEqual([expect.stringMatching(/'\.codejanitor' key applyEditorConfigCodeStyle is ignored by VS Code: \.editorconfig rules always apply\.$/)]);
+    expect(messages).toEqual([
+      expect.stringMatching(/'\.codejanitor' key applyEditorConfigCodeStyle is ignored by VS Code: \.editorconfig rules always apply\.$/),
+    ]);
   });
 });

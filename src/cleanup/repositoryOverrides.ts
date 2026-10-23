@@ -113,8 +113,9 @@ export function findRepositoryConfigFile(startDirectory: string): string | undef
 
 /**
  * Reads the optional repository policy that applies to files in `startDirectory` (usually the
- * directory of the cleaned file). Invalid JSON, unknown keys and wrong value types are ignored; the
- * Visual Studio-only keys are passed to `log` as ignored, once per session.
+ * directory of the cleaned file). Invalid JSON and an unreadable file are logged once and yield no
+ * policy; unknown keys and wrong value types are ignored; the Visual Studio-only keys are passed to
+ * `log` as ignored, once per session.
  */
 export function readRepositoryPolicy(startDirectory: string | undefined, log: (message: string) => void = () => undefined): RepositoryPolicy {
   if (!startDirectory) {
@@ -127,16 +128,23 @@ export function readRepositoryPolicy(startDirectory: string | undefined, log: (m
       return NO_POLICY;
     }
 
-    const policy = parseRepositoryPolicy(fs.readFileSync(configPath, 'utf8'), (key, reason) => {
+    const logOnce = (key: string, message: string) => {
       const reported = `${configPath}\n${key}`;
       if (!reportedIgnoredKeys.has(reported)) {
         reportedIgnoredKeys.add(reported);
-        log(`'.codejanitor' key ${key} is ignored by VS Code: ${reason}.`);
+        log(message);
       }
-    });
+    };
+    const policy = parseRepositoryPolicy(
+      fs.readFileSync(configPath, 'utf8'),
+      (key, reason) => logOnce(key, `'.codejanitor' key ${key} is ignored by VS Code: ${reason}.`),
+      (reason) => logOnce(`<invalid>${reason}`, `'${configPath}' is ignored: ${reason}.`)
+    );
 
     return { ...policy, configPath };
-  } catch {
+  } catch (err) {
+    log(`The repository policy of '${startDirectory}' could not be read: ${err instanceof Error ? err.message : String(err)}.`);
+
     return NO_POLICY;
   }
 }
@@ -145,16 +153,28 @@ export function readRepositoryPolicy(startDirectory: string | undefined, log: (m
  * Parses the text of a `.codejanitor` file. Invalid JSON, a missing `cleanup` section, unknown keys
  * and wrong value types yield nothing for the entry; `onIgnoredKey` receives the Visual Studio-only keys.
  */
-export function parseRepositoryPolicy(text: string, onIgnoredKey?: (key: string, reason: string) => void): RepositoryPolicy {
+export function parseRepositoryPolicy(
+  text: string,
+  onIgnoredKey?: (key: string, reason: string) => void,
+  onInvalid?: (reason: string) => void
+): RepositoryPolicy {
   let file: { cleanup?: unknown } | undefined;
   try {
     file = JSON.parse(text) as { cleanup?: unknown };
-  } catch {
+  } catch (err) {
+    onInvalid?.(`it is not valid JSON (${err instanceof Error ? err.message : String(err)})`);
+
     return NO_POLICY;
   }
 
   const cleanup = file?.cleanup;
-  if (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup)) {
+  if (cleanup !== undefined && (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup))) {
+    onInvalid?.('its "cleanup" section is not an object');
+
+    return NO_POLICY;
+  }
+
+  if (!cleanup) {
     return NO_POLICY;
   }
 
@@ -172,7 +192,7 @@ export function parseRepositoryPolicy(text: string, onIgnoredKey?: (key: string,
 
   const readers: [string, keyof CleanupSettings][] = [
     ...(Object.keys(defaults) as (keyof CleanupSettings)[])
-      .filter((key) => key !== 'codeStyleRules' && key !== 'reorganize')
+      .filter((key) => key !== 'codeStyleRules' && key !== 'reorganize' && key !== 'commentFormat')
       .map((key): [string, keyof CleanupSettings] => [key, key]),
     ...Object.entries(KEY_ALIASES).map(([alias, key]): [string, keyof CleanupSettings] => [alias, key]),
   ];
@@ -187,7 +207,7 @@ export function parseRepositoryPolicy(text: string, onIgnoredKey?: (key: string,
       continue;
     }
 
-    if (value === undefined || typeof value !== typeof defaults[key]) {
+    if (value === undefined || !hasSettingShape(value, defaults[key])) {
       continue;
     }
 
@@ -238,6 +258,15 @@ function parseCodeStyleSection(codeStyle: unknown): Record<string, string | null
   return rules;
 }
 
+/** A setting value of the shape of its default: a scalar of the same type, or a list of strings for a list default. */
+function hasSettingShape(value: unknown, defaultValue: unknown): boolean {
+  if (Array.isArray(defaultValue)) {
+    return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+  }
+
+  return typeof value === typeof defaultValue && !Array.isArray(value) && value !== null;
+}
+
 function isFile(file: string): boolean {
   try {
     return fs.statSync(file).isFile();
@@ -246,12 +275,7 @@ function isFile(file: string): boolean {
   }
 }
 
-function applyBooleanAlias(
-  config: Record<string, unknown>,
-  overrides: Partial<CleanupSettings>,
-  key: string,
-  targetKeys: readonly string[]
-): void {
+function applyBooleanAlias(config: Record<string, unknown>, overrides: Partial<CleanupSettings>, key: string, targetKeys: readonly string[]): void {
   if (typeof config[key] !== 'boolean') {
     return;
   }

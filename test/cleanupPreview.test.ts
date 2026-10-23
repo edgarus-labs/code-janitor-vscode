@@ -2,16 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { PreviewResult } from '../src/cleanup/pipeline';
 import { registerCleanupCommands } from '../src/commands/cleanupCommands';
 import { PreviewFile, buildCleanupPreviewPlan } from '../src/commands/cleanupPreview';
 import { runCleanupOnUris } from '../src/commands/cleanupCore';
 import { FakeQuickPick, assertScriptsPassed, installPreviewMock, previewState } from './helpers/previewMock';
 import { PreviewProject, csharpFiles, previewProject, removeTempDirectories, restoreOriginals, tempDirectory } from './helpers/previewFixtures';
 import { TextDocument, Uri, createContext, resetMock, state, window, workspace } from './helpers/vscodeMock';
+import { FakeEngine, cleanupResult, useFakeEngine } from './helpers/fakeEngine';
+import { fakePreviewCleanup } from './helpers/previewEngine';
+
+let engine: FakeEngine;
 
 beforeEach(() => {
   resetMock();
+  engine = useFakeEngine({ cleanup: fakePreviewCleanup });
   installPreviewMock();
   registerCleanupCommands(createContext());
 });
@@ -65,7 +69,10 @@ async function ordinaryCleanup(project: PreviewProject, files: readonly string[]
   state.documents = [];
   restoreOriginals(project);
   try {
-    await runCleanupOnUris(createContext(), files.map((file) => project.uri(file)));
+    await runCleanupOnUris(
+      createContext(),
+      files.map((file) => project.uri(file))
+    );
 
     return snapshot(project, files);
   } finally {
@@ -82,7 +89,7 @@ describe('multi-file cleanup preview: the plan', () => {
     const files = [...CHANGED, 'Services/Pricing.cs', 'Notes.txt'];
     user((picker) => {
       expect(picker.items.map((item) => `${item.label} | ${item.description}`)).toEqual([
-        '$(diff) Models/Customer.cs | 6 changes',
+        '$(diff) Models/Customer.cs | 4 changes',
         '$(diff) Models/Order.cs | 6 changes',
         '$(diff) Services/Legacy.cs | 2 changes',
         '$(diff) Program.cs | 1 change',
@@ -95,7 +102,11 @@ describe('multi-file cleanup preview: the plan', () => {
       picker.escape();
     });
 
-    await run('codeJanitor.previewCleanupSelectedFiles', undefined, files.map((file) => project.uri(file)));
+    await run(
+      'codeJanitor.previewCleanupSelectedFiles',
+      undefined,
+      files.map((file) => project.uri(file))
+    );
 
     expect(applyEdit).not.toHaveBeenCalled();
     expect(writeFile).not.toHaveBeenCalled();
@@ -128,23 +139,24 @@ describe('multi-file cleanup preview: the plan', () => {
       ['Models/Order.cs', 'skipped', expect.stringMatching(/^Skipped: too large \(\d+ KiB; the limit is 1 KiB\)$/)],
       ['Models/Invalid.cs', 'skipped', 'Skipped: the file is not UTF-8 text, which the preview cannot apply safely'],
       ['Models/Missing.cs', 'error', expect.stringMatching(/^Error: the file could not be read/)],
-      ['Models/Customer.cs', 'changes', '6 changes'],
+      ['Models/Customer.cs', 'changes', '4 changes'],
     ]);
     expect(plan.files.filter((file) => file.include).map((file) => file.label)).toEqual(['Models/Customer.cs']);
   });
 
-  it('notes the syntax problems of a file and what the preview does not show', async () => {
+  it("notes the engine's messages about a file", async () => {
     const project = previewProject();
-    state.files.set(project.file('Models/Broken.cs'), 'class Broken\n{\n    void M()\n    {\n        int x = 1\n        x++;\n    }   \n}\n');
+    useFakeEngine({
+      cleanup: (params) => cleanupResult(`${params.text}// cleaned\n`, { issues: ['IDE0055 was skipped: its fix would add a compiler error.'] }),
+    });
 
-    const plan = await buildCleanupPreviewPlan([project.uri('Models/Broken.cs')]);
+    const plan = await buildCleanupPreviewPlan([project.uri('Services/Pricing.cs')]);
 
-    expect(plan.files[0].notes.join(' ')).toMatch(/syntax problems? in the file/);
+    expect(plan.files[0].notes).toEqual(['IDE0055 was skipped: its fix would add a compiler error.']);
   });
 
   it('counts the .editorconfig violations cleanup cannot fix and shows them with the file', async () => {
     const root = tempDirectory();
-    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ncsharp_style_var_elsewhere = true:warning\ncsharp_prefer_braces = true:warning\n');
     const source = 'internal class A\n{\n    private void M(bool b)\n    {\n        Widget w = Create();\n        if (b) return;\n    }\n}\n';
     state.files.set(path.join(root, 'A.cs'), source);
     user((picker) => {
@@ -159,16 +171,25 @@ describe('multi-file cleanup preview: the plan', () => {
     await run('codeJanitor.previewCleanupSelectedFiles', undefined, [Uri.file(path.join(root, 'A.cs'))]);
   });
 
-  it('says that a one-type-per-file split is not part of the preview', async () => {
+  it('names the files a one-type-per-file split creates, and creates them with the file in the one edit', async () => {
     const root = tempDirectory();
-    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ndotnet_diagnostic.SA1402.severity = warning\n');
     const filePath = path.join(root, 'Foo.cs');
     state.files.set(filePath, 'namespace Demo;\n\ninternal class Foo\n{\n}\n\ninternal class Bar\n{\n    int x;   \n}\n');
+    const applyEdit = vi.spyOn(workspace, 'applyEdit');
+    user(accept);
 
     const plan = await buildCleanupPreviewPlan([Uri.file(filePath)]);
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [Uri.file(filePath)]);
 
     expect(plan.files[0].status).toBe('changes');
-    expect(plan.files[0].notes).toEqual([expect.stringContaining('one type per file')]);
+    expect(plan.files[0].message).toBe('1 change, 1 new file');
+    expect(plan.files[0].notes).toEqual([expect.stringMatching(/one type per file.*Bar\.cs/)]);
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    expect((applyEdit.mock.calls[0][0] as unknown as { createdFiles: { uri: Uri }[] }).createdFiles.map((created) => created.uri.fsPath)).toEqual([
+      path.join(root, 'Bar.cs'),
+    ]);
+    expect(textOf(path.join(root, 'Bar.cs'))).toBe('namespace Demo;\n\ninternal class Bar\n{\n    int x;\n}\n');
+    expect(textOf(filePath)).toBe('namespace Demo;\n\ninternal class Foo\n{\n}\n');
   });
 
   it('stops preparing when the user cancels the progress, changing nothing', async () => {
@@ -197,39 +218,63 @@ describe('multi-file cleanup preview: the plan', () => {
     expect(previewState.pickers).toHaveLength(0);
   });
 
-  it('never offers a result with more syntax problems than the original', () => {
+  it('never offers a result that also changes other files, which only Cleanup applies', async () => {
     const original = 'class A\n{\n}\n';
-    const file = PreviewFile.planned(Uri.file('/w/A.cs'), 'A.cs', original, {
-      compute: (source) => new PreviewResult(source, 'class A\n{\n    int x\n}\n', []),
+    const file = await PreviewFile.planned(Uri.file('/w/A.cs'), 'A.cs', original, {
+      compute: async () => ({
+        updated: 'class B\n{\n}\n',
+        rules: [],
+        otherFiles: [{ path: '/w/Use.cs', text: 'B b;' }],
+        newFiles: [],
+        unresolved: 0,
+        issues: [],
+      }),
     });
 
     expect(file.canApply).toBe(false);
     expect(file.status).toBe('error');
-    expect(file.message).toMatch(/^Not applied: the result would add \d+ syntax problems?$/);
+    expect(file.message).toBe('Not applied: it would also change Use.cs; run Cleanup instead');
     expect(file.include).toBe(false);
+  });
+
+  it('asks the engine without renames across the workspace, leaving out the excluded rules', async () => {
+    const project = previewProject();
+    const plan = await buildCleanupPreviewPlan([project.uri('Models/Order.cs')]);
+
+    await plan.files[0].setIncludedRules(new Set(['CJ0001', 'CJ0002', 'IDE0090']));
+
+    expect(engine.requests('cleanup').map((params) => [params.filePath, params.settings.renamePublicSymbolsAcrossWorkspace, params.excludedRules])).toEqual([
+      [project.file('Models/Order.cs'), false, undefined],
+      [project.file('Models/Order.cs'), false, ['IDE0011']],
+    ]);
   });
 
   it('reports the rules of each file as Changed, No change or Excluded, recalculated from the original text', async () => {
     const project = previewProject();
     const plan = await buildCleanupPreviewPlan([project.uri('Models/Order.cs')]);
     const [file] = plan.files;
-    const outcomes = () => Object.fromEntries(file.rules.filter((rule) => ['Remove trailing whitespace', 'Normalize blank lines', 'IDE0011', 'IDE0090'].includes(rule.name)).map((rule) => [rule.name, rule.outcome]));
+    const outcomes = () =>
+      Object.fromEntries(
+        file.rules
+          .filter((rule) => ['Remove trailing whitespace', 'Normalize blank lines', 'IDE0011', 'IDE0090'].includes(rule.name))
+          .map((rule) => [rule.name, rule.outcome])
+      );
     const allKeys = new Set(file.rules.map((rule) => rule.key));
     const full = file.updated;
 
     expect(outcomes()).toEqual({ 'Remove trailing whitespace': 'Changed', 'Normalize blank lines': 'Changed', IDE0011: 'Changed', IDE0090: 'Changed' });
 
-    file.setIncludedRules(new Set([...allKeys].filter((key) => !key.endsWith(':IDE0011'))));
+    await file.setIncludedRules(new Set([...allKeys].filter((key) => key !== 'IDE0011')));
     expect(outcomes()).toMatchObject({ IDE0011: 'Excluded', IDE0090: 'Changed' });
     expect(file.updated).toContain('if (price < 0)\n                throw');
 
     // Re-including one rule while excluding another: nothing of the earlier selection survives.
-    file.setIncludedRules(new Set([...allKeys].filter((key) => key !== file.rules.find((rule) => rule.name === 'Normalize blank lines')?.key)));
+    await file.setIncludedRules(new Set([...allKeys].filter((key) => key !== file.rules.find((rule) => rule.name === 'Normalize blank lines')?.key)));
     expect(outcomes()).toMatchObject({ IDE0011: 'Changed', 'Normalize blank lines': 'Excluded' });
     expect(file.updated).toContain('if (price < 0)\n            {');
     expect(file.updated).toContain('\n\n\n');
 
-    file.setIncludedRules(allKeys);
+    await file.setIncludedRules(allKeys);
     expect(file.updated).toBe(full);
   });
 
@@ -241,12 +286,12 @@ describe('multi-file cleanup preview: the plan', () => {
     expect(file.rules.find((rule) => rule.name === 'Remove trailing whitespace')?.outcome).toBe('No change');
     expect(file.include).toBe(true);
 
-    file.setIncludedRules(new Set());
+    await file.setIncludedRules(new Set());
     expect(file.canApply).toBe(false);
     expect(file.include).toBe(false);
     expect(file.message).toBe('No changes');
 
-    file.setIncludedRules(new Set(file.rules.map((rule) => rule.key)));
+    await file.setIncludedRules(new Set(file.rules.map((rule) => rule.key)));
     expect(file.include).toBe(true);
   });
 });
@@ -340,8 +385,8 @@ describe('multi-file cleanup preview: review', () => {
 
     // The second round lists the rules as the first round left them.
     const choices = state.quickPickItems as { label: string; description: string }[];
-    expect(choices.find((choice) => choice.label === 'IDE0011')?.description).toBe('Apply .editorconfig code style - Excluded');
-    expect(choices.find((choice) => choice.label === 'IDE0090')?.description).toMatch(/^Apply \.editorconfig code style - Changed \(\d+ changes?\)$/);
+    expect(choices.find((choice) => choice.label === 'IDE0011')?.description).toBe('Excluded');
+    expect(choices.find((choice) => choice.label === 'IDE0090')?.description).toMatch(/^Changed \(\d+ changes?\)$/);
     // Both rounds were shown; the diff was refreshed after each (new virtual documents).
     expect(previewState.diffs).toHaveLength(2);
     expect(previewState.diffs[0].after.toString()).not.toBe(previewState.diffs[1].after.toString());
@@ -378,11 +423,11 @@ describe('multi-file cleanup preview: review', () => {
 
     await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Program.cs')]);
 
-    expect(first).toContain('Remove trailing whitespace: No change');
+    expect(first).toContain('Remove trailing whitespace: CJ0001 - No change');
     expect(first.find((line) => line.startsWith('IDE0090'))).toContain('Changed (1 change)');
     const second = describeRules();
-    expect(second).toContain('Remove trailing whitespace: Excluded');
-    expect(second).toContain('Normalize blank lines: Excluded');
+    expect(second).toContain('Remove trailing whitespace: CJ0001 - Excluded');
+    expect(second).toContain('Normalize blank lines: CJ0002 - Excluded');
     expect(second.find((line) => line.startsWith('IDE0090'))).toContain('Changed (1 change)');
   });
 
@@ -436,22 +481,14 @@ describe('multi-file cleanup preview: applying', () => {
     expect(state.informationMessages.at(-1)).toContain('applied to 4 file(s)');
   });
 
-  it('plans and applies every file with the .codejanitor nearest to it, like the ordinary cleanup', async () => {
+  it('sends the user settings without the .codejanitor policy, which the engine applies per file', async () => {
     const project = previewProject();
-    const regions = 'Services/Regions.cs';
-    const text = 'namespace Shop.Services\n{\n    public class Regions\n    {\n        #region Members\n        public int Count { get; set; }   \n        #endregion\n    }\n}\n';
-    fs.writeFileSync(project.file(regions), text);
-    state.files.set(project.file(regions), text);
     fs.writeFileSync(project.file('Services/.codejanitor'), JSON.stringify({ cleanup: { removeRegions: false } }));
-    const files = ['Models/Customer.cs', regions];
-    const expected = await ordinaryCleanup(project, files);
     user(accept);
 
-    await run('codeJanitor.previewCleanupSelectedFiles', undefined, files.map((file) => project.uri(file)));
+    await run('codeJanitor.previewCleanupSelectedFiles', undefined, [project.uri('Services/Legacy.cs')]);
 
-    expect(expected[regions]).toContain('#region Members');
-    expect(expected[regions]).not.toBe(text);
-    expect(snapshot(project, files)).toEqual(expected);
+    expect(engine.requests('cleanup')[0].settings).toMatchObject({ removeRegions: true, fileHeaderPosition: 'documentStart', fileHeaderUpdateMode: 'insert' });
   });
 
   it('plans from the editor buffer and applies to the buffer of an open file', async () => {
@@ -670,7 +707,10 @@ describe('multi-file cleanup preview: scopes', () => {
 
   it('previews the open C# files of the workspace only', async () => {
     const project = previewProject();
-    for (const [file, language] of [['Program.cs', 'csharp'], ['Notes.txt', 'plaintext']] as const) {
+    for (const [file, language] of [
+      ['Program.cs', 'csharp'],
+      ['Notes.txt', 'plaintext'],
+    ] as const) {
       state.documents.push(new TextDocument(project.uri(file), project.originals.get(project.file(file))!, language));
     }
 
@@ -771,8 +811,12 @@ describe('multi-file cleanup preview: scopes', () => {
   it('previews only the lines changed since the last commit when onlyChangedLines is on', async () => {
     const root = tempDirectory();
     const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: root, stdio: 'pipe' });
-    const committed = 'namespace Demo;\n\ninternal class Counter\n{\n    public void Add(int value)\n    {\n        if (value > 0)\n            Add(value - 1);\n    }\n}\n';
-    const edited = committed.replace('    }\n}\n', '    }\n\n    public void Remove(int value)\n    {\n        if (value > 0)\n            Remove(value - 1);\n    }\n}\n');
+    const committed =
+      'namespace Demo;\n\ninternal class Counter\n{\n    public void Add(int value)\n    {\n        if (value > 0)\n            Add(value - 1);\n    }\n}\n';
+    const edited = committed.replace(
+      '    }\n}\n',
+      '    }\n\n    public void Remove(int value)\n    {\n        if (value > 0)\n            Remove(value - 1);\n    }\n}\n'
+    );
     fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n\n[*.cs]\ncsharp_prefer_braces = true:warning\n');
     fs.writeFileSync(path.join(root, 'Counter.cs'), committed);
     git('init', '-q');
@@ -785,19 +829,49 @@ describe('multi-file cleanup preview: scopes', () => {
       activate: () => Promise.resolve({ getAPI: () => ({ repositories: [{ state: { workingTreeChanges: [{ uri: Uri.file(counter) }] } }] }) }),
     });
     user((picker) => {
-      expect(picker.items[0].detail).toContain('rules cannot be chosen one by one');
+      expect(picker.items[0].detail).toContain('Only the lines changed since the last commit are cleaned.');
       picker.accept();
     });
 
     await run('codeJanitor.previewCleanupChangedFiles');
-
-    const applied = textOf(counter);
     state.documents = [];
     state.files.set(counter, edited);
     await runCleanupOnUris(createContext(), [Uri.file(counter)], { honorOnlyChangedLines: true });
-    expect(applied).toBe(state.files.get(counter));
-    expect(applied).toContain('        if (value > 0)\n        {\n            Remove(value - 1);');
-    expect(applied).toContain('        if (value > 0)\n            Add(value - 1);');
+
+    // The plan, and the ordinary Cleanup Changed Files, send the lines changed since HEAD.
+    expect(engine.requests('cleanup').map((params) => params.changedLines)).toEqual([[{ start: 10, end: 15 }], [{ start: 10, end: 15 }]]);
+  });
+
+  it('fails the plan of a file whose last commit Git cannot read while onlyChangedLines is on', async () => {
+    const root = tempDirectory();
+    const counter = path.join(root, 'Counter.cs');
+    state.files.set(counter, 'class Counter { }   \n');
+    state.configuration.set('codeJanitor.cleanup.onlyChangedLines', true);
+
+    const plan = await buildCleanupPreviewPlan([Uri.file(counter)], { honorOnlyChangedLines: true });
+
+    expect(plan.files[0].status).toBe('error');
+    expect(plan.files[0].message).toMatch(
+      /^Error: only the lines changed since the last commit are cleaned \(codeJanitor\.cleanup\.onlyChangedLines\) and .*not in a Git repository/
+    );
+    expect(engine.requests('cleanup')).toEqual([]);
+  });
+
+  it('plans the whole file, without a changed-lines note, when onlyChangedLines is off, even for the changed-files preview', async () => {
+    const root = tempDirectory();
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: root, stdio: 'pipe' });
+    const counter = path.join(root, 'Counter.cs');
+    fs.writeFileSync(counter, 'class Counter { }\n');
+    git('init', '-q');
+    git('add', '.');
+    git('commit', '-q', '-m', 'initial');
+    state.files.set(counter, 'class Counter { }   \n');
+
+    const plan = await buildCleanupPreviewPlan([Uri.file(counter)], { honorOnlyChangedLines: true });
+
+    expect(plan.files[0].status).not.toBe('error');
+    expect(plan.files[0].notes).not.toContain('Only the lines changed since the last commit are cleaned.');
+    expect(engine.requests('cleanup')[0]).not.toHaveProperty('changedLines');
   });
 
   it('previews the C# files of the workspace', async () => {

@@ -1,10 +1,8 @@
-import { editorConfigCatalog } from '../src/cleanup/editorConfigRegistry';
-
 /**
  * The `.editorconfig` written by `scripts/generate-editorconfig.ts`: every C# code-style,
- * formatting and naming option Microsoft documents, set to its documented default value, with
- * severities taken from Code Janitor's registry so that everything cleanup applies is enforced
- * (`warning`) and the rest stays visible without breaking builds (`suggestion`).
+ * formatting and naming option Microsoft documents, set to its documented default value, with every
+ * documented style rule and the code-quality rules below enforced (`warning`), so that cleanup (the
+ * Roslyn engine, which runs the code fix of every enforced rule) applies them all.
  *
  * Sources (checked against the dotnet/docs repository):
  * - option defaults: the "Default option value" row of each rule page, and the example file of
@@ -20,8 +18,6 @@ interface Section {
   readonly title: string;
   /** Documentation pages the values come from. */
   readonly sources: readonly string[];
-  /** Remarks written after the sources, before the options. */
-  readonly notes?: readonly string[];
   readonly options: readonly (readonly [key: string, value: string])[];
 }
 
@@ -137,10 +133,6 @@ const CSHARP_CONVENTIONS: readonly Section[] = [
   {
     title: 'var preferences (IDE0007, IDE0008)',
     sources: [rule('ide0007-ide0008')],
-    notes: [
-      'csharp_style_var_elsewhere = false cannot be fully enforced without a compiler: cleanup keeps var',
-      'wherever the type cannot be known from the syntax and reports it once per file.',
-    ],
     options: [
       ['csharp_style_var_elsewhere', 'false'],
       ['csharp_style_var_for_built_in_types', 'false'],
@@ -402,22 +394,167 @@ const NAMING: readonly NamingConvention[] = [
  * out: none has a code-style fix.
  */
 const STYLE_RULE_IDS = [
-  'IDE0001', 'IDE0002', 'IDE0003', 'IDE0004', 'IDE0005', 'IDE0007', 'IDE0008', 'IDE0009', 'IDE0010', 'IDE0011',
-  'IDE0016', 'IDE0017', 'IDE0018', 'IDE0019', 'IDE0020', 'IDE0021', 'IDE0022', 'IDE0023', 'IDE0024', 'IDE0025',
-  'IDE0026', 'IDE0027', 'IDE0028', 'IDE0029', 'IDE0030', 'IDE0031', 'IDE0032', 'IDE0033', 'IDE0034', 'IDE0035',
-  'IDE0036', 'IDE0037', 'IDE0038', 'IDE0039', 'IDE0040', 'IDE0041', 'IDE0042', 'IDE0043', 'IDE0044', 'IDE0045',
-  'IDE0046', 'IDE0047', 'IDE0048', 'IDE0049', 'IDE0050', 'IDE0051', 'IDE0052', 'IDE0053', 'IDE0054', 'IDE0055',
-  'IDE0056', 'IDE0057', 'IDE0058', 'IDE0059', 'IDE0060', 'IDE0061', 'IDE0062', 'IDE0063', 'IDE0064', 'IDE0065',
-  'IDE0066', 'IDE0070', 'IDE0071', 'IDE0072', 'IDE0073', 'IDE0074', 'IDE0075', 'IDE0076', 'IDE0077', 'IDE0078',
-  'IDE0079', 'IDE0080', 'IDE0082', 'IDE0083', 'IDE0090', 'IDE0100', 'IDE0110', 'IDE0120', 'IDE0121', 'IDE0130',
-  'IDE0150', 'IDE0160', 'IDE0161', 'IDE0170', 'IDE0180', 'IDE0200', 'IDE0210', 'IDE0211', 'IDE0220', 'IDE0221',
-  'IDE0230', 'IDE0240', 'IDE0241', 'IDE0250', 'IDE0251', 'IDE0260', 'IDE0270', 'IDE0280', 'IDE0290', 'IDE0300',
-  'IDE0301', 'IDE0302', 'IDE0303', 'IDE0304', 'IDE0305', 'IDE0306', 'IDE0320', 'IDE0330', 'IDE0340', 'IDE0350',
-  'IDE0360', 'IDE0370', 'IDE0380', 'IDE0390', 'IDE0391', 'IDE0410', 'IDE1005', 'IDE1006', 'IDE2000', 'IDE2001',
-  'IDE2002', 'IDE2003', 'IDE2004', 'IDE2005', 'IDE2006',
+  'IDE0001',
+  'IDE0002',
+  'IDE0003',
+  'IDE0004',
+  'IDE0005',
+  'IDE0007',
+  'IDE0008',
+  'IDE0009',
+  'IDE0010',
+  'IDE0011',
+  'IDE0016',
+  'IDE0017',
+  'IDE0018',
+  'IDE0019',
+  'IDE0020',
+  'IDE0021',
+  'IDE0022',
+  'IDE0023',
+  'IDE0024',
+  'IDE0025',
+  'IDE0026',
+  'IDE0027',
+  'IDE0028',
+  'IDE0029',
+  'IDE0030',
+  'IDE0031',
+  'IDE0032',
+  'IDE0033',
+  'IDE0034',
+  'IDE0035',
+  'IDE0036',
+  'IDE0037',
+  'IDE0038',
+  'IDE0039',
+  'IDE0040',
+  'IDE0041',
+  'IDE0042',
+  'IDE0043',
+  'IDE0044',
+  'IDE0045',
+  'IDE0046',
+  'IDE0047',
+  'IDE0048',
+  'IDE0049',
+  'IDE0050',
+  'IDE0051',
+  'IDE0052',
+  'IDE0053',
+  'IDE0054',
+  'IDE0055',
+  'IDE0056',
+  'IDE0057',
+  'IDE0058',
+  'IDE0059',
+  'IDE0060',
+  'IDE0061',
+  'IDE0062',
+  'IDE0063',
+  'IDE0064',
+  'IDE0065',
+  'IDE0066',
+  'IDE0070',
+  'IDE0071',
+  'IDE0072',
+  'IDE0073',
+  'IDE0074',
+  'IDE0075',
+  'IDE0076',
+  'IDE0077',
+  'IDE0078',
+  'IDE0079',
+  'IDE0080',
+  'IDE0082',
+  'IDE0083',
+  'IDE0090',
+  'IDE0100',
+  'IDE0110',
+  'IDE0120',
+  'IDE0121',
+  'IDE0130',
+  'IDE0150',
+  'IDE0160',
+  'IDE0161',
+  'IDE0170',
+  'IDE0180',
+  'IDE0200',
+  'IDE0210',
+  'IDE0211',
+  'IDE0220',
+  'IDE0221',
+  'IDE0230',
+  'IDE0240',
+  'IDE0241',
+  'IDE0250',
+  'IDE0251',
+  'IDE0260',
+  'IDE0270',
+  'IDE0280',
+  'IDE0290',
+  'IDE0300',
+  'IDE0301',
+  'IDE0302',
+  'IDE0303',
+  'IDE0304',
+  'IDE0305',
+  'IDE0306',
+  'IDE0320',
+  'IDE0330',
+  'IDE0340',
+  'IDE0350',
+  'IDE0360',
+  'IDE0370',
+  'IDE0380',
+  'IDE0390',
+  'IDE0391',
+  'IDE0410',
+  'IDE1005',
+  'IDE1006',
+  'IDE2000',
+  'IDE2001',
+  'IDE2002',
+  'IDE2003',
+  'IDE2004',
+  'IDE2005',
+  'IDE2006',
 ];
 
-/** Options of code-quality rules cleanup applies, with the documented reason for the value. */
+/** The code-quality (CA) rules the generated file enforces. */
+const QUALITY_RULE_IDS = [
+  'CA1305',
+  'CA1307',
+  'CA1310',
+  'CA1507',
+  'CA1805',
+  'CA1822',
+  'CA1825',
+  'CA1827',
+  'CA1828',
+  'CA1829',
+  'CA1834',
+  'CA1836',
+  'CA1841',
+  'CA1847',
+  'CA1852',
+  'CA1854',
+  'CA1858',
+  'CA1860',
+  'CA1861',
+  'CA1862',
+  'CA1864',
+  'CA1865',
+  'CA1866',
+  'CA1867',
+  'CA1868',
+  'CA1869',
+  'CA2016',
+  'CA2249',
+  'CA2263',
+];
+
+/** Options of the code-quality rules, with the documented reason for the value. */
 const QUALITY_RULE_OPTIONS: Readonly<Record<string, readonly (readonly [key: string, value: string, why: string])[]>> = {
   CA1822: [
     [
@@ -445,13 +582,7 @@ const ONE_TYPE_PER_FILE: readonly (readonly [id: string, url: string])[] = [
 ];
 
 function renderSection(section: Section): string[] {
-  return [
-    `# ${section.title}`,
-    ...section.sources.map((source) => `# ${source}`),
-    ...(section.notes ?? []).map((note) => `# ${note}`),
-    ...section.options.map(([key, value]) => `${key} = ${value}`),
-    '',
-  ];
+  return [`# ${section.title}`, ...section.sources.map((source) => `# ${source}`), ...section.options.map(([key, value]) => `${key} = ${value}`), ''];
 }
 
 function renderNaming(): string[] {
@@ -485,34 +616,21 @@ function renderNaming(): string[] {
   return lines;
 }
 
-function renderSeverities(diagnostics: ReadonlySet<string>): string[] {
-  const applied = STYLE_RULE_IDS.filter((id) => diagnostics.has(id));
-  const reported = STYLE_RULE_IDS.filter((id) => !diagnostics.has(id));
-
+function renderSeverities(): string[] {
   return [
     '#### Code-style rule severities ####',
     `# ${STYLE_RULES}/`,
     '# Rule-ID severities are respected at build time on every SDK, unlike the option:severity suffix',
     '# (see "Option format" on the language-rules page).',
     '',
-    '# Applied by Code Janitor cleanup: enforced as warnings.',
-    ...applied.map((id) => `dotnet_diagnostic.${id}.severity = warning`),
-    '',
-    '# Not applied by Code Janitor cleanup (listed in its output channel): suggestions, so Visual Studio',
-    '# and dotnet format still offer the fix without failing builds.',
-    ...reported.map((id) => `dotnet_diagnostic.${id}.severity = suggestion`),
+    ...STYLE_RULE_IDS.map((id) => `dotnet_diagnostic.${id}.severity = warning`),
     '',
   ];
 }
 
-function renderQualityRules(diagnostics: ReadonlySet<string>): string[] {
-  const lines = [
-    '#### Code-quality rules applied by Code Janitor cleanup ####',
-    `# ${QUALITY_RULES}/`,
-    '# Other CA rules keep the SDK defaults (see <AnalysisMode> in the project file).',
-    '',
-  ];
-  for (const id of [...diagnostics].filter((candidate) => candidate.startsWith('CA')).sort()) {
+function renderQualityRules(): string[] {
+  const lines = ['#### Code-quality rules ####', `# ${QUALITY_RULES}/`, '# Other CA rules keep the SDK defaults (see <AnalysisMode> in the project file).', ''];
+  for (const id of QUALITY_RULE_IDS) {
     lines.push(`# ${QUALITY_RULES}/${id.toLowerCase()}`);
     for (const [key, value, why] of QUALITY_RULE_OPTIONS[id] ?? []) {
       lines.push(`# ${why}`, `${key} = ${value}`);
@@ -532,13 +650,15 @@ function renderOneTypePerFile(): string[] {
   ];
 }
 
+/** The diagnostics the generated file enforces, in the order it lists them. */
+export const ENFORCED_DIAGNOSTIC_IDS: readonly string[] = [...STYLE_RULE_IDS, ...QUALITY_RULE_IDS, ...ONE_TYPE_PER_FILE.map(([id]) => id)];
+
 /** The generated `.editorconfig` text. */
 export function renderEditorConfig(): string {
-  const { diagnostics } = editorConfigCatalog();
   const lines = [
     '# Generated by scripts/generate-editorconfig.ts from the Microsoft .NET code analysis documentation.',
-    '# Every value is the documented default; severities come from Code Janitor: what cleanup applies is',
-    '# a warning, the other documented style rules are suggestions.',
+    '# Every value is the documented default; every documented style rule and the listed code-quality',
+    '# rules are warnings, so that Code Janitor cleanup applies them.',
     `# ${STYLE_RULES}/`,
     'root = true',
     '',
@@ -557,8 +677,8 @@ export function renderEditorConfig(): string {
     '',
     ...FORMATTING.flatMap(renderSection),
     ...renderNaming(),
-    ...renderSeverities(diagnostics),
-    ...renderQualityRules(diagnostics),
+    ...renderSeverities(),
+    ...renderQualityRules(),
     ...renderOneTypePerFile(),
   ];
 

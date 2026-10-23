@@ -45,7 +45,7 @@ export function projectFiles(folder: string, relative = ''): string[] {
 
 /** Copies a project folder (without build output) to a new temporary folder. */
 export function copyProject(source: string): string {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-razor-'));
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cj-razor-')));
   for (const file of projectFiles(source)) {
     fs.mkdirSync(path.dirname(path.join(folder, file)), { recursive: true });
     fs.copyFileSync(path.join(source, file), path.join(folder, file));

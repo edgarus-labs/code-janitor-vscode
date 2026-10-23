@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { lineRangeToSort, sortLineRange } from '../reorganize/sortLines';
+import { lineRangeToSort, sortLineRange } from '../text/sortLines';
 
 /**
  * Replaces the document's text with `newText`, changing only the part between the common start and

@@ -1,17 +1,15 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { CleanupFinding, analyzeCleanup, applyRuleOnly, fixFindingOccurrence } from '../cleanup/analysis';
-import { EditorConfigSeverity } from '../cleanup/editorconfig';
-import { discoverDisqualifiedTypeNames } from '../cleanup/transformations/sealedClass';
 import { REPOSITORY_CONFIG_NAMES } from '../cleanup/repositoryOverrides';
+import { EngineDiagnostic } from '../engine/protocol';
+import { documentParams, engine, reportEngineUnavailable } from '../engine/vscodeEngine';
 import { logError, logInfo } from '../logging';
-import { isPathCleanable } from './cleanupCore';
-import { readCleanupSettingsForUri } from './settings';
+import { applyFileOutcome, engineOutcome, isPathCleanable } from './cleanupCore';
 
 /**
  * `.editorconfig` violations as diagnostics ("Code Janitor" in the Problems panel): what cleanup
- * would change per rule and what it cannot fix, computed a moment after a C# document is shown in an
- * editor tab or changes, and dropped when the document changed again meanwhile. Documents a command
+ * would fix and what it cannot, as the C# engine analyzes them a moment after a C# document is shown
+ * in an editor tab or changes, and dropped when the document changed again meanwhile. Documents a command
  * opens without showing them (the preview apply, the rename) are not analyzed. Quick fixes fix one
  * occurrence, every occurrence of the rule in the file, or run the whole cleanup.
  */
@@ -22,18 +20,20 @@ export const ANALYSIS_DELAY_MS = 500;
 /** The files whose saving changes the settings of every document (matched ignoring case). */
 const SETTINGS_FILE_NAMES: ReadonlySet<string> = new Set(['.editorconfig', '.globalconfig', ...REPOSITORY_CONFIG_NAMES]);
 
-const SEVERITIES: Readonly<Record<EditorConfigSeverity, vscode.DiagnosticSeverity | undefined>> = {
+/** The engine's severities (`.editorconfig` and Roslyn names alike); hidden ones are not shown. */
+const SEVERITIES: Readonly<Record<string, vscode.DiagnosticSeverity | undefined>> = {
   error: vscode.DiagnosticSeverity.Error,
   warning: vscode.DiagnosticSeverity.Warning,
   suggestion: vscode.DiagnosticSeverity.Information,
+  info: vscode.DiagnosticSeverity.Information,
   silent: undefined,
+  hidden: undefined,
   none: undefined,
 };
 
 /** Documentation of a rule, by the prefix of its id. */
 const DOCUMENTATION: Readonly<Record<string, (id: string) => string>> = {
-  IDE: (id) =>
-    `https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/${id === 'IDE1006' ? 'naming-rules' : id.toLowerCase()}`,
+  IDE: (id) => `https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/${id === 'IDE1006' ? 'naming-rules' : id.toLowerCase()}`,
   CA: (id) => `https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/${id.toLowerCase()}`,
   SA: (id) => `https://github.com/DotNetAnalyzers/StyleCopAnalyzers/blob/master/documentation/${id}.md`,
   MA: (id) => `https://github.com/meziantou/Meziantou.Analyzer/blob/main/docs/Rules/${id}.md`,
@@ -41,26 +41,27 @@ const DOCUMENTATION: Readonly<Record<string, (id: string) => string>> = {
 
 interface Analyzed {
   readonly version: number;
-  readonly entries: readonly { readonly diagnostic: vscode.Diagnostic; readonly finding: CleanupFinding }[];
-  /** Occurrence fixes already computed, by finding. */
-  readonly occurrenceFixes: Map<CleanupFinding, string | undefined>;
+  readonly entries: readonly { readonly diagnostic: vscode.Diagnostic; readonly finding: EngineDiagnostic }[];
+}
+
+/** A quick fix of one occurrence; its edit is computed by the engine when VS Code resolves it. */
+class OccurrenceFix extends vscode.CodeAction {
+  constructor(
+    readonly document: vscode.TextDocument,
+    readonly version: number,
+    readonly finding: EngineDiagnostic
+  ) {
+    super(`Fix ${finding.id}`, vscode.CodeActionKind.QuickFix);
+  }
 }
 
 export function registerCleanupDiagnostics(context: vscode.ExtensionContext): void {
   const collection = vscode.languages.createDiagnosticCollection(SOURCE);
   const diagnostics = new CleanupDiagnostics(collection);
 
-  // The other files of a document's folder are read once; a file created, changed or deleted is read again.
-  const csharpFiles = vscode.workspace.createFileSystemWatcher('**/*.cs');
-  const onDisk = (uri: vscode.Uri) => diagnostics.invalidateFile(uri);
-
   context.subscriptions.push(
     collection,
     diagnostics,
-    csharpFiles,
-    csharpFiles.onDidCreate(onDisk),
-    csharpFiles.onDidChange(onDisk),
-    csharpFiles.onDidDelete(onDisk),
     vscode.workspace.onDidOpenTextDocument((document) => diagnostics.schedule(document)),
     vscode.workspace.onDidChangeTextDocument((event) => diagnostics.schedule(event.document)),
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.forget(document.uri)),
@@ -72,9 +73,6 @@ export function registerCleanupDiagnostics(context: vscode.ExtensionContext): vo
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (SETTINGS_FILE_NAMES.has(path.win32.basename(document.uri.fsPath).toLowerCase())) {
         diagnostics.refreshAll();
-      } else {
-        // The watcher only sees the workspace folders; a file saved outside them changed on disk too.
-        diagnostics.invalidateFile(document.uri);
       }
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -91,21 +89,26 @@ export function registerCleanupDiagnostics(context: vscode.ExtensionContext): vo
   vscode.workspace.textDocuments.forEach((document) => diagnostics.schedule(document));
 }
 
-export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Disposable {
+export class CleanupDiagnostics implements vscode.CodeActionProvider<vscode.CodeAction>, vscode.Disposable {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly analyzed = new Map<string, Analyzed>();
-  /** The entries of each folder read so far, by folder path. */
-  private readonly folders = new Map<string, Promise<readonly [string, vscode.FileType][]>>();
-  /** The type names each `.cs` file read so far disqualifies from sealing, by file path. */
-  private readonly disqualifiedByFile = new Map<string, Promise<ReadonlySet<string>>>();
+  /** The analysis the engine is running for each document, with the version it was started for. */
+  private readonly inFlight = new Map<string, { readonly source: vscode.CancellationTokenSource; readonly version: number }>();
 
   constructor(private readonly collection: vscode.DiagnosticCollection) {}
 
-  /** Analyzes `document` once it has not changed for {@link ANALYSIS_DELAY_MS}; clears it when it is not analyzed. */
+  /**
+   * Analyzes `document` once it has not changed for {@link ANALYSIS_DELAY_MS}; clears it when it is not analyzed. An
+   * analysis of an older text still running in the engine is cancelled.
+   */
   schedule(document: vscode.TextDocument): void {
     const key = document.uri.toString();
     clearTimeout(this.timers.get(key));
     this.timers.delete(key);
+    if (this.inFlight.get(key)?.version !== document.version) {
+      this.cancelAnalysis(key);
+    }
+
     if (!this.isAnalyzed(document)) {
       this.forget(document.uri);
 
@@ -121,9 +124,16 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     );
   }
 
-  /** Clears what is known of `uri`; the Problems panel is updated only when it shows something for it. */
+  /**
+   * Clears what is known of `uri`, its pending and running analysis included; the Problems panel is updated only when it
+   * shows something for it.
+   */
   forget(uri: vscode.Uri): void {
-    this.analyzed.delete(uri.toString());
+    const key = uri.toString();
+    clearTimeout(this.timers.get(key));
+    this.timers.delete(key);
+    this.cancelAnalysis(key);
+    this.analyzed.delete(key);
     if (this.collection.has(uri)) {
       this.collection.delete(uri);
     }
@@ -131,20 +141,23 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
 
   refreshAll(): void {
     this.analyzed.clear();
+    this.cancelAllAnalyses();
     vscode.workspace.textDocuments.forEach((document) => this.schedule(document));
-  }
-
-  /** `uri` was created, changed or deleted on disk: it and its folder's entries are read again when needed. */
-  invalidateFile(uri: vscode.Uri): void {
-    this.disqualifiedByFile.delete(uri.fsPath);
-    this.folders.delete(path.dirname(uri.fsPath));
   }
 
   dispose(): void {
     this.timers.forEach((timer) => clearTimeout(timer));
     this.timers.clear();
-    this.folders.clear();
-    this.disqualifiedByFile.clear();
+    this.cancelAllAnalyses();
+  }
+
+  private cancelAllAnalyses(): void {
+    [...this.inFlight.keys()].forEach((key) => this.cancelAnalysis(key));
+  }
+
+  private cancelAnalysis(key: string): void {
+    this.inFlight.get(key)?.source.cancel();
+    this.inFlight.delete(key);
   }
 
   provideCodeActions(document: vscode.TextDocument, _range: vscode.Range, context: vscode.CodeActionContext): vscode.CodeAction[] {
@@ -157,23 +170,19 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     const fixAll = new Set<string>();
     for (const diagnostic of context.diagnostics.filter((candidate) => candidate.source === SOURCE)) {
       const finding = analyzed.entries.find((entry) => sameDiagnostic(entry.diagnostic, diagnostic))?.finding;
-      if (!finding?.fixable || !finding.ruleId) {
+      if (!finding?.fixable) {
         continue;
       }
 
-      const fixed = this.occurrenceFix(document, analyzed, finding);
-      if (fixed !== undefined) {
-        const action = new vscode.CodeAction(`Fix ${finding.ruleId}`, vscode.CodeActionKind.QuickFix);
-        action.edit = replaceText(document, fixed);
-        action.diagnostics = [diagnostic];
-        action.isPreferred = true;
-        actions.push(action);
-      }
+      const occurrence = new OccurrenceFix(document, document.version, finding);
+      occurrence.diagnostics = [diagnostic];
+      occurrence.isPreferred = true;
+      actions.push(occurrence);
 
-      if (!fixAll.has(finding.ruleId)) {
-        fixAll.add(finding.ruleId);
-        const action = new vscode.CodeAction(`Fix all ${finding.ruleId} in file`, vscode.CodeActionKind.QuickFix);
-        action.command = { title: action.title, command: 'codeJanitor.fixRuleInFile', arguments: [document.uri, finding.ruleId] };
+      if (!fixAll.has(finding.id)) {
+        fixAll.add(finding.id);
+        const action = new vscode.CodeAction(`Fix all ${finding.id} in file`, vscode.CodeActionKind.QuickFix);
+        action.command = { title: action.title, command: 'codeJanitor.fixRuleInFile', arguments: [document.uri, finding.id] };
         actions.push(action);
       }
     }
@@ -185,6 +194,27 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     }
 
     return actions;
+  }
+
+  /** The edit of a "Fix <ID>" quick fix: the engine fixes the rule on the diagnostic's line only. */
+  async resolveCodeAction(action: vscode.CodeAction, token: vscode.CancellationToken): Promise<vscode.CodeAction> {
+    if (!(action instanceof OccurrenceFix) || action.document.isClosed || action.document.version !== action.version) {
+      return action;
+    }
+
+    const text = action.document.getText();
+    try {
+      const result = await engine().fixRule({ ...documentParams(action.document.uri, text), ruleId: action.finding.id, line: action.finding.startLine }, token);
+      if (action.document.version === action.version && result.text !== text && result.otherFiles.length === 0 && result.newFiles.length === 0) {
+        action.edit = replaceText(action.document, result.text.replace(/^\uFEFF/, ''));
+      }
+    } catch (err) {
+      if (!token.isCancellationRequested && !reportEngineUnavailable(err)) {
+        logError(`Fix ${action.finding.id} in ${action.document.uri.fsPath}`, err);
+      }
+    }
+
+    return action;
   }
 
   /** "Fix all <ID> in file": applies only that rule to the open document, as one edit. */
@@ -202,23 +232,35 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
       return;
     }
 
-    const text = document.getText();
-    const settings = readCleanupSettingsForUri(uri);
-    const fixed = applyRuleOnly(text, uri.fsPath, settings, ruleId, (await this.folderFacts(uri, text)).disqualifiedTypeNames);
-    if (document.getText() !== text) {
+    const file = { uri, content: document.getText(), isOpen: true };
+    let outcome;
+    try {
+      outcome = engineOutcome(uri, await engine().fixRule({ ...documentParams(uri, file.content), ruleId }), `Fix all ${ruleId}`);
+    } catch (err) {
+      if (!reportEngineUnavailable(err)) {
+        logError(`Fix all ${ruleId} in ${uri.fsPath}`, err);
+        void vscode.window.showWarningMessage(`Code Janitor: ${ruleId} was not fixed in ${uri.fsPath} - ${(err as Error).message}`);
+      }
+
+      return;
+    }
+
+    if (document.getText() !== file.content) {
       void vscode.window.showWarningMessage(`Code Janitor: ${uri.fsPath} changed while ${ruleId} was being fixed; nothing was changed.`);
 
       return;
     }
 
-    if (fixed === text) {
+    if (outcome.text === file.content && outcome.otherFiles.length === 0 && outcome.newFiles.length === 0) {
       void vscode.window.showInformationMessage(`Code Janitor: nothing to fix for ${ruleId}.`);
 
       return;
     }
 
-    if (!(await vscode.workspace.applyEdit(replaceText(document, fixed)))) {
-      void vscode.window.showWarningMessage(`Code Janitor: VS Code did not apply the fix of ${ruleId} to ${uri.fsPath}.`);
+    try {
+      await applyFileOutcome(file, outcome);
+    } catch (err) {
+      void vscode.window.showWarningMessage(`Code Janitor: the fix of ${ruleId} was not applied to ${uri.fsPath} - ${(err as Error).message}`);
 
       return;
     }
@@ -240,102 +282,63 @@ export class CleanupDiagnostics implements vscode.CodeActionProvider, vscode.Dis
     );
   }
 
-  /**
-   * The type names `text` and the other `.cs` files of its folder disqualify from sealing, and the
-   * `.cs` names of the folder. The folder and its files are read once, until {@link invalidateFile}.
-   */
-  private async folderFacts(uri: vscode.Uri, text: string): Promise<{ disqualifiedTypeNames: Set<string>; siblingFileNames: Set<string> }> {
-    const directory = path.dirname(uri.fsPath);
-    let entries = this.folders.get(directory);
-    if (!entries) {
-      entries = Promise.resolve(vscode.workspace.fs.readDirectory(vscode.Uri.file(directory))).catch(() => []);
-      this.folders.set(directory, entries);
-    }
-
-    const csharp = (await entries).filter(([name]) => name.toLowerCase().endsWith('.cs'));
-    const disqualifiedTypeNames = discoverDisqualifiedTypeNames([text]);
-    for (const [name, type] of csharp) {
-      const file = path.join(directory, name);
-      if ((type & vscode.FileType.File) !== 0 && file !== uri.fsPath) {
-        (await this.disqualifiedBy(file)).forEach((typeName) => disqualifiedTypeNames.add(typeName));
-      }
-    }
-
-    return { disqualifiedTypeNames, siblingFileNames: new Set(csharp.map(([name]) => name)) };
-  }
-
-  /** The type names the file on disk disqualifies from sealing; none when it cannot be read. */
-  private disqualifiedBy(file: string): Promise<ReadonlySet<string>> {
-    let names = this.disqualifiedByFile.get(file);
-    if (!names) {
-      names = Promise.resolve(vscode.workspace.fs.readFile(vscode.Uri.file(file))).then(
-        (bytes) => discoverDisqualifiedTypeNames([Buffer.from(bytes).toString('utf8')]),
-        () => new Set<string>()
-      );
-      this.disqualifiedByFile.set(file, names);
-    }
-
-    return names;
-  }
-
   private async analyze(document: vscode.TextDocument): Promise<void> {
     const key = document.uri.toString();
     const version = document.version;
-    if (this.analyzed.get(key)?.version === version) {
+    if (this.analyzed.get(key)?.version === version || this.inFlight.get(key)?.version === version) {
       return;
     }
 
+    const source = new vscode.CancellationTokenSource();
+    this.inFlight.set(key, { source, version });
     try {
-      const text = document.getText();
-      const { disqualifiedTypeNames, siblingFileNames } = await this.folderFacts(document.uri, text);
-      // Superseded while reading the folder: the newer version is analyzed instead.
-      if (document.isClosed || document.version !== version) {
+      const { diagnostics } = await engine().analyze(documentParams(document.uri, document.getText()), source.token);
+      // Superseded while the engine analyzed: the newer version is analyzed instead.
+      if (source.token.isCancellationRequested || document.isClosed || document.version !== version) {
         return;
       }
 
-      const settings = readCleanupSettingsForUri(document.uri);
-      const { findings } = analyzeCleanup(text, document.uri.fsPath, settings, { disqualifiedTypeNames, siblingFileNames });
-      const lines = text.split('\n');
-      const entries = findings.flatMap((finding) => {
-        const diagnostic = toDiagnostic(finding, lines);
+      const entries = diagnostics.flatMap((finding) => {
+        const diagnostic = toDiagnostic(finding);
 
         return diagnostic ? [{ diagnostic, finding }] : [];
       });
-      this.analyzed.set(key, { version, entries, occurrenceFixes: new Map() });
+      this.analyzed.set(key, { version, entries });
       this.collection.set(
         document.uri,
         entries.map((entry) => entry.diagnostic)
       );
     } catch (err) {
-      logError(`Code Janitor diagnostics of ${document.uri.fsPath}`, err);
+      if (source.token.isCancellationRequested) {
+        return;
+      }
+
+      if (!reportEngineUnavailable(err)) {
+        logError(`Code Janitor diagnostics of ${document.uri.fsPath}`, err);
+      }
+
       this.forget(document.uri);
-    }
-  }
+    } finally {
+      if (this.inFlight.get(key)?.source === source) {
+        this.inFlight.delete(key);
+      }
 
-  private occurrenceFix(document: vscode.TextDocument, analyzed: Analyzed, finding: CleanupFinding): string | undefined {
-    if (!analyzed.occurrenceFixes.has(finding)) {
-      const settings = readCleanupSettingsForUri(document.uri);
-      analyzed.occurrenceFixes.set(finding, fixFindingOccurrence(document.getText(), document.uri.fsPath, settings, finding));
+      source.dispose();
     }
-
-    return analyzed.occurrenceFixes.get(finding);
   }
 }
 
-function toDiagnostic(finding: CleanupFinding, lines: readonly string[]): vscode.Diagnostic | undefined {
-  const severity = finding.severity ? SEVERITIES[finding.severity] : vscode.DiagnosticSeverity.Information;
-  if (!finding.ruleId || finding.fileLevel || severity === undefined) {
+function toDiagnostic(finding: EngineDiagnostic): vscode.Diagnostic | undefined {
+  const severity = SEVERITIES[finding.severity.toLowerCase()];
+  if (severity === undefined) {
     return undefined;
   }
 
-  const range = new vscode.Range(
-    new vscode.Position(finding.startLine, finding.startCharacter ?? 0),
-    new vscode.Position(finding.endLine, finding.endCharacter ?? (lines[finding.endLine] ?? '').replace(/\r$/, '').length)
-  );
+  const range = new vscode.Range(new vscode.Position(finding.startLine, finding.startColumn), new vscode.Position(finding.endLine, finding.endColumn));
   const diagnostic = new vscode.Diagnostic(range, finding.fixable ? finding.message : `${finding.message} (not fixed by Code Janitor)`, severity);
   diagnostic.source = SOURCE;
-  const documentation = DOCUMENTATION[/^[A-Z]+/.exec(finding.ruleId)?.[0] ?? '']?.(finding.ruleId.split('/')[0]);
-  diagnostic.code = documentation ? { value: finding.ruleId, target: vscode.Uri.parse(documentation) } : finding.ruleId;
+  const documentation = finding.helpLink || DOCUMENTATION[/^[A-Z]+/.exec(finding.id)?.[0] ?? '']?.(finding.id);
+  diagnostic.code = documentation ? { value: finding.id, target: vscode.Uri.parse(documentation) } : finding.id;
 
   return diagnostic;
 }
@@ -372,11 +375,7 @@ function replaceText(document: vscode.TextDocument, text: string): vscode.Worksp
   }
 
   const edit = new vscode.WorkspaceEdit();
-  edit.replace(
-    document.uri,
-    new vscode.Range(document.positionAt(start), document.positionAt(current.length - end)),
-    text.slice(start, text.length - end)
-  );
+  edit.replace(document.uri, new vscode.Range(document.positionAt(start), document.positionAt(current.length - end)), text.slice(start, text.length - end));
 
   return edit;
 }

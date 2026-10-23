@@ -87,12 +87,7 @@ Refactoring Goals:
 5. Provide a summary of key changes made, followed by the complete refactored C# method.`;
 }
 
-export function buildTestsPrompt(
-  memberOrClassName: string,
-  codeSnippet: string,
-  testFramework: string,
-  mockingLibrary: string
-): string {
+export function buildTestsPrompt(memberOrClassName: string, codeSnippet: string, testFramework: string, mockingLibrary: string): string {
   return `Generate a comprehensive suite of unit tests for the following C# code ('${memberOrClassName}') using ${testFramework} and ${mockingLibrary}:
 
 \`\`\`csharp

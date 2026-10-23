@@ -10,9 +10,14 @@ const OWNER_WRITE_BIT = 0o200;
 
 /**
  * The Visual Studio navigation and workflow commands that have a VS Code equivalent, under
- * `codeJanitor.*` ids. Where VS Code already offers the behavior, the command delegates to it.
+ * `codeJanitor.*` ids. Where VS Code already offers the behavior, the command delegates to it. With
+ * `codeJanitor.collapsing.collapseExplorerWhenOpened`, the Explorer is collapsed once, when the workspace opens.
  */
 export function registerNavigationCommands(context: vscode.ExtensionContext): void {
+  if (vscode.workspace.getConfiguration('codeJanitor').get<boolean>('collapsing.collapseExplorerWhenOpened', false)) {
+    void vscode.commands.executeCommand('workbench.files.action.collapseExplorerFolders');
+  }
+
   context.subscriptions.push(
     vscode.commands.registerCommand('codeJanitor.switchFile', switchFile),
 
@@ -39,9 +44,7 @@ export function registerNavigationCommands(context: vscode.ExtensionContext): vo
       await vscode.commands.executeCommand('workbench.files.action.showActiveFileInExplorer');
     }),
 
-    vscode.commands.registerCommand('codeJanitor.collapseExplorer', () =>
-      vscode.commands.executeCommand('workbench.files.action.collapseExplorerFolders')
-    ),
+    vscode.commands.registerCommand('codeJanitor.collapseExplorer', () => vscode.commands.executeCommand('workbench.files.action.collapseExplorerFolders')),
 
     vscode.commands.registerCommand('codeJanitor.collapseSelectedInExplorer', async () => {
       // VS Code cannot collapse a selection recursively: this collapses the focused folder of the Explorer.

@@ -1,43 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { isEnforced, resolveDiagnosticSeverity, resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
-import { editorConfigCatalog, effectiveEditorConfigValue, unsupportedEditorConfigSettings } from '../src/cleanup/editorConfigRegistry';
-import { renderEditorConfig } from '../scripts/editorConfigTemplate';
-
-/**
- * Supported settings the generated file leaves out on purpose: the documentation defines no value
- * for them (`charset`, `trim_trailing_whitespace`) or documents `unset` (`file_header_template`).
- */
-const UNDOCUMENTED_SETTINGS = ['charset', 'trim_trailing_whitespace', 'file_header_template'];
-
-/** MA0048 (Meziantou) duplicates SA1402 + SA1649, which the generated file enables instead. */
-const DUPLICATE_DIAGNOSTICS = ['MA0048'];
+import { CODE_STYLE_RULES } from '../src/cleanup/codeStyleRules';
+import { resolveEditorConfigProperties } from '../src/cleanup/editorconfig';
+import { ENFORCED_DIAGNOSTIC_IDS, renderEditorConfig } from '../scripts/editorConfigTemplate';
 
 describe('generated .editorconfig (scripts/generate-editorconfig.ts)', () => {
-  const props = resolveEditorConfigProperties([{ directory: '/repo', text: renderEditorConfig() }], '/repo/src/Sample.cs');
-  const catalog = editorConfigCatalog();
+  const text = renderEditorConfig();
+  const props = resolveEditorConfigProperties([{ directory: '/repo', text }], '/repo/src/Sample.cs');
 
-  it('makes every setting cleanup supports take effect', () => {
-    const ignored = catalog.settings.filter(
-      (key) => !UNDOCUMENTED_SETTINGS.includes(key) && effectiveEditorConfigValue(props, key) === undefined
-    );
-
-    expect(ignored).toEqual([]);
+  it('enforces every documented style rule, so that the Roslyn engine applies each one it can fix', () => {
+    expect(props.get('dotnet_diagnostic.IDE0010.severity')).toBe('warning');
+    expect(props.get('dotnet_diagnostic.IDE0055.severity')).toBe('warning');
+    expect(text).not.toMatch(/severity = suggestion/);
   });
 
-  it('enforces every diagnostic cleanup honors', () => {
-    const notEnforced = [...catalog.diagnostics].filter(
-      (id) => !DUPLICATE_DIAGNOSTICS.includes(id) && !isEnforced(resolveDiagnosticSeverity(props, id))
-    );
-
-    expect(notEnforced).toEqual([]);
+  it('enforces every diagnostic it lists, once', () => {
+    expect(ENFORCED_DIAGNOSTIC_IDS.filter((id) => props.get(`dotnet_diagnostic.${id}.severity`) !== 'warning')).toEqual([]);
+    expect(new Set(ENFORCED_DIAGNOSTIC_IDS).size).toBe(ENFORCED_DIAGNOSTIC_IDS.length);
   });
 
-  it('writes only values cleanup accepts for the settings it supports', () => {
-    expect(unsupportedEditorConfigSettings(props).filter((message) => message.includes('has an unsupported value'))).toEqual([]);
-  });
-
-  it('keeps rules cleanup does not apply at suggestion, so they are offered but never break a build', () => {
-    expect(resolveDiagnosticSeverity(props, 'IDE0010')).toBe('suggestion');
-    expect(resolveDiagnosticSeverity(props, 'IDE0055')).toBe('warning');
+  it('sets the option of every Code Style rule of the catalog', () => {
+    expect(CODE_STYLE_RULES.filter((rule) => props.get(rule.key) === undefined).map((rule) => rule.key)).toEqual([]);
   });
 });

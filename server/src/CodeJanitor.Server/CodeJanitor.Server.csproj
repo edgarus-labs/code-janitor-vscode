@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- MSBuild runs in Roslyn's out-of-process BuildHost; the StringTools copied here is StreamJsonRpc's (MessagePack), never MSBuild's. -->
+    <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodeJanitor.Engine\CodeJanitor.Engine.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="$(RoslynVersion)" PrivateAssets="none" />
+    <PackageReference Include="Microsoft.Build.Locator" Version="1.11.2" PrivateAssets="build;buildTransitive;analyzers;contentFiles" />
+    <PackageReference Include="Microsoft.Build.Framework" Version="17.11.48" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="StreamJsonRpc" Version="2.26.150" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodeJanitor.Engine.Tests" />
+  </ItemGroup>
+</Project>
