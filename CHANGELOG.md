@@ -26,9 +26,10 @@ First release of the Visual Studio Code port.
 - **CI.** Lint and format run first. The server is then built once in Release, tested and shared with the other jobs as an artifact, so
   the tests run on the binaries that are shipped. Build and Test, the e2e tests, the compiler tests (one job per category of
   `test/compilerTests.json`), the compile oracle and the testbed run on Linux (`ubuntu-26.04`) with Node.js 24 and the .NET 10 SDK
-  (`10.0.x`). A new push cancels the run still going for the same branch.
-- **Release.** The server is built and tested once in Release and one `.vsix` is packaged for every platform (the server is
-  framework-dependent and started with `dotnet`), then attached to a draft GitHub Release.
+  (`10.0.x`). A new push to a pull request cancels the run still going for it; runs on `develop` and `main` are not cancelled.
+- **Release.** It runs after the CI workflow has passed on the tagged commit. The server is built and tested once in Release and
+  one `.vsix` is packaged for every platform (the server is framework-dependent and started with `dotnet`), its files are checked as
+  in CI, and it is attached to a draft GitHub Release. A manual run from a branch builds the package but creates no release.
 - **Cleanup per language.** Files that are not C# get the cleanup steps of their language family, as in Visual Studio: C-family
   languages (C/C++, CSS, LESS, SCSS, JavaScript, TypeScript, JSON, PHP, PowerShell, R) the blank line rules at braces and the padding
   before `//` comments; HTML, XAML and XML the three markup rules (never inside comments, CDATA, attribute values or HTML `script`,
@@ -40,7 +41,8 @@ First release of the Visual Studio Code port.
 - **Files outside the workspace folders** (`codeJanitor.cleanup.performPartialCleanupOnExternal`: `ask`, `always`, `never`): `ask`
   asks once per cleanup run (Yes / No / Always / Never; Always and Never are saved in the user settings). A partial cleanup leaves
   the using directives alone and never changes or creates other files; on save a file outside the folders is cleaned partially
-  without asking, unless the setting is `never`.
+  without asking, unless the setting is `never`. The cleanup previews do the same without asking (the preview is the
+  confirmation): a file outside the folders is previewed as a partial cleanup and skipped when the setting is `never`.
 - **Cleanup on save** never moves a type to its own file (SA1402/MA0048 are reported instead), keeps renames in the saved file,
   and with `codeJanitor.cleanup.skipOrganizeUsingsDuringCleanupOnSave` leaves the using directives alone (`organizeUsings`,
   IDE0005, IDE0065).
@@ -90,7 +92,7 @@ First release of the Visual Studio Code port.
   (`RollForward=LatestMajor`): a runtime older than the SDK could not locate MSBuild, and C# was cleaned without its projects.
 - The AI provider settings (`ai.provider`, `ai.copilotModel`, `ai.customEndpointUrl`, `ai.customModel`, `ai.customApiKeyHeader`, `ai.xmlDoc.runDuringCleanup`) have application scope and `codeJanitor.dotnetPath` machine scope: a workspace's `.vscode/settings.json` can no longer redirect the code sent to a model, the stored API key or the executable that runs the engine. The coverage target's minimum is 10, as the command enforces.
 - Development: ESLint and Prettier for TypeScript and JavaScript (`npm run lint`, `npm run format`, `npm run format:check`), `dotnet format whitespace` for the server, and a Husky pre-commit hook (lint-staged) that runs them on the staged files.
-- Node.js 22 or later is required for development, CI and the release workflow; CI also runs the e2e tests under `xvfb-run`, typechecks `scripts/` (`npm run typecheck:scripts`) and lists the files of the packaged VSIX. `@vscode/vsce` is a pinned dev dependency, and the F5 launch builds the server first.
+- A patched Node.js is required for development, CI and the release workflow (22.23.4, 24.22.1, 26.12.1 or newer); `npm run check:node` refuses an older one and an unknown major. CI also runs the e2e tests under `xvfb-run`, typechecks `scripts/` (`npm run typecheck:scripts`) and lists the files of the packaged VSIX. `@vscode/vsce` is a pinned dev dependency, and the F5 launch builds the server first.
 - Class sealing (`sealClassesWhenSafe`, CA1852) follows the Visual Studio rule: no class is sealed in a project, or a
   project referencing it, that contains inactive `#if` code.
 - `.codejanitor` is discovered per file, walking up from the cleaned file's folder (nearest file wins as a whole), in cleanup on save, every cleanup command, the editor diagnostics, the preview and check mode (`npm run check`); before, only the first workspace folder's root was read.
@@ -296,7 +298,7 @@ First release of the Visual Studio Code port.
     the commands a cleanup runs.
   - The extension declares that it does not run in untrusted workspaces (Restricted Mode), since the C# engine loads the workspace's
     MSBuild projects and analyzers.
-  - The release workflow pins `softprops/action-gh-release` to a commit.
+  - The workflows pin every GitHub Action to a commit.
 - Rewrites that broke the build or changed behavior, found by cleaning a large real C# solution with every setting and rule:
   - `readonly` was added to a field written inside an interpolated string (`$"{_n++}"`, `$"{(_n = 3)}"`, `out _n`).
   - `static` was added to a lambda that captures a local, a parameter or a member (CS8820/CS8821), also through names inside interpolated strings, in
@@ -441,9 +443,9 @@ First release of the Visual Studio Code port.
   whole run of slashes (`//`, `///`, `////`, ...) and only normalizes the spacing after it.
 - **Import Settings from .codejanitor** no longer fails in VS Code with "... is not a registered
   configuration": it wrote each blank-line-padding and explicit-access-modifier key on its own,
-  although only their group settings exist, and the repository-only padding keys (single-line
-  fields, properties and comments). Grouped keys are imported through their group setting, and
-  repository-only keys stay in `.codejanitor`, which the import message now says.
+  although only their group settings exist. Grouped keys are imported through their group setting.
+  The single-line padding keys (fields, properties and comments) are VS Code settings too: they are
+  imported, and the settings panel shows when `.codejanitor` overrides them.
 - Blank-line padding and the blank line before `return`/`throw` inserted blank lines at the wrong
   place - and a new one on every run - in a CRLF file whose verbatim strings contain bare LF line
   breaks: lines were counted on CRLF while the syntax tree counts them on LF.
@@ -525,9 +527,42 @@ First release of the Visual Studio Code port.
   Razor formatter no longer re-indents a multi-line literal in markup nested in a statement and leaves
   a chain with an unreadable link (`catch … when`) as authored. `npm run check` sets the exit code
   instead of calling `process.exit()`. The CA1869 description now says `default(JsonSerializerOptions)`.
+- Found by reviewing the release branch:
+  - Comments: Format Comments no longer deletes the lines of a comment block that contains a lone carriage return, and keeps
+    `>` as written inside `<code>`.
+  - Spade, Delete, Move and `memberLines` take the whole `/* … */` block comment above a member with it; Delete keeps the
+    `#region`/`#if` of a member that shares its line.
+  - Reorganize keeps instance initializers in order when a later one reads a primary-constructor parameter, process state or a
+    mutable static of a library; during a cleanup it reports the files and types it leaves alone, including those blocked by
+    `#if`/`#pragma`; a document without a syntax tree is left unchanged.
+  - A file compiled by several projects or target frameworks is no longer left out of cleanup on save and of a partial cleanup
+    (its copies were counted as other files).
+  - An enforced CA1852 on its own seals only classes that are not visible outside the assembly; public classes are sealed only
+    with `sealClassesWhenSafe`.
+  - `string.Format` to interpolation writes control, invisible and lone-surrogate characters as `\uXXXX`, and leaves a call with
+    named arguments or one passed where an interpolated-string-handler overload exists (`Debug.Assert`, `Debug.WriteLineIf`,
+    `StringBuilder.Append`) unchanged; the message about `!= null` checks skipped before C# 9 reaches the output channel.
+  - A code fix provider whose `FixableDiagnosticIds` throws no longer stops the rules step; it is skipped and named.
+  - Using placement: a using whose namespace is declared under `#if` is not moved, and a duplicate using is merged without losing
+    its comment or appearing twice.
+  - `.codejanitor`: a repeated key makes the file invalid and is reported; the C# engine ignores `commentFormat` as the extension
+    does, and a list value must hold only strings.
+  - `npm run check` and the project search no longer follow directory links, and a solution that also lists projects that are not
+    C# (`.vbproj`, `.dcproj`, …) no longer makes `check` exit with 2. A new `.editorconfig` in a folder of a project is picked up
+    without a restart, and a file its project does not compile no longer rescans the folders on every request.
+  - Split Top-Level Types and renames refuse before changing anything when a new file already exists or another open file was
+    edited during the cleanup; a closed file with mixed line endings no longer counts as changed. The cleanup previews follow the
+    partial-cleanup rule for files outside the workspace folders.
+  - Spade no longer deletes, moves or inserts a region from a tree older than the document (it refreshes and asks to try again),
+    selects the member under the cursor when sorted by type, and reads the structure only while the view is shown.
+  - Razor: a verbatim string that starts with a doubled quote is no longer read as a raw string, and a `@* *@` comment inside a tag
+    no longer hides the end of the tag.
+  - `scripts/perf-corpus.ts` removes its temporary folder when the server does not start.
 
 ### Testing
 
+- `test/usingPlacementCompile.test.ts` (compiler test category `usings`) builds the using-placement corpus in `test/oracle/Usings`
+  and `test/oracle/UsingsGlobal` before and after the move in both directions and compares it with the `cases.json` expectations.
 - Added `test/e2e/`, a suite that runs inside a real, isolated VS Code instance
   (`@vscode/test-cli` / `@vscode/test-electron`) rather than the hand-written `vscode` mock the
   rest of the suite uses - real activation, real command registration, the real Settings schema.
