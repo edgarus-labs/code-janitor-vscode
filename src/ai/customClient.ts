@@ -2,8 +2,9 @@
  * A small OpenAI/Claude-compatible chat completion client, ported from
  * CodeJanitorShared/Logic/Ai/OpenAiCompatibleClient.cs (Visual Studio extension) - same endpoint
  * normalization, local-endpoint detection, transient-status retry and response-content
- * extraction, rewritten against `fetch` instead of `HttpClient`.
+ * extraction, rewritten against `node:http` and `node:https` (a response is never decompressed) instead of `HttpClient`.
  */
+import { RefusedResponseError, network } from './safeFetch';
 
 export interface CustomEndpointConfig {
   endpointUrl: string;
@@ -270,15 +271,18 @@ async function postChatCompletion(userPrompt: string, maxTokens: number, systemP
     let response: Response;
     let responseText: string;
     try {
-      response = await fetch(url, {
+      response = await network.fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
         signal: controller.signal,
-        redirect: 'error',
       });
       responseText = await response.text();
     } catch (err) {
+      if (err instanceof RefusedResponseError) {
+        throw err;
+      }
+
       if (err instanceof Error && err.name === 'AbortError') {
         throw new Error(`AI request timed out after ${timeoutSeconds} seconds.`, { cause: err });
       }
@@ -339,7 +343,7 @@ export async function testCustomConnection(config: CustomEndpointConfig): Promis
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
     try {
-      const resp = await fetch(url, { method: 'GET', headers, signal: controller.signal, redirect: 'error' });
+      const resp = await network.fetch(url, { method: 'GET', headers, signal: controller.signal });
       const text = await resp.text();
 
       return { ok: resp.ok, status: resp.status, text };
