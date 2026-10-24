@@ -19,6 +19,19 @@ export const SAVE_CLEANUP_TIMEOUT_MS = 1250;
  * cleaning commands and AI documentation never run on save: they would hold up the save.
  */
 export function registerFormatOnSave(context: vscode.ExtensionContext): void {
+  let warmedUp = false;
+  const warmUpWith = (document: vscode.TextDocument): void => {
+    if (
+      !warmedUp &&
+      document.languageId === 'csharp' &&
+      vscode.workspace.getConfiguration('codeJanitor').get<boolean>('cleanup.onSave', false) &&
+      isPathCleanable(document.uri)
+    ) {
+      warmedUp = true;
+      void warmUpEngine(document);
+    }
+  };
+
   context.subscriptions.push(
     vscode.workspace.onWillSaveTextDocument((event) => {
       if (event.document.languageId !== 'csharp') {
@@ -34,8 +47,29 @@ export function registerFormatOnSave(context: vscode.ExtensionContext): void {
       }
 
       event.waitUntil(computeCleanupEdits(event.document));
-    })
+    }),
+    vscode.workspace.onDidOpenTextDocument(warmUpWith)
   );
+
+  vscode.workspace.textDocuments.forEach(warmUpWith);
+}
+
+/**
+ * The first request makes the engine start and load the projects, which takes longer than {@link SAVE_CLEANUP_TIMEOUT_MS}:
+ * a cleanup on save that is the first request would always be skipped. This request goes the way of a save, has no
+ * deadline and its result is dropped; a failure is logged and never reaches the user.
+ */
+async function warmUpEngine(document: vscode.TextDocument): Promise<void> {
+  try {
+    await cleanupCSharpResult(
+      { uri: document.uri, content: document.getText(), isOpen: true },
+      { renameAcrossWorkspace: false, honorOnlyChangedLines: true, onSave: true, partial: isOutsideWorkspaceFolders(document.uri) }
+    );
+  } catch (err) {
+    if (!reportEngineUnavailable(err)) {
+      logError(`Warming up the C# engine with ${document.uri.fsPath}`, err);
+    }
+  }
 }
 
 async function computeCleanupEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {

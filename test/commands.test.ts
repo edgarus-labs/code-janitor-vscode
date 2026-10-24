@@ -1740,6 +1740,61 @@ describe('cleanup on save', () => {
     await cancelled.promise;
   });
 
+  describe('warm-up', () => {
+    function openCSharp(path: string): TextDocument {
+      const document = new TextDocument(Uri.file(path), UNCLEAN, 'csharp');
+      state.documents.push(document);
+
+      return document;
+    }
+
+    it('sends a cleanup through the save path for a C# document that is already open, so the first save does not start the engine', async () => {
+      state.configuration.set('codeJanitor.cleanup.onSave', true);
+      openCSharp('/w/a.cs');
+
+      registerFormatOnSave(createContext());
+
+      await vi.waitFor(() => expect(engine.requests('cleanup')).toHaveLength(1));
+      expect(engine.requests('cleanup')[0].onSave).toBe(true);
+      expect(engine.requests('cleanup')[0].filePath).toBe('/w/a.cs');
+    });
+
+    it('warms up once, with the first C# document that opens, and not for other documents', async () => {
+      state.configuration.set('codeJanitor.cleanup.onSave', true);
+      registerFormatOnSave(createContext());
+      state.documentListeners.open.forEach((listener) => listener(new TextDocument(Uri.file('/w/a.md'), 'text\n', 'markdown')));
+      expect(engine.requests('cleanup')).toHaveLength(0);
+
+      state.documentListeners.open.forEach((listener) => listener(openCSharp('/w/a.cs')));
+      state.documentListeners.open.forEach((listener) => listener(openCSharp('/w/b.cs')));
+
+      await vi.waitFor(() => expect(engine.requests('cleanup')).toHaveLength(1));
+      expect(engine.requests('cleanup')[0].filePath).toBe('/w/a.cs');
+    });
+
+    it('does not start the engine while cleanup on save is off', () => {
+      openCSharp('/w/a.cs');
+
+      registerFormatOnSave(createContext());
+
+      expect(engine.requests('cleanup')).toHaveLength(0);
+    });
+
+    it('never fails or changes a document when the warm-up cleanup fails', async () => {
+      state.configuration.set('codeJanitor.cleanup.onSave', true);
+      createOutputChannel(createContext());
+      useFakeEngine({
+        cleanup: () => Promise.reject(new Error('the engine is broken')),
+      });
+      const document = openCSharp('/w/a.cs');
+
+      registerFormatOnSave(createContext());
+
+      await vi.waitFor(() => expect(state.outputChannelLines.some((line) => line.includes('the engine is broken'))).toBe(true));
+      expect(document.getText()).toBe(UNCLEAN);
+    });
+  });
+
   it('logs a failure of cleanup on save and leaves the document as it is', async () => {
     state.configuration.set('codeJanitor.cleanup.onSave', true);
     createOutputChannel(createContext());
