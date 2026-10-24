@@ -1,6 +1,7 @@
 /**
  * `npm run check:release -- [--tag <tag>] <vsix>`: fails when the tag (if given), package.json, the
- * package.json and manifest packaged in the VSIX, and the VSIX file name do not carry the same version.
+ * package.json, manifest and Code Janitor server assemblies packaged in the VSIX, and the VSIX file name do
+ * not carry the same version.
  * Exactly one VSIX must be given, so that the CI artifact and the release asset are the same file.
  */
 import fs from 'node:fs';
@@ -26,7 +27,9 @@ try {
   if (problems.length > 0) {
     process.exitCode = 1;
   } else {
-    console.log(`${vsixPath}: version ${version} matches${tag === undefined ? '' : ` the tag ${tag},`} package.json, the packaged manifest and the file name.`);
+    console.log(
+      `${vsixPath}: version ${version} matches${tag === undefined ? '' : ` the tag ${tag},`} package.json, the packaged manifest and assemblies, and the file name.`
+    );
   }
 } catch (err) {
   console.error(`Release version check failed: ${err instanceof Error ? err.message : String(err)}`);

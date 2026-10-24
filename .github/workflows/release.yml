@@ -68,7 +68,7 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
       - name: Package the extension (.vsix)
         run: npx vite-node scripts/package-vsix.ts
-      - name: Verify the release version (tag, package.json, VSIX manifest, file name)
+      - name: Verify the release version (tag, package.json, VSIX manifest, server assemblies, file name)
         id: vsix
         run: |
           args=()
