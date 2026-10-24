@@ -7,5 +7,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RoslynVersion>5.9.0</RoslynVersion>
+    <Version>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../package.json')), '(?m)^  "version": "([^"]+)"').Groups[1].Value)</Version>
   </PropertyGroup>
 </Project>
