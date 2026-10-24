@@ -289,6 +289,9 @@ First release of the Visual Studio Code port.
   (`IDE0090 (3 changes)`). Unchecked ones are left out of the diff and of what gets applied.
 
 ### Fixed
+- **Cleanup on save** no longer depends on the C# engine being warm: with `codeJanitor.cleanup.onSave` on, the first C# document that
+  opens makes the engine start and load the projects (one cleanup request through the save path, result dropped, failures only
+  logged), so the first save is not skipped for missing the engine's deadline.
 - Security:
   - An AI XML documentation summary containing a Unicode NEL, line or paragraph separator or another control character could end
     the `///` comment and put code into the file; summaries are now always one line.
