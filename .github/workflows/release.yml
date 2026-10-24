@@ -67,7 +67,18 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           npm version "$VERSION" --no-git-tag-version --allow-same-version
       - name: Package the extension (.vsix)
-        run: npx vsce package
+        run: npx vite-node scripts/package-vsix.ts
+      - name: Verify the release version (tag, package.json, VSIX manifest, file name)
+        id: vsix
+        run: |
+          args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            args+=(--tag "$GITHUB_REF_NAME")
+          fi
+          shopt -s nullglob
+          vsix=(*.vsix)
+          npm run check:release -- "${args[@]}" "${vsix[@]}"
+          echo "file=${vsix[0]}" >> "$GITHUB_OUTPUT"
       - name: Verify packaged VSIX contents
         run: |
           npx vsce ls > vsix-files.txt
@@ -79,9 +90,11 @@ jobs:
         run: npm run verify:bundle
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: vsix
-          path: '*.vsix'
+          name: ${{ steps.vsix.outputs.file }}
+          path: ${{ steps.vsix.outputs.file }}
           if-no-files-found: error
+    outputs:
+      vsix: ${{ steps.vsix.outputs.file }}
 
   release:
     name: Create the GitHub Release
@@ -93,10 +106,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: vsix
+          name: ${{ needs.package.outputs.vsix }}
       - name: Create GitHub Release
         uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
         with:
-          files: '*.vsix'
+          files: ${{ needs.package.outputs.vsix }}
           draft: true
           generate_release_notes: true
